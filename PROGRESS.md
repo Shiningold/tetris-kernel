@@ -1,12 +1,12 @@
 # 进度 · Tetris Kernel
 
-> 最后更新：2026-10-22 21:39
+> 最后更新：2026-10-22 22:16
 > **本文件是当前状态快照，不是流水账**：每次工作结束直接改写下面三段，历史记录交给 git，**不往这里堆历史条目**。
 > 分批契约、门判据编号、任务编号索引在 `docs/需求与边界.md` §11–§12。
 
 ## 当前在攻
 
-**M0 骨架的前置准备收尾**（代码还没开工）。三份文档已拆分落定并做完逐表对照审查，拆分前的合并稿已删除，`AGENTS.md` 压到 524 字。下一步：搭 `src/tetris_kernel/` 分层空壳与 `import-linter` 契约。
+**M0 开工前的准备已全部就位**（代码还没写）。`pyproject.toml` 与 `README.md` 已补齐，仓库已建并按提交规范切了五笔。下一步：搭 `src/tetris_kernel/` 分层空壳。
 
 ## 待办
 
@@ -19,8 +19,8 @@
 - [ ] `contracts/`：事件类型注册表 + 机器可读契约声明（44 事件 / 16 命令 / 快照字段）
 - [ ] 冻结基线 `tests/baseline/kernel_hashes.json` + `tools/` 检查脚本
 - [ ] `pytest` + `hypothesis` 骨架（`derandomize=True`）
-- [ ] README：三条安装命令 + `python -m tetris_kernel` 入口
-- [ ] `git init`（**等明说了再建**；建完历史记录进 git）
+- [x] README：三条安装命令 + `python -m tetris_kernel` 入口
+- [x] `git init` 并按提交规范切了五笔（历史记录从此进 git）
 
 ## 卡点
 
