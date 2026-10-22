@@ -1,0 +1,113 @@
+# 俄罗斯方块内核 · tetris
+#
+# 技术选型与理由见 docs/项目架构.md §1，决策记录见 docs/决策记录.md。
+# 装依赖必须用 conda 的 py312 环境，禁止 uv sync / uv venv（会自建 .venv 绕开 py312）：
+#   uv pip install --python D:\miniconda3\envs\py312\python.exe -e .
+#   uv pip install --python D:\miniconda3\envs\py312\python.exe --group dev
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14"]
+build-backend = "uv_build"
+
+[project]
+name = "tetris"
+version = "0.1.0"
+description = "以事件流为唯一信息载体的俄罗斯方块内核——底座而非游戏"
+readme = "README.md"
+requires-python = ">=3.12"
+# 唯一的运行时第三方依赖。内核 / 总线 / 规则三层是纯标准库，零第三方依赖。
+dependencies = ["rich>=15.0.0"]
+
+[project.scripts]
+tetris = "tetris_kernel.host.cli:main"
+
+[dependency-groups]
+# 版本全部钉死：ruff 的格式化结果随版本变，不同机器上打架比不出 diff（ADR-052）
+dev = [
+    "ruff==0.17.1",
+    "pyright==1.1.414",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "hypothesis==6.170.5",
+    "import-linter==2.15",
+]
+
+[tool.uv.build-backend]
+# 包名 tetris 与模块名 tetris_kernel 不一致，这里显式指明
+module-name = "tetris_kernel"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.12"
+# 默认 standard；内核与总线走 strict（见下方 overrides）
+typeCheckingMode = "standard"
+
+[[tool.pyright.overrides]]
+include = ["src/tetris_kernel/kernel", "src/tetris_kernel/bus"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.importlinter]
+root_packages = ["tetris_kernel"]
+# 没有它，forbidden 契约看不到第三方包，纯净度检查就是空的
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "分层依赖方向：host > adapters > systems > bus > kernel > rules > contracts"
+type = "layers"
+layers = [
+    "tetris_kernel.host",
+    "tetris_kernel.adapters",
+    "tetris_kernel.systems",
+    "tetris_kernel.bus",
+    "tetris_kernel.kernel",
+    "tetris_kernel.rules",
+    "tetris_kernel.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "内核 / 总线 / 规则不依赖第三方"
+type = "forbidden"
+source_modules = [
+    "tetris_kernel.kernel",
+    "tetris_kernel.bus",
+    "tetris_kernel.rules",
+]
+forbidden_modules = ["rich", "tkinter", "numpy", "pydantic", "pytest", "hypothesis"]
+
+[[tool.importlinter.contracts]]
+name = "变体不跨层引用内核 / 总线 / 适配器 / 宿主"
+type = "forbidden"
+source_modules = ["tetris_kernel.variants"]
+forbidden_modules = [
+    "tetris_kernel.kernel",
+    "tetris_kernel.bus",
+    "tetris_kernel.adapters",
+    "tetris_kernel.host",
+]
+
+[[tool.importlinter.contracts]]
+name = "系统之间互不直调，只经事件与命令协作"
+type = "independence"
+modules = [
+    "tetris_kernel.systems.log",
+    "tetris_kernel.systems.metrics",
+    "tetris_kernel.systems.replay",
+    "tetris_kernel.systems.achievements",
+    "tetris_kernel.systems.ai",
+]
