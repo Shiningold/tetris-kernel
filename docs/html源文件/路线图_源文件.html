@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>迭代规划 M0–M4 · 路线图</title>
+<style>
+:root{
+  --bg:#0a0e13;--panel:#111823;--panel2:#0d131b;--line:#1d2735;--line2:#26344a;
+  --text:#dbe6f2;--dim:#6d8299;--dim2:#4c5f74;
+  --mint:#35d6a4;--cyan:#38bdf8;--violet:#a78bfa;--amber:#fbbf24;--blue:#60a5fa;--pink:#f472b6;--slate:#94a3b8;
+  --mono:"SFMono-Regular",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{padding:24px 28px 32px;max-width:1280px;margin:0 auto}
+.topbar{display:flex;align-items:baseline;gap:12px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:22px}
+.topbar h1{font-size:18px;letter-spacing:.14em;font-weight:600}
+.topbar .sub{font-size:11px;color:var(--dim)}
+.topbar .rt{margin-left:auto;display:flex;gap:7px}
+.chip{font-family:var(--mono);font-size:10px;padding:4px 9px;border-radius:5px;background:var(--panel2);
+  border:1px solid var(--line);color:var(--dim)}
+.chip b{color:var(--text)}
+.chip.on{border-color:rgba(53,214,164,.45);background:rgba(53,214,164,.09);color:var(--mint)}
+.chip.on b{color:var(--mint)}
+
+/* timeline */
+.tl{display:grid;grid-template-columns:repeat(5,1fr) ;gap:0;margin-bottom:26px;align-items:stretch}
+.node{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 14px 14px}
+.node .id{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.1em}
+.node .nm{font-size:14px;font-weight:600;margin:3px 0 6px}
+.node .ds{font-size:10.5px;color:var(--dim);min-height:30px}
+.node .mk{font-family:var(--mono);font-size:9.5px;color:var(--dim2);margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.node .bar{height:3px;border-radius:2px;margin-bottom:10px}
+.n0 .id,.n0 .nm{color:var(--slate)} .n0 .bar{background:var(--slate)}
+.n1 .id,.n1 .nm{color:var(--cyan)}  .n1 .bar{background:var(--cyan)}
+.n2 .id,.n2 .nm{color:var(--mint)}  .n2 .bar{background:var(--mint)}
+.n3 .id,.n3 .nm{color:var(--violet)}.n3 .bar{background:var(--violet)}
+.n4 .id,.n4 .nm{color:var(--amber)} .n4 .bar{background:var(--amber)}
+.gate{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+.gate .g{font-family:var(--mono);font-size:10px;color:var(--blue);border:1px solid rgba(96,165,250,.4);
+  border-radius:20px;padding:3px 8px;background:rgba(96,165,250,.1)}
+.gate .a{color:var(--dim2);font-size:13px}
+.tl{grid-template-columns:1fr 62px 1fr 62px 1fr 62px 1fr 62px 1fr}
+
+/* cards */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card.full{grid-column:1/-1}
+.ch{padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel2);
+  display:flex;align-items:center;gap:10px}
+.ch .id{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.08em}
+.ch .nm{font-size:13px;font-weight:600}
+.ch .tag{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--dim2)}
+.cb{padding:13px 14px}
+.lead{font-size:11.5px;color:var(--dim);margin-bottom:11px;line-height:1.6}
+.row{display:grid;grid-template-columns:76px 1fr;gap:10px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:11.5px}
+.row:last-child{border:0}
+.row .k{font-size:10px;color:var(--dim2);letter-spacing:.08em;padding-top:2px}
+.row .v{color:var(--text)}
+.row .v em{font-style:normal;color:var(--dim)}
+.kv{font-family:var(--mono);font-size:10.5px}
+.g{color:var(--mint)}.c{color:var(--cyan)}.v{color:var(--violet)}.a{color:var(--amber)}.b{color:var(--blue)}
+.deco{border-left:2px solid var(--line2);padding:5px 0 5px 11px;margin:8px 0;font-size:11px;color:var(--dim);line-height:1.65}
+.deco b{color:var(--text);font-weight:600}
+.deco .pick{color:var(--mint)}
+.c0{border-top:2px solid var(--slate)}.c1{border-top:2px solid var(--cyan)}
+.c2{border-top:2px solid var(--mint)}.c3{border-top:2px solid var(--violet)}
+.c4{border-top:2px solid var(--amber)}
+.c0 .ch .id,.c0 .ch .nm{color:var(--slate)}
+.c1 .ch .id,.c1 .ch .nm{color:var(--cyan)}
+.c2 .ch .id,.c2 .ch .nm{color:var(--mint)}
+.c3 .ch .id,.c3 .ch .nm{color:var(--violet)}
+.c4 .ch .id,.c4 .ch .nm{color:var(--amber)}
+
+.mini{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.mini span{font-family:var(--mono);font-size:9.5px;padding:2px 7px;border-radius:4px;
+  border:1px solid var(--line);color:var(--dim);background:var(--panel2)}
+.mini span.m{border-color:rgba(53,214,164,.3);color:var(--mint)}
+
+h2.sec{font-size:13px;letter-spacing:.12em;margin:26px 0 3px}
+p.secl{font-size:11px;color:var(--dim);margin-bottom:13px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.box{border:1px solid var(--line);border-radius:9px;padding:12px 14px;background:var(--panel)}
+.box b{display:block;font-size:11.5px;margin-bottom:5px}
+.box span{font-size:10.5px;color:var(--dim);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <h1>TETRIS&nbsp;KERNEL · 迭代路线图</h1>
+    <span class="sub">M0 骨架 → M1 可玩 → M2 可观测 → M3 可扩展 → M4 可重构</span>
+    <div class="rt">
+      <span class="chip">功能条目 <b>145</b></span>
+      <span class="chip">关键决策 <b>20</b> · 门判据 <b>33</b></span>
+      <span class="chip on">技术栈 <b>不选型</b></span>
+    </div>
+  </div>
+
+  <div class="tl">
+    <div class="node n0"><div class="bar"></div><div class="id">M0</div><div class="nm">骨架</div>
+      <div class="ds">命令进、事件出，完全无头跑通</div>
+      <div class="mk">31 条 · 判据 G0-1…G0-7</div></div>
+    <div class="gate"><div class="g">G0</div><div class="a">▶</div></div>
+    <div class="node n1"><div class="bar"></div><div class="id">M1</div><div class="nm">可玩</div>
+      <div class="ds">标准玩法完整，手感达标</div>
+      <div class="mk">28 条 · 判据 G1-1…G1-7</div></div>
+    <div class="gate"><div class="g">G1</div><div class="a">▶</div></div>
+    <div class="node n2"><div class="bar"></div><div class="id">M2</div><div class="nm">可观测</div>
+      <div class="ds">记录、重放、度量、逐帧检视</div>
+      <div class="mk">26 条 · 判据 G2-1…G2-6</div></div>
+    <div class="gate"><div class="g">G2</div><div class="a">▶</div></div>
+    <div class="node n3"><div class="bar"></div><div class="id">M3</div><div class="nm">可扩展</div>
+      <div class="ds">新增能力 = 新增文件（机器可验）</div>
+      <div class="mk">28 条 · 判据 G3-1…G3-7</div></div>
+    <div class="gate"><div class="g">G3</div><div class="a">▶</div></div>
+    <div class="node n4"><div class="bar"></div><div class="id">M4</div><div class="nm">可重构</div>
+      <div class="ds">落地变体，兑现"内核零改动"</div>
+      <div class="mk">32 条 · 判据 G4-1…G4-6</div></div>
+  </div>
+
+  <div class="grid">
+
+    <!-- M0 -->
+    <div class="card c0">
+      <div class="ch"><span class="id">M0</span><span class="nm">骨架</span><span class="tag">不追求可玩</span></div>
+      <div class="cb">
+        <div class="lead">产出物是一个没有画面、没有输入、只能被脚本驱动的「逻辑心脏」。目的是在零干扰下把架构约束一次性钉死。</div>
+        <div class="row"><div class="k">核心交付</div><div class="v">事件总线 · 命令通道 · 可注入时间源 · 可播种随机源 · 棋盘与方块纯函数 · 最小闭环 <em>（出生→重力→锁定→消行→再出生）</em></div></div>
+        <div class="row"><div class="k">代表条目</div><div class="v"><span class="kv"><span class="g">M0-4</span> 订阅者异常隔离 · <span class="g">M0-13</span> 固定步长禁读墙钟 · <span class="g">M0-15</span> 每次随机发事件 · <span class="g">M0-26</span> 事件完备性检查 · <span class="g">M0-29</span> 命令队列与轮次调度 · <span class="g">M0-31</span> 极简系统契约</span></div></div>
+        <div class="row"><div class="k">开门判据</div><div class="v"><span class="kv">无头 10000 帧 · 状态变更 100% 伴随事件 · 同种子 10 次全等 · <span class="g">命令入队不在本轮生效</span> · 注入抛错订阅者内核存活</span></div></div>
+        <div class="deco"><b>决策 1 重入语义</b>：<span class="pick">命令入队 + 同帧多轮（Round）</span>。订阅者在分发期间派发的命令一律进队列，当前分发结束后按 FIFO 执行，其产生的事件触发新一轮分发 —— 同一事件的所有订阅者因此看到同一份状态，递归被展开为轮次而非调用栈。轮次数与单帧命令数双上限，超限丢弃余量并发错误事件；AI 在帧内派的命令仍于本帧下一轮生效，不损失响应性。<br>
+        <b>决策 2 事件粒度</b>：语义事件 / 批量差异事件 / 调试事件三级，调试事件默认关闭。<br>
+        <b>决策 4 快照是拉取式</b>：事件只说「发生了什么」，需要状态的一方自己拉快照 —— 事件更小、回放更小。</div>
+      </div>
+    </div>
+
+    <!-- M1 -->
+    <div class="card c1">
+      <div class="ch"><span class="id">M1</span><span class="nm">可玩</span><span class="tag">仍不做视觉设计</span></div>
+      <div class="cb">
+        <div class="lead">把逻辑心脏变成能玩的俄罗斯方块。两条主线：规则完整度对标现代标准玩法，输入手感达到可长期游玩的水准。</div>
+        <div class="row"><div class="k">规则完整</div><div class="v">7-bag · 5 预览 · 标准旋转与踢墙（含 I 特例）· 180° · 锁定延迟与有限重置 · 软降/硬降/幽灵 · Hold · 连击 · B2B · T-Spin 分级 · 等级曲线 · 顶出判定</div></div>
+        <div class="row"><div class="k">手感</div><div class="v">输入适配器 DAS/ARR 参数可调 · 原始输入与意图均发事件 · 调参不触发状态变更</div></div>
+        <div class="row"><div class="k">开门判据</div><div class="v"><span class="kv">完整玩到顶出且结算与手算一致 · 踢墙表逐条验证 · T-Spin 三类全对 · AI 与人类通道不可区分</span></div></div>
+        <div class="deco"><b>决策 6 旋转失败的语义</b>：<span class="pick">命令被接受，但发出受阻事件</span>。旋转失败是合法游戏行为，不该进拒绝通道 —— 拒绝只留给「当前状态根本不该发这个命令」。这条区分会让 M2 的日志与反作弊清晰得多。<br>
+        <b>决策 8 手感参数属于适配器</b>：内核只认「移动一格」这种原子命令。于是换设备调参不影响录像复现。</div>
+      </div>
+    </div>
+
+    <!-- M2 -->
+    <div class="card c2">
+      <div class="ch"><span class="id">M2</span><span class="nm">可观测</span><span class="tag">回报最高的一批</span></div>
+      <div class="cb">
+        <div class="lead">架构从一开始就是事件驱动，于是日志、指标、回放、调试面板四件套几乎可以白拿。完成后项目第一次产生「工业感」：任何一局都能被完整复盘。</div>
+        <div class="row"><div class="k">四件套</div><div class="v">日志<em>（结构化/分级/多 sink）</em> · 指标<em>（实时累加 + 周期采样）</em> · 回放<em>（种子+命令序列）</em> · 事件流面板<em>（过滤/暂停/时间旅行）</em></div></div>
+        <div class="row"><div class="k">配套</div><div class="v">批量模拟运行器 · 性能探针与预算守卫 · 错误面板 · 命令审计视图 · 随机序列审计</div></div>
+        <div class="row"><div class="k">开门判据</div><div class="v"><span class="kv">200 局回放四项全等 · 抛错订阅者被隔离 · 10 分钟 P99 达标 · <span class="g">关闭全部可观测系统后内核逐帧一致</span></span></div></div>
+        <div class="deco"><b>决策 9 回放录什么</b>：<span class="pick">录命令序列，不录事件序列</span>。事件粒度会随版本调整而失效，不适合长期存档；事件流只作为回归断言基线。录的是被接受的命令（含 AI 的），来源随命令记录；<b>回放期间命令源独占</b>，AI / 教学 / 网络系统须卸载，否则「重放时 AI 也在下」会直接摧毁确定性。<br>
+        <b>决策 10 日志级别放日志系统内</b>：事件不该知道自己有多重要 —— 同一事件排障时是 trace，演示时可能是 info。<br>
+        <b>G2-6 是关键</b>：它证明可观测性是纯旁路，没有反向污染内核。</div>
+      </div>
+    </div>
+
+    <!-- M3 -->
+    <div class="card c3">
+      <div class="ch"><span class="id">M3</span><span class="nm">可扩展</span><span class="tag">把口号变成机器可验</span></div>
+      <div class="cb">
+        <div class="lead">把「新增能力只需新增文件」从一句承诺变成可自动检查的事实。本批结束后，你应能对着内核文件说：从此它们再也不需要为任何玩法改动。</div>
+        <div class="row"><div class="k">机制</div><div class="v">插件契约与热插拔 · 依赖图自动生成 · 规则四项拆分<em>（消行/重力/计分/边界）</em> · <span class="g">受控写入命令</span> · 存档序列化与恢复一致性</div></div>
+        <div class="row"><div class="k">示范系统</div><div class="v">成就<em>（零内核改动样板）</em> · 音效/特效触发契约 · 教学引导 · AI 落点搜索 · 反作弊<em>（只观察告警，不拦截）</em></div></div>
+        <div class="row"><div class="k">开门判据</div><div class="v"><span class="kv">新增「统计旋转次数」系统后内核差异为空 · 运行中卸载日志不中断 · 任意插件组合下逐帧结果一致</span></div></div>
+        <div class="deco"><b>决策 14 受控写入算不算破坏内核唯一写入者</b>：<span class="pick">不算</span> —— 它把「外部直接写」变成「外部请求 + 内核裁决」，落笔与发事件仍全部由内核完成。同帧多请求命中同一格默认后者覆盖（可配置为后者被拒），单帧写入量设上限。这是 M4 生长/塌方变体的唯一合法通道，必须在 M3 定型，否则 M4 会很想开后门。<br>
+        <b>决策 13 不需要沙箱</b>：个人项目里插件与内核同信任级别，真正需要的是失败隔离与卸载干净，而非权限隔离。</div>
+      </div>
+    </div>
+
+    <!-- M4 -->
+    <div class="card c4 full">
+      <div class="ch"><span class="id">M4</span><span class="nm">可重构</span><span class="tag">兑现时刻 · 也是对架构的最终审判</span></div>
+      <div class="cb">
+        <div class="lead">前三个批次都是投入，M4 是唯一产出玩法价值的批次。判据只有一个核心问题：落地变体时，你是否需要改内核？如果需要，前三个批次就白做了。</div>
+        <div class="two" style="gap:14px">
+          <div>
+            <div class="row"><div class="k">变体 A</div><div class="v"><b>重力可旋转</b> —— 四方向重力切换，横向时消列而非消行，踢墙表随之变换，切换有冷却防抖动</div></div>
+            <div class="row"><div class="k">变体 B</div><div class="v"><b>落地后生长</b> —— 锁定后按帧向邻格生长，经受控写入命令落笔，可设禁区与递增压力曲线</div></div>
+            <div class="row"><div class="k">变体 C</div><div class="v"><em>选做其一</em> 拓扑变体（圆柱/莫比乌斯）· 目标反转（消行即失败）· 节奏化编曲 · 沙盒塌方</div></div>
+            <div class="row"><div class="k">实验台</div><div class="v">批量模拟参数扫描 · AI 基准对比 · 变体矩阵测试 · 变体回放兼容</div></div>
+          </div>
+          <div>
+            <div class="row"><div class="k">核心判据</div><div class="v"><span class="kv a">G4-1 至少两个变体可完整游玩，且内核文件差异为空</span></div></div>
+            <div class="row"><div class="k">其余判据</div><div class="v"><span class="kv">变体录像 100% 正确重放 · 切回标准后逐帧一致 · 变体代码全部位于独立目录</span></div></div>
+            <div class="deco" style="margin-top:10px"><b>决策 17 变体怎么实现</b>：看是否需要改变「棋盘上发生了什么」—— 需要 → 替换规则模块或走受控写入；不需要（如节奏化）→ 纯订阅者，完全不碰内核。<br>
+            <b>决策 19 先做哪个</b>：<span class="pick">先做变体 A</span>。它只触及规则模块、不涉及受控写入，是「零内核改动」最干净的证明，且上手就有新鲜感。变体 B 路径更长，作为第二个验证点。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <h2 class="sec">贯穿全部批次的三件事</h2>
+  <p class="secl">不属于任何单一批次，每批结束时都必须同步完成，否则后续批次会持续偿还技术债。</p>
+  <div class="three">
+    <div class="box"><b class="c">X-1 契约文档随代码更新</b><span>事件目录、命令目录、快照结构三张表必须与实现同步。新增事件未登记，视同未完成。</span></div>
+    <div class="box"><b class="g">X-2 确定性回归基线</b><span>建立「黄金对局」用例库，每批结束全部重跑。任何一条失败即阻塞该批次合入。</span></div>
+    <div class="box"><b class="a">X-3 性能预算守卫</b><span>每批结束测量逻辑帧耗时 P50/P99、单帧事件分发量、内存占用。超预算即当批处理。</span></div>
+  </div>
+
+  <h2 class="sec">门与回退</h2>
+  <p class="secl">每一道门都是硬门。个人项目没有外部工期压力，门的价值在于防止「带着结构债往前跑」。</p>
+  <div class="three">
+    <div class="box"><b class="b">就近回退</b><span>M4 遇到边界问题，回到划错边界的那个批次修正，而不是在当前批次打补丁。</span></div>
+    <div class="box"><b class="b">回退不丢用例</b><span>黄金对局库与回放用例是全项目资产，任何回退都必须保证它们仍然可跑。</span></div>
+    <div class="box"><b class="b">允许重写批次</b><span>没有沉没成本压力时，整体重写一个批次的成本，往往低于持续修补。</span></div>
+  </div>
+
+  <h2 class="sec">M4 之后的加成清单（可选）</h2>
+  <p class="secl">不属于 M0–M4 范围，仅作为方向池按兴趣取用。</p>
+  <div class="mini" style="margin-bottom:8px">
+    <span class="m">联网对战</span><span class="m">变体脚本化</span><span class="m">可视化编排</span>
+    <span>AI 训练场</span><span>移动端与触控</span><span>变体市场</span>
+    <span>录像社区与 Ghost 对战</span><span>无障碍适配</span>
+  </div>
+
+</div>
+</body>
+</html>

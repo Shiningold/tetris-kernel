@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tetris Kernel · 产品预览</title>
+<style>
+:root{
+  --bg:#0a0e13; --panel:#111823; --panel2:#0d131b; --line:#1d2735; --line2:#26344a;
+  --text:#dbe6f2; --dim:#6d8299; --dim2:#4c5f74;
+  --mint:#35d6a4; --cyan:#38bdf8; --violet:#a78bfa; --amber:#fbbf24; --red:#f87171; --blue:#60a5fa; --pink:#f472b6;
+  --pI:#22d3ee; --pJ:#3b82f6; --pL:#fb923c; --pO:#facc15; --pS:#4ade80; --pT:#c084fc; --pZ:#f87171; --pG:#5a6b80;
+  --mono:"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;font-size:13px;line-height:1.5}
+.wrap{padding:22px 26px 30px}
+
+/* ---------- top bar ---------- */
+.topbar{display:flex;align-items:center;gap:14px;padding:0 2px 16px;border-bottom:1px solid var(--line);margin-bottom:20px}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand h1{font-size:17px;letter-spacing:.14em;font-weight:600}
+.brand .sub{font-size:11px;color:var(--dim);letter-spacing:.06em}
+.chips{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:10.5px;padding:4px 9px;border-radius:5px;
+  background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+.chip b{color:var(--text);font-weight:600}
+.chip.on{border-color:rgba(53,214,164,.45);background:rgba(53,214,164,.09);color:var(--mint)}
+.chip.on b{color:var(--mint)}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--mint);margin-right:5px;
+  box-shadow:0 0 8px var(--mint)}
+
+/* ---------- layout ---------- */
+.grid{display:grid;grid-template-columns:212px auto 430px;gap:18px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.panel h3{font-size:10.5px;letter-spacing:.16em;color:var(--dim);font-weight:600;
+  padding:9px 12px;border-bottom:1px solid var(--line);background:var(--panel2);
+  display:flex;align-items:center;justify-content:space-between}
+.panel h3 .tag{font-family:var(--mono);font-size:9.5px;color:var(--dim2);letter-spacing:.04em}
+.body{padding:12px}
+
+.statbar{display:grid;grid-template-columns:repeat(8,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-bottom:16px}
+.statbar>div{background:var(--panel);padding:10px 14px;display:flex;flex-direction:column;gap:2px}
+.statbar span{font-size:9.5px;letter-spacing:.12em;color:var(--dim)}
+.statbar b{font-family:var(--mono);font-size:17px;font-weight:600;letter-spacing:-.01em}
+
+/* ---------- board ---------- */
+.boardwrap{padding:14px;display:flex;gap:14px}
+.board{display:grid;grid-template-columns:repeat(10,26px);grid-template-rows:repeat(22,26px);
+  gap:1px;background:var(--line);border:1px solid var(--line2);border-radius:5px;padding:1px}
+.cell{background:#0c1118;border-radius:2px}
+.cell.f1{background:var(--pI)}.cell.f2{background:var(--pJ)}.cell.f3{background:var(--pL)}
+.cell.f4{background:var(--pO)}.cell.f5{background:var(--pS)}.cell.f6{background:var(--pT)}
+.cell.f7{background:var(--pZ)}.cell.f8{background:var(--pG)}
+.cell b{display:block;width:100%;height:100%;border-radius:2px;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),inset 0 -3px 0 rgba(0,0,0,.22)}
+.cell.act{background:transparent;box-shadow:inset 0 0 0 2px var(--pT);border-radius:2px}
+.cell.act b{background:var(--pT)}
+.cell.gh{background:transparent;box-shadow:inset 0 0 0 1.5px rgba(192,132,252,.5)}
+.bufrow{background:#0a0f15}
+.boardside{display:flex;flex-direction:column;gap:10px;width:150px}
+.mini{display:grid;gap:1px;background:var(--line);border:1px solid var(--line2);border-radius:4px;padding:1px}
+.mini.hold{grid-template-columns:repeat(4,15px);grid-template-rows:repeat(4,15px)}
+.mini.next{grid-template-columns:repeat(4,13px);grid-template-rows:repeat(4,13px)}
+.nrow{display:flex;align-items:center;gap:9px}
+.nrow span{font-family:var(--mono);font-size:11px;color:var(--dim)}
+.nrow:first-child span{color:var(--mint);font-weight:700}
+.mini .cell{border-radius:1px}
+.mlabel{font-size:9.5px;letter-spacing:.14em;color:var(--dim);margin-bottom:5px}
+
+/* ---------- stats ---------- */
+.stat{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px dashed var(--line)}
+.stat:last-child{border:0}
+.stat span{font-size:10.5px;color:var(--dim);letter-spacing:.08em}
+.stat b{font-family:var(--mono);font-size:14px;font-weight:600}
+.stat b.mint{color:var(--mint)}.stat b.cyan{color:var(--cyan)}.stat b.amber{color:var(--amber)}.stat b.violet{color:var(--violet)}
+
+/* ---------- event stream ---------- */
+.filters{display:flex;gap:5px;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap;background:var(--panel2)}
+.f{font-family:var(--mono);font-size:9.5px;padding:3px 8px;border-radius:20px;border:1px solid var(--line2);color:var(--dim)}
+.f.on{color:#08111a;font-weight:700}
+.f.on.n-piece{background:var(--violet);border-color:var(--violet)}
+.f.on.n-board{background:var(--mint);border-color:var(--mint)}
+.f.on.n-score{background:var(--amber);border-color:var(--amber)}
+.f.on.n-cmd{background:var(--blue);border-color:var(--blue)}
+.f.on.n-clock{background:var(--dim);border-color:var(--dim)}
+.f.on.n-sys{background:var(--pink);border-color:var(--pink)}
+.stream{height:498px;overflow:hidden;font-family:var(--mono);font-size:10.5px}
+.ev{display:grid;grid-template-columns:46px 60px 148px 1fr;gap:8px;padding:4px 12px;border-bottom:1px solid #131b26;align-items:baseline}
+.ev:hover{background:#131c27}
+.ev .sq{color:var(--dim2)}
+.ev .ty{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev .pl{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t-piece{color:var(--violet)}.t-board{color:var(--mint)}.t-score{color:var(--amber)}
+.t-cmd{color:var(--blue)}.t-clock{color:var(--dim)}.t-sys{color:var(--pink)}.t-warn{color:var(--red)}
+.ev.hl{background:rgba(251,191,36,.07);box-shadow:inset 2px 0 0 var(--amber)}
+.ev.bad{background:rgba(248,113,113,.07);box-shadow:inset 2px 0 0 var(--red)}
+
+/* ---------- systems ---------- */
+.sysrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
+  padding:8px 12px;border-bottom:1px solid #131b26}
+.sysrow:last-child{border:0}
+.sysname{display:flex;align-items:center;gap:8px;font-size:12px}
+.sysname i{width:7px;height:7px;border-radius:2px;display:inline-block}
+.syssub{font-family:var(--mono);font-size:9.5px;color:var(--dim2);margin-top:2px}
+.sw{width:30px;height:16px;border-radius:20px;background:var(--line2);position:relative;transition:.15s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dim);transition:.15s}
+.sw.on{background:rgba(53,214,164,.28)}
+.sw.on::after{left:16px;background:var(--mint)}
+.evt{font-family:var(--mono);font-size:9.5px;color:var(--dim);padding:2px 6px;border:1px solid var(--line);border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand">
+      <h1>TETRIS&nbsp;KERNEL</h1>
+      <span class="sub">事件驱动 · 可重构内核 · 产品预览 v0.1</span>
+    </div>
+    <div class="chips">
+      <span class="chip on"><span class="dot"></span>PHASE <b>RUNNING</b></span>
+      <span class="chip">SEED <b>20261022</b></span>
+      <span class="chip">FRAME <b>4821</b></span>
+      <span class="chip">VERSION <b>1934</b></span>
+      <span class="chip">SYSTEMS <b>6</b></span>
+      <span class="chip">EVENTS <b>27,907</b></span>
+      <span class="chip">LOGIC <b>0.42ms/f</b></span>
+      <span class="chip on">QUEUE <b>round 2/8</b></span>
+      <span class="chip">DETERMINISM <b>100%</b></span>
+    </div>
+  </div>
+
+  <div class="statbar">
+    <div><span>SCORE</span><b class="mint">12,480</b></div>
+    <div><span>LINES</span><b class="cyan">34</b></div>
+    <div><span>LEVEL</span><b class="amber">4</b></div>
+    <div><span>COMBO</span><b class="violet">2</b></div>
+    <div><span>B2B</span><b class="mint">ON</b></div>
+    <div><span>PIECES</span><b>88</b></div>
+    <div><span>APM</span><b>96</b></div>
+    <div><span>LINES / PIECE</span><b>0.386</b></div>
+  </div>
+
+  <div class="grid">
+
+    <!-- 左：状态 / 队列 -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="panel">
+        <h3>HOLD / NEXT <span class="tag">queue:refilled</span></h3>
+        <div class="body">
+          <div class="mlabel">HOLD · 已用</div>
+          <div class="mini hold" id="hold"></div>
+          <div style="height:12px"></div>
+          <div class="mlabel">NEXT × 5</div>
+          <div id="next" style="display:flex;flex-direction:column;gap:6px"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>RULE MODULE</h3>
+        <div class="body" style="font-size:11.5px">
+          <div class="stat"><span>标准玩法</span><b style="font-size:11px;color:var(--mint)">ACTIVE</b></div>
+          <div class="stat"><span>7-bag / SRS</span><b style="font-size:11px">✓</b></div>
+          <div class="stat"><span>锁定延迟</span><b style="font-size:11px">500ms</b></div>
+          <div class="stat"><span>热替换</span><b style="font-size:11px;color:var(--dim)">支持</b></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中：棋盘 -->
+    <div class="panel">
+      <h3>PLAYFIELD <span class="tag">10 × 20 + 2 buffer</span></h3>
+      <div class="boardwrap">
+        <div class="board" id="board"></div>
+        <div class="boardside">
+          <div class="panel" style="border-radius:6px">
+            <h3 style="font-size:9px;padding:6px 8px">GHOST</h3>
+            <div class="body" style="padding:8px;font-size:10.5px;color:var(--dim)">
+              Δ <b style="color:var(--violet);font-family:var(--mono)">(0, +7)</b><br>
+              落点 y=<b style="color:var(--text);font-family:var(--mono)">12</b>
+            </div>
+          </div>
+          <div class="panel" style="border-radius:6px">
+            <h3 style="font-size:9px;padding:6px 8px">LOCK</h3>
+            <div class="body" style="padding:8px">
+              <div style="height:5px;background:var(--line);border-radius:3px;overflow:hidden">
+                <div style="width:38%;height:100%;background:var(--amber)"></div>
+              </div>
+              <div style="font-size:9.5px;color:var(--dim2);margin-top:5px;font-family:var(--mono)">190 / 500ms · reset ×2</div>
+            </div>
+          </div>
+          <div class="panel" style="border-radius:6px">
+            <h3 style="font-size:9px;padding:6px 8px">TOPOLOGY</h3>
+            <div class="body" style="padding:8px;font-size:10px;color:var(--dim);font-family:var(--mono)">
+              height 8 · holes 2<br>bump 11 · hash <span style="color:var(--mint)">a3f19c02</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：事件流 -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="panel">
+        <h3>EVENT STREAM <span class="tag">28 events/frame · 全部可订阅</span></h3>
+        <div class="filters">
+          <span class="f on n-cmd">command:*</span>
+          <span class="f on n-piece">piece:*</span>
+          <span class="f on n-board">board:*</span>
+          <span class="f on n-score">score:*</span>
+          <span class="f on n-clock">clock:*</span>
+          <span class="f on n-sys">kernel:system</span>
+          <span class="f">rng:next</span>
+        </div>
+        <div class="stream" id="stream"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <h3>SYSTEM REGISTRY · 运行时热插拔，内核零感知 <span class="tag">kernel:system:installed</span></h3>
+    <div id="systems"></div>
+  </div>
+</div>
+
+<!-- ======================= 屏 2：架构与扩展 ======================= -->
+<style>
+.sec{padding:22px 26px 30px;border-top:1px solid var(--line);margin-top:8px}
+.sec h2{font-size:14px;letter-spacing:.12em;margin-bottom:3px}
+.sec p.lead{font-size:11.5px;color:var(--dim);margin-bottom:18px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+.layer{border:1px solid var(--line);border-radius:8px;padding:11px 14px;background:var(--panel);
+  display:flex;justify-content:space-between;align-items:center;gap:12px}
+.layer .lt{font-size:12.5px;font-weight:600}
+.layer .ls{font-size:10.5px;color:var(--dim);margin-top:2px}
+.layer .lp{font-family:var(--mono);font-size:9.5px;color:var(--dim2);white-space:nowrap;border:1px solid var(--line);padding:2px 7px;border-radius:4px}
+.layer.core{border-color:rgba(53,214,164,.45);background:rgba(53,214,164,.07)}
+.layer.core .lt{color:var(--mint)}
+.layer.bus{border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.07)}
+.layer.bus .lt{color:var(--cyan)}
+.arrow{text-align:center;color:var(--dim2);font-family:var(--mono);font-size:9.5px;padding:5px 0;letter-spacing:.08em}
+.arrow span{color:var(--blue)}.arrow em{color:var(--mint);font-style:normal}
+.ext{display:grid;grid-template-columns:132px 1fr 60px;gap:10px;align-items:center;
+  padding:9px 0;border-bottom:1px solid #131b26;font-size:11.5px}
+.ext:last-child{border:0}
+.ext .n{font-weight:600}
+.ext .d{color:var(--dim);font-size:10.5px}
+.ext .z{font-family:var(--mono);font-size:9.5px;color:var(--mint);text-align:right;
+  border:1px solid rgba(53,214,164,.35);border-radius:4px;padding:2px 0;text-align:center}
+pre.seq{font-family:var(--mono);font-size:10.5px;line-height:1.75;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:14px 16px;color:var(--dim);overflow:auto}
+pre.seq b{color:var(--text);font-weight:600}
+pre.seq .g{color:var(--mint)}pre.seq .v{color:var(--violet)}pre.seq .b{color:var(--blue)}pre.seq .a{color:var(--amber)}
+.ac{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.ac div{border:1px solid var(--line);border-radius:8px;padding:11px 13px;background:var(--panel)}
+.ac b{display:block;font-family:var(--mono);font-size:11px;color:var(--mint);margin-bottom:4px}
+.ac span{font-size:10.5px;color:var(--dim)}
+</style>
+
+<div class="sec" id="screen-arch">
+  <h2>架构与扩展视图</h2>
+  <p class="lead">内核是唯一的状态所有者；一切模块都是平等的订阅者。新增玩法 = 新增一个订阅者，内核代码零改动。</p>
+
+  <div class="two">
+    <div>
+      <div class="layer"><div><div class="lt">宿主层 Host</div><div class="ls">应用外壳 / 页面 / 命令行 / 测试运行器</div></div><div class="lp">装配 · 帧循环</div></div>
+      <div class="arrow"><span>命令 ↓</span> &nbsp;&nbsp; <em>事件 ↑</em></div>
+      <div class="layer"><div><div class="lt">适配层 Adapter</div><div class="ls">输入 · 渲染 · 存储 · 网络（均无特权）</div></div><div class="lp">订阅 + 派发</div></div>
+      <div class="arrow"><span>命令 ↓</span> &nbsp;&nbsp; <em>事件 ↑</em></div>
+      <div class="layer"><div><div class="lt">系统层 System</div><div class="ls">日志 · 指标 · 回放 · 成就 · AI · 音效 · 反作弊</div></div><div class="lp">热插拔插件</div></div>
+      <div class="arrow"><span>命令 ↓</span> &nbsp;&nbsp; <em>事件 ↑</em></div>
+      <div class="layer bus"><div><div class="lt">事件总线 Bus</div><div class="ls">通配订阅 · 优先级 · 中间件 · 历史缓冲 · 错误隔离</div></div><div class="lp">唯一通道</div></div>
+      <div class="arrow"><span>命令 ↓</span> &nbsp;&nbsp; <em>事件 ↑</em></div>
+      <div class="layer core"><div><div class="lt">内核 Core</div><div class="ls">棋盘 · 方块 · 计分 · 关卡 · 队列（唯一写入者 · 命令按轮执行）</div></div><div class="lp">只发事件</div></div>
+      <div style="margin-top:14px" class="layer"><div><div class="ls">规则模块（可替换）· 时间源（可注入）· 随机源（可播种）</div></div><div class="lp">确定性底座</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>扩展点映射 · 玩法重构 <span class="tag">内核改动：0 行</span></h3>
+      <div class="body">
+        <div class="ext"><div class="n">重力可旋转</div><div class="d">订阅输入，改写重力向量；或替换重力函数</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">落地后生长</div><div class="d">订阅 piece:locked，定时向邻格生长</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">塌方连锁</div><div class="d">订阅 board:changed，检测临界后请求消除</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">拓扑变体</div><div class="d">替换规则模块的边界与消行判定</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">目标反转</div><div class="d">替换结算函数，消行即失败</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">节奏化编曲</div><div class="d">订阅 piece:* 映射到音轨，完全旁路内核</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">AI / 自动演示</div><div class="d">与人类走同一命令通道；内核处理不依赖来源标记，来源仅作元数据</div><div class="z">0 行</div></div>
+        <div class="ext"><div class="n">反作弊</div><div class="d">订阅 command:received 与 rng:next 做校验（AI 演算自带随机源，不碰内核随机）</div><div class="z">0 行</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="height:18px"></div>
+  <div class="two">
+    <div class="panel">
+      <h3>一帧内的事件流时序 <span class="tag">60fps · 固定步长</span></h3>
+      <div class="body" style="padding:0">
+<pre class="seq" style="border:0;border-radius:0">
+<b>[输入适配器]</b> 收到按键
+   └─ 派发 <span class="b">command</span> moveLeft
+<b>[内核]</b> 校验通过 ──▶ <span class="b">command:accepted</span>
+<b>[内核]</b> 移动活动方块
+   ├─▶ <span class="v">piece:moved</span>
+   └─▶ <span class="b">state:changed</span> ──▶ <b>[渲染器]</b> 仅标记脏
+<b>[宿主]</b> 推进一帧 ── 派发 <span class="b">command</span> tick
+<b>[内核]</b> ──▶ <span class="b">clock:tick</span>
+   ├─▶ <b>[指标]</b> 累加帧数
+   ├─▶ <b>[输入]</b> 长按检测 ── 自动重复 ──▶ <span class="a">入队</span>
+   └─▶ <b>[AI]</b>  计算落点 ── 派发命令 ──▶ <span class="a">入队</span>
+<b>[内核]</b> 本轮分发结束 ──▶ 取出队列（FIFO）
+   └─▶ 逐条执行 ──▶ 新事件 ──▶ <span class="a">第 2 轮分发</span>（订阅者看到的仍是同一份状态）
+   └─▶ 队列空 / 达轮次上限 ── 结束本帧命令处理
+<b>[内核]</b> 重力下落 ──▶ <span class="b">clock:gravity</span>
+<b>[内核]</b> 触底 ──▶ <span class="v">piece:lock-delay-start</span>
+<b>[内核]</b> 延迟到期 ──▶ <span class="v">piece:locked</span>
+   ├─▶ <span class="g">board:changed</span>
+   ├─▶ <span class="g">board:lines-cleared</span>
+   │     └─▶ <span class="a">score:changed</span> ──▶ <b>[成就]</b> ──▶ <span class="a">achievement</span>
+   └─▶ <span class="v">piece:spawned</span> ──▶ <span class="b">state:changed</span>
+<b>[渲染器]</b> 帧末拉取<b>一次</b>快照 ──▶ 重绘（高频事件不触发拉取）
+<b>[日志]</b> 订阅 '*' ── 每一步均产生结构化日志
+<b>[回放]</b> 订阅 command:accepted（含 AI 命令） ── 形成可重放录像；回放期间命令源独占
+</pre>
+      </div>
+    </div>
+
+    <div>
+      <div class="ac">
+        <div><b>AC-1</b><span>200 局回放指纹零差异</span></div>
+        <div><b>AC-2</b><span>状态变更 100% 伴随事件</span></div>
+        <div><b>AC-3</b><span>新增系统内核差异为空</span></div>
+        <div><b>AC-4</b><span>订阅者崩溃不影响内核</span></div>
+        <div><b>AC-5</b><span>无头可跑 10000 帧</span></div>
+        <div><b>AC-6</b><span>AI 走同一通道，内核不依赖来源标记</span></div>
+        <div><b>AC-7</b><span>逻辑帧 P99 ≤ 1.6ms（渲染/落盘不计入）</span></div>
+        <div><b>AC-8</b><span>运行中热插拔不中断</span></div>
+      </div>
+      <div style="height:14px"></div>
+      <div class="panel">
+        <h3>技术栈 <span class="tag">本阶段不做选型</span></h3>
+        <div class="body" style="font-size:11.5px;color:var(--dim)">
+          内核不得依赖任何特定语言运行时、图形接口或系统能力。<br>
+          渲染、输入、存储、网络均按「适配器」契约接入，可整体替换。<br>
+          <span style="color:var(--mint)">契约稳定后再评估实现选型。</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- 棋盘地形（22 行：2 缓冲区 + 20 可见） ---------- */
+const TERRAIN = [
+  "..........","..........","..........","..........","..........","..........",
+  "..........","..........","..........","..........","..........","..........",
+  "..........","..........",".....11...","..11.11..1",".1111111.6",
+  "1111.13311","111111111.","1132411111","112245.111","1132211111"
+];
+const ACTIVE = [[4,4],[3,5],[4,5],[5,5]];      // T 块，紫色
+const GHOST  = [[4,12],[3,13],[4,13],[5,13]];
+
+const board = document.getElementById('board');
+const key = (x,y)=>y*10+x;
+const aSet = new Set(ACTIVE.map(c=>key(c[0],c[1])));
+const gSet = new Set(GHOST.map(c=>key(c[0],c[1])));
+for (let y=0;y<22;y++){
+  for (let x=0;x<10;x++){
+    const d = document.createElement('div');
+    d.className = 'cell' + (y<2 ? ' bufrow' : '');
+    const i = key(x,y);
+    const ch = TERRAIN[y][x];
+    if (aSet.has(i))      d.className = 'cell act';
+    else if (gSet.has(i)) d.className = 'cell gh';
+    else if (ch !== '.')  d.className = 'cell f' + ch;
+    d.innerHTML = '<b></b>';
+    board.appendChild(d);
+  }
+}
+
+/* ---------- 方块形状（4x4 内相对坐标） ---------- */
+const SHAPES = {
+  I:[[0,1],[1,1],[2,1],[3,1]], J:[[0,0],[0,1],[1,1],[2,1]], L:[[2,0],[0,1],[1,1],[2,1]],
+  O:[[1,0],[2,0],[1,1],[2,1]], S:[[1,0],[2,0],[0,1],[1,1]], T:[[1,0],[0,1],[1,1],[2,1]],
+  Z:[[0,0],[1,0],[1,1],[2,1]]
+};
+const COLOR = {I:1,J:2,L:3,O:4,S:5,T:6,Z:7};
+function mini(el, id){
+  el.innerHTML = '';
+  const set = new Set(SHAPES[id].map(c=>c[1]*4+c[0]));
+  for (let i=0;i<16;i++){
+    const d = document.createElement('div');
+    d.className = 'cell' + (set.has(i) ? ' f'+COLOR[id] : '');
+    d.innerHTML = '<b></b>';
+    el.appendChild(d);
+  }
+}
+mini(document.getElementById('hold'), 'O');
+const nx = document.getElementById('next');
+['I','T','S','L','J'].forEach(id=>{
+  const row = document.createElement('div'); row.className = 'nrow';
+  const d = document.createElement('div'); d.className = 'mini next';
+  const lb = document.createElement('span'); lb.textContent = id;
+  row.appendChild(d); row.appendChild(lb); nx.appendChild(row);
+  mini(d, id);
+});
+
+/* ---------- 事件流 ---------- */
+const EV = [
+  [27879,'t-clock','clock:tick','{dt:16.7, frame:4821}'],
+  [27880,'t-cmd','input:raw','{action:"left", kind:"press"}'],
+  [27881,'t-cmd','input:intent','{action:"left", type:"moveLeft"}'],
+  [27882,'t-cmd','command:received','{type:"moveLeft", source:"human"}'],
+  [27883,'t-cmd','command:accepted','{type:"moveLeft", seq:27882}'],
+  [27884,'t-piece','piece:moved','{id:"T", from:{x:5,y:5}, to:{x:4,y:5}}'],
+  [27885,'t-sys','state:changed','{reason:"move", version:1928, hash:"a3f19c02"}'],
+  [27886,'t-clock','clock:tick','{dt:16.7, frame:4822}'],
+  [27887,'t-clock','clock:gravity','{x:4, y:6}'],
+  [27888,'t-cmd','command:rejected','{type:"hold", reason:"already-used"}'],
+  [27889,'t-piece','piece:rotated','{id:"T", from:0, to:0, blocked:true}'],
+  [27890,'t-piece','piece:kicked','{id:"T", offset:[-1,-1], kickIndex:2}'],
+  [27891,'t-cmd','command:received','{type:"hardDrop", source:"ai", queued:true}'],
+  [27892,'t-piece','piece:harddrop','{id:"I", distance:14, landingY:14}'],
+  [27893,'t-piece','piece:locked','{id:"I", rot:1, x:5, y:13, tspin:"none"}'],
+  [27894,'t-board','board:changed','{reason:"lock", cells:"4 cells"}'],
+  [27895,'t-board','board:lines-cleared','{rows:[19,20], count:2, key:"double"}'],
+  [27896,'t-score','score:changed','{delta:+2400, after:12480, reason:"clear:double"}'],
+  [27897,'t-board','board:collapsed','{reason:"clear", cells:"14 cells"}'],
+  [27898,'t-score','score:combo-changed','{combo:2}'],
+  [27899,'t-score','score:b2b-changed','{b2b:true}'],
+  [27900,'t-score','progress:level-changed','{from:3, to:4, gravityMs:71}'],
+  [27901,'t-sys','achievement:unlocked','{id:"back-to-back", title:"背靠背"}'],
+  [27902,'t-clock','rng:next','{value:0.2418, draw:312, state:"9f3a1c"}'],
+  [27903,'t-sys','queue:refilled','{preview:["I","T","S","L","J"]}'],
+  [27904,'t-piece','piece:spawned','{id:"T", x:3, y:0, next:["I","T","S"]}'],
+  [27905,'t-piece','piece:lock-delay-start','{delayMs:500}'],
+  [27906,'t-sys','metric:sampled','{frames:4800, pieces:88, lpp:0.386, apm:96}'],
+  [27907,'t-sys','log:entry','{level:"info", channel:"board:lines-cleared"}']
+];
+const st = document.getElementById('stream');
+EV.forEach(([sq,cls,ty,pl],i)=>{
+  const r = document.createElement('div');
+  r.className = 'ev' + (ty==='achievement:unlocked' ? ' hl' : '')
+    + (ty==='command:rejected'||ty==='piece:rotated' ? ' bad' : '');
+  r.innerHTML = '<span class="sq">'+sq+'</span><span class="ty '+cls+'">'+ty+
+    '</span><span class="pl">'+pl+'</span><span></span>';
+  st.appendChild(r);
+});
+
+/* ---------- 系统注册表 ---------- */
+const SYS = [
+  ['日志系统','订阅 * · 输出到控制台 / 文件 / 远端','28/frame','#7dd3fc',true],
+  ['指标系统','订阅 12 类事件 · 每 60 帧采样广播','12','#fbbf24',true],
+  ['回放系统','订阅 command:accepted · 种子+命令序列','>=1','#35d6a4',true],
+  ['成就系统','订阅 * · 规则命中即发 achievement','8','#f472b6',true],
+  ['AI 引导','订阅 piece:spawned / clock:tick · 派发命令（入队，下一轮执行）','2','#a78bfa',true],
+  ['终端渲染器','帧末拉取一次快照 · 纯消费，不写状态','1','#94a3b8',true],
+  ['网络同步（预留）','订阅 board:changed · 差量广播','0','#64748b',false]
+];
+const sr = document.getElementById('systems');
+SYS.forEach(([n,s,c,col,on])=>{
+  const r = document.createElement('div');
+  r.className = 'sysrow';
+  r.innerHTML =
+    '<div><div class="sysname"><i style="background:'+col+'"></i>'+n+'</div>'+
+    '<div class="syssub">'+s+'</div></div>'+
+    '<span class="evt">'+c+' ev/f</span>'+
+    '<div class="sw'+(on?' on':'')+'"></div>';
+  sr.appendChild(r);
+});
+</script>
+</body>
+</html>
