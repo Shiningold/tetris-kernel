@@ -100,7 +100,7 @@ S18 收尾（PROGRESS / ai_docs / README）
 | S3 | 命令契约声明（16）+ 拒绝原因（12） | 清单 5/6 | 已完成 | `e4b4c63` |
 | S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/4/10/15 | 已完成 | `d294e8b`（审查修订 `0a2117e`） |
 | S5 | 规则签名声明（8）+ `RuleContext` | 清单 9 | 已完成 | `5a55302`（审查修订 `8f98ed3`） |
-| S6 | 契约校验与基线脚本 | 清单 11/12/13/16 | 未开始 | — |
+| S6 | 契约校验与基线脚本 | 清单 11/12/13/16 | 已完成 | `03053a9` |
 | S7 | 随机源与时间源 | — | 未开始 | — |
 | S8 | 快照与只读视图 | — | 未开始 | — |
 | S9 | 命令通道（门禁 + 三段生命周期） | — | 未开始 | — |
@@ -352,27 +352,50 @@ S18 收尾（PROGRESS / ai_docs / README）
 
 - **目标**：契约的"只增不改"有了牙齿，且**清单没勾完就拒绝生成基线**。
 - **任务**
-  - [ ] `tools/check_kernel_purity.py`：AST + 文本扫描——禁第三方 import、禁平台名、禁墙钟读（`time.time` / `time.monotonic` / `datetime.now` / 模块级 `random.*` / 未注入的 `random.Random()` / `os.urandom` / `uuid.uuid4`；`id()` 只警告不阻断）
-  - [ ] `tools/check_event_registry.py`：扫 `contracts/`，事件类型必须已登记
-  - [ ] `tools/check_frozen_baseline.py`：`kernel/` + `rules/` 内容哈希（归一化换行符）
-  - [ ] `tools/contract_baseline.py`：**先跑 `docs/契约v1清单.md` 16 项**，有未勾项就**拒绝生成**并打印缺哪几项；生成/校验走字段级哈希（允许新增键、禁止已有键哈希变化）
-  - [ ] `tools/measure_frame_cost.py`：采集单帧逻辑开销（P50 / P99）与每帧事件数（S16 用）
-  - [ ] 基线文件落点：`tests/baseline/contracts_baseline.json` · `tests/baseline/kernel_hashes.json`
+  - [x] `tools/check_kernel_purity.py`：AST + 文本扫描——禁第三方 import、禁平台名、禁墙钟读（`time.time` / `time.monotonic` / `datetime.now` / 模块级 `random.*` / 未注入的 `random.Random()` / `os.urandom` / `uuid.uuid4`；`id()` 只警告不阻断）
+  - [x] `tools/check_event_registry.py`：扫 `contracts/`，事件类型必须已登记
+  - [x] `tools/check_frozen_baseline.py`：`kernel/` + `rules/` 内容哈希（归一化换行符）
+  - [x] `tools/contract_baseline.py`：**先跑 `docs/契约v1清单.md` 16 项**，有未勾项就**拒绝生成**并打印缺哪几项；生成/校验走字段级哈希（允许新增键、禁止已有键哈希变化）
+  - [x] `tools/measure_frame_cost.py`：采集单帧逻辑开销（P50 / P99）与每帧事件数（S16 用）
+  - [x] 基线文件落点：`tests/baseline/contracts_baseline.json` · `tests/baseline/kernel_hashes.json`（**本次只落目录与 `.gitkeep`，不生成文件**——基线在 S17 生成）
+  - [x] 类型文法解析器按 `contracts/types.py` 的文法表**重新实现**（`tools/contract_grammar.py`，形态 1–10；命名结构引用按成员表展开）
 - **涉及文件**：`tools/**` · `tests/baseline/.gitkeep`
 - **验证方案**（**每个脚本都要用"故意破坏"验证它真的会红**）
-  1. `contract_baseline.py`：清单有未勾项 → **拒绝生成**并打印缺项清单（把清单第 16 项临时改回未勾验证）。
-  2. `contract_baseline.py`：手工改一个已声明字段的类型 → 校验**红**，提示"已有键哈希变化"；改回去 → 绿。
-  3. `check_frozen_baseline.py`：临时改 `kernel/` 内一个文件的注释 → 红（归一化只处理换行符，注释改动应被抓到）。
-  4. `check_kernel_purity.py`：临时在 `kernel/` 里写 `import time` + `time.time()` → 红；撤掉 → 绿。
-  5. `check_event_registry.py`：临时声明一个未登记的事件 → 红。
-  6. **基线此时不生成**（S17 才生成），只保证脚本可跑、拒绝逻辑有效。
-- **完成判据**：五个脚本都在，且"破坏 → 红 → 修复 → 绿"各跑通一遍。
-- **提交**：`新功能：新增内核纯净度、事件登记与契约基线校验脚本`
+  1. `contract_baseline.py`：清单有未勾项 → **拒绝生成**并打印缺项清单（把清单第 16 项临时改回未勾验证）。→ **已验**（真实清单缺第 11 / 14 / 16 三项 → 拒绝生成、退出码 1、**基线文件没被写出来**）
+  2. `contract_baseline.py`：手工改一个已声明字段的类型 → 校验**红**，提示"已有键哈希变化"；改回去 → 绿。→ **已验**（改 `snapshot/ghostDelta` 的类型 → 红 → 还原 → 绿）
+  3. `check_frozen_baseline.py`：临时改 `kernel/` 内一个文件的注释 → 红（归一化只处理换行符，注释改动应被抓到）。→ **已验**（改 `kernel/__init__.py` 的一句注释 → 红 → 还原 → 绿）
+  4. `check_kernel_purity.py`：临时在 `kernel/` 里写 `import time` + `time.time()` → 红；撤掉 → 绿。→ **已验**（`import numpy` + `time.time()` → 两条红；`sys.platform` 比较 → 平台名红；还原 → 绿）
+  5. `check_event_registry.py`：临时声明一个未登记的事件 → 红。→ **已验**（在 `contracts/events.py` 里写一个未登记的事件类型 → 红并点名位置 → 还原 → 绿）
+  6. **基线此时不生成**（S17 才生成），只保证脚本可跑、拒绝逻辑有效。→ **已验**（`tests/baseline/` 只落 `.gitkeep`，两个基线文件都还没生成）
+- **完成判据**：五个脚本都在，且"破坏 → 红 → 修复 → 绿"各跑通一遍。→ **达成**
+- **提交**：`新功能：新增内核纯净度、事件登记与契约基线校验脚本`（`03053a9`）
+- **反向验证**（实跑，**五个脚本各走了一遍"破坏 → 红 → 修复 → 绿"**）
+  - `contract_baseline.py` 清单门禁：真实清单缺第 11 / 14 / 16 三项 → **拒绝生成**并打印缺项，退出码 1，**基线文件没被写出来**。
+  - `contract_baseline.py` 字段级基线：用临时清单（全勾）生成临时基线（**353 条**）→ 改 `snapshot/ghostDelta` 的类型 → **红**（报"已有键哈希变化"）→ 还原 → 绿。
+  - `contract_baseline.py` 改名路径：把 `ghostDelta` 改名成 `ghostOffset` → 报"**已有键消失**"（而不是当成纯新增放行）→ 还原 → 绿。**这正是 PROGRESS 里 S6 提醒 ① 说的那个坑。**
+  - `check_frozen_baseline.py`：改 `kernel/__init__.py` 的一句注释 → **红**（冻结区内容变化）→ 还原 → 绿。
+  - `check_kernel_purity.py`：`kernel/` 里写 `import numpy` + `time.time()` → **两条红**；`sys.platform == "win32"` → 平台名红；`rules/` 里写 `random.Random()` → 红（未注入的随机源），而 `kernel/rng.py` 里同样的写法**放行**（豁免只给随机源模块）；`id()` → **只警告不阻断**。全部还原后 → 绿。
+  - `check_event_registry.py`：在 `contracts/events.py` 里写一个未登记的事件类型 → **红**（点名是哪一处）→ 还原 → 绿。
+  - `measure_frame_cost.py`：内核闭环还没落地（S14）→ 明确报"内核闭环尚未就绪"并退出 2；`--self-test` 用合成样本验统计口径。
+  - 还原后：**156 passed** · `ruff check` All checks passed · `ruff format --check` 44 files · `pyright` 0 错 · `lint-imports` 4 kept。
+- **落定的判断**（需求没写死、基线机制最容易各写各的几处）
+  - **基线的键怎么切**：键 = 字段名（信封字段 / 元数据键 / 事件负载字段 / 命令参数 / 快照字段 / 签名参数 / 命名结构成员），值 = 该声明**规范化后**的哈希。**允许新增键、禁止已有键的哈希变化、已有键消失同样报红**——改名 = 删旧键 + 加新键，只看"新增"会把它当成纯新增混过去。
+  - **形态 9 的引用按成员表展开后再哈希**（文法附加规则第 4 条）：`Board` 不是别名，它代表 `BOARD_FIELDS` 那张表，于是"改了成员表"会同时改掉引用它的快照字段的哈希；展开也顺带把"成员表改名"变成"键消失"——正好是 major 变更该有的动静。
+  - **规范化只做两件事**：展开命名结构引用、归一空白。**联合的成员顺序照原样保留**（类型文法表明写"一经写入不得重排"）。**排版变了不该撞基线，顺序变了就该撞。**
+  - **结构性声明单独钉住**：参数顺序（`rule/<sig>/paramOrder`）、门禁归属（`command/<name>/lifecycleGated`）、拒绝原因、事件的生产者与命名空间——这些改动不体现在任何单个字段的类型串上，不单独钉住就等于没进基线。**签名是冻结面**（参数增删 / 重排要红），**快照是"至少包含"**（顶层加字段必须绿）——两者的增删口径不同，是有意的。
+  - **清单门禁的读法**：清单解析不出 16 项就报错，不当作"全勾了"——**守卫要能触发，恒真的守卫等于没守**。
+  - **共用取值域常量不进基线、引用处进**：常量是定义，引用才是声明；基线哈希的是"引用处展开后的类型串"。常量改了而引用没改，两处静默分叉的后果正是基线要抓的。
+  - **事件登记扫的是"哪个事件类型"，不是"哪个目录"**（与本节任务里"扫 `contracts/`"的写法有一处收严）：注册表是唯一权威（ADR-020），字面量出现在 `kernel/` 还是 `contracts/` 不改变"它必须已登记"这件事——扫整个包更严。
 - **常见坑**
   - **基线生成得太早** → 开发期反复失效，基线成橡皮图章。**生成动作放 S17**。
   - **把整张快照压成一个哈希** → 加一个字段就撞红，明明是新增却判成 major，误报会让整个机制失效。必须按字段级。
   - **把值（序号、帧号、负载内容）写进声明** → 那份声明每次都红。进基线的是**声明，不是值**。
   - **清单自己进基线** → 清单一变基线就红，自锁。清单是过程文档，不进基线。
+  - **只看"新增键"就放行** → 改名 = 删旧键 + 加新键，会被当成纯新增混过去。**键消失必须报红。**
+  - **把形态 9 的引用当别名哈希** → 改了成员表（改了字段名或类型）基线全绿，冻结形同虚设。**按成员表展开。**
+  - **用 `hash()` 算哈希** → 它受 `PYTHONHASHSEED` 影响，跨进程必变。基线要跨进程稳定，所以用 blake2b 哈希规范化后的串。
+  - **把守卫挂在"调用"上就以为覆盖了属性读取** → `sys.platform == "win32"` 是比较不是调用；第一版实现漏了它，补了一条独立的属性检查才抓住。
+  - **纯净度只扫 `kernel/`** → 架构 §5.3 点名的是 `kernel/` 与 `rules/` 两个目录；`bus/` 的第三方 import 由 `import-linter` 的 forbidden 契约覆盖。
 
 ---
 
