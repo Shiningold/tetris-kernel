@@ -51,8 +51,10 @@ r"""契约层共用的类型取值域。
 4. **形态 9 只用于需求 §8.3 定名的子结构**——快照的 `Board` / `Active`，
    需求原文就是这么写的（`board: Board`、`active: Active | None`）。命名结构
    **不是自由命名的别名**：成员表必须在 `contracts/` 内另行声明
-   （`snapshot.py` 的 `BOARD_FIELDS` / `ACTIVE_FIELDS`），S6 解析器把它当
-   引用处，哈希按成员表展开计算——成员表没声明的结构名一律不合规。
+   （`snapshot.py` 的 `BOARD_FIELDS` / `ACTIVE_FIELDS`），并登记在
+   `snapshot.py` 的 `NAMED_STRUCTS`（结构名 → 成员表）里，S6 解析器把它当
+   引用处，哈希按成员表展开计算——**`NAMED_STRUCTS` 里没登记的结构名一律
+   不合规**（回验从 `NAMED_STRUCTS` 推导结构名集合，不另抄一份名单）。
    **形态 9 是 S4 落地快照声明时补的**（此前 S3 曾把"加第 9 形态"记为 S6
    的决定范围，那指的是"字面量枚举"形态；命名结构是 S4 自己的声明刚需，
    不补就得写文法认不出的串）。
@@ -93,9 +95,15 @@ SCALAR_MAP = "tuple[tuple[str, int | float | str | bool | None], ...]"
 #: 格子坐标清单：`(x, y)`。
 COORD_CELLS = "tuple[tuple[int, int], ...]"
 
+#: 棋盘格子数组：**行优先**的每行格子值（需求 §8.3 的 `board.cells`）。
+#: 与 `COORD_CELLS` 不是一回事——后者是坐标对清单，这里是"每行放什么"的值
+#: 数组（行优先，第 0 行是顶部）。快照的 `board.cells` 引用它。
+BOARD_CELLS = "tuple[tuple[int, ...], ...]"
+
 __all__ = [
     "ARGS",
     "ARGS_VALUE",
+    "BOARD_CELLS",
     "CELLS",
     "COORD_CELLS",
     "INT_TUPLE",

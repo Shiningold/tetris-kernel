@@ -21,6 +21,7 @@ from tetris_kernel.contracts import (
     ACTIVE_FIELDS,
     ARGS,
     ARGS_VALUE,
+    BOARD_CELLS,
     BOARD_FIELDS,
     CELLS,
     COMMAND_TYPE_FIELDS,
@@ -36,6 +37,7 @@ from tetris_kernel.contracts import (
     KERNEL_STATE_TO_SNAPSHOT,
     LIFECYCLE_REJECT_REASONS,
     METADATA_KEYS,
+    NAMED_STRUCTS,
     PRODUCER_LABELS,
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
@@ -856,6 +858,12 @@ def test_no_arg_is_nullable_in_v1() -> None:
 # 下面几张表**独立转录**自 `docs/需求与边界.md` §8.3，与
 # `contracts/snapshot.py` 的声明互为对照——转录的是「需求写了什么」，
 # 不是「实现写了什么」，两者逐条相等才有意义（plan-M0.md S4 任务第 1 条）。
+#
+# **一处例外须知**：需求 §8.3 的 `extensions` 原文写作
+# `tuple[tuple[str, JsonScalar], ...]`，`JsonScalar` 是**记号**（定义在架构
+# §5.4），封闭文法里没有"记号"这一形态——所以下面转录成展开后的
+# `int | float | str | bool | None`。展开值与 `types.SCALAR_MAP` 的相等性由
+# `test_snapshot_types_reference_shared_constants` 单独钉住。
 # ---------------------------------------------------------------------------
 
 #: 21 个顶层快照字段（字段名 → 类型）。
@@ -919,6 +927,35 @@ EXPECTED_PLACEMENT_FIELDS: dict[str, str] = {
     "kickOffset": "tuple[int, int] | None",
 }
 
+#: 不进快照的运行时状态（spec §7.1 的六项）：标识符 → 中文说明。
+EXPECTED_RUNTIME_ONLY_STATE: dict[str, str] = {
+    "eventSequence": "事件序号（总线的唯一时间轴）",
+    "roundCounter": "轮次计数",
+    "commandCounter": "命令数计数",
+    "rejectCoalescing": "同因拒绝合并表",
+    "subscriberRegistry": "订阅注册表",
+    "rngInstance": "随机源实例本体（快照只带走它的可序列化状态）",
+}
+
+#: 字段路径的写法：点分标识符（`board.cells` / `version`）——不许压行或散文。
+_FIELD_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+def _snapshot_leaf_paths() -> set[str]:
+    """快照的**叶子**字段路径集合（顶层 21 + `board` 5 + `active` 4 展开）。
+
+    结构字段（`board` / `active`）本身不是叶子——它的内容由成员表展开。
+    展开依据是 `NAMED_STRUCTS`（形态 9 的成员表注册表），不是另抄一份名单。
+    """
+    leaves: set[str] = set()
+    for name, field in SNAPSHOT_FIELDS.items():
+        members = NAMED_STRUCTS.get(field.type.removesuffix(" | None"))
+        if members is None:
+            leaves.add(name)
+        else:
+            leaves.update(f"{name}.{member}" for member in members)
+    return leaves
+
 
 def test_snapshot_field_count() -> None:
     """顶层 21 · `board` 子字段 5 · `Active` 子字段 4（需求 §8.3）。"""
@@ -955,7 +992,7 @@ def test_coordinate_conventions_match_requirement() -> None:
 
 
 def test_snapshot_types_reference_shared_constants() -> None:
-    """`extensions` / `rngState` 引用 types.py 的取值域常量，不复制字面量。
+    """`extensions` / `rngState` / `board.cells` 引用 types.py 的取值域常量，不复制字面量。
 
     架构 §4.4 末条：同一形状只允许一处权威定义，引用处用常量——复制字面量
     会让两处各改各的，基线显示全绿而实际已经分叉。
@@ -963,26 +1000,73 @@ def test_snapshot_types_reference_shared_constants() -> None:
     types_map = {name: field.type for name, field in SNAPSHOT_FIELDS.items()}
     assert types_map["extensions"] == SCALAR_MAP
     assert types_map["rngState"] == f"{INT_TUPLE} | None"
+    board_map = {name: field.type for name, field in BOARD_FIELDS.items()}
+    assert board_map["cells"] == BOARD_CELLS
 
 
-def test_kernel_state_mapping_covers_all_snapshot_fields() -> None:
-    """M0 内核状态清单覆盖**全部** 21 个顶层快照字段（契约清单第 15 项）。
+def test_named_structs_registry_matches_member_tables() -> None:
+    """形态 9 的结构名 ↔ 成员表：**一张注册表说了算**（`NAMED_STRUCTS`）。
 
-    快照 = 内核状态全集（spec §7.1）：内核加状态字段，快照必须同步加字段；
-    这条断言反着守——清单里每个快照侧目标都必须是已声明的快照字段，且
-    一个不多一个不少。
+    命名结构不是自由别名——文法表附加规则 4 要求"没登记的结构名一律不合规"。
+    注册表的键必须是需求 §8.3 定名的 `Board` / `Active`，值必须就是
+    `BOARD_FIELDS` / `ACTIVE_FIELDS`：两处对不上，S6 按成员表展开哈希时就会
+    取错表。**回验从这张表推导结构名集合，不另抄一份名单**——抄一份的后果是
+    成员表改了名，回验还认旧名，两边悄悄分叉。
     """
-    targets = {target for _, target in KERNEL_STATE_TO_SNAPSHOT}
-    assert targets == set(SNAPSHOT_FIELDS)
-    for source, target in KERNEL_STATE_TO_SNAPSHOT:
-        assert source, target
-        assert target in SNAPSHOT_FIELDS, source
+    assert dict(NAMED_STRUCTS) == {"Board": BOARD_FIELDS, "Active": ACTIVE_FIELDS}
+    for name, members in NAMED_STRUCTS.items():
+        assert members, f"{name} 的成员表是空的"
 
 
-def test_runtime_only_state_documented() -> None:
-    """不进快照的运行时状态有**显式清单**（spec §7.1）：六项，且与快照字段不重名。"""
-    assert len(RUNTIME_ONLY_STATE) == 6
-    assert not set(RUNTIME_ONLY_STATE) & set(SNAPSHOT_FIELDS), "运行时状态混进了快照"
+def test_kernel_state_mapping_covers_every_snapshot_leaf() -> None:
+    """M0 内核状态清单 ↔ 快照字段：**每个快照叶子字段恰好一个来源**。
+
+    快照 = 内核状态全集（spec §7.1）：内核加状态字段，快照必须同步加字段。
+    叶子集合由 `NAMED_STRUCTS` 展开成员表算出——`board` / `active` 不是叶子，
+    它们的 5 + 4 个成员才是。
+    """
+    paths = [entry.snapshot_path for entry in KERNEL_STATE_TO_SNAPSHOT]
+    assert len(paths) == len(set(paths)), "同一个快照字段被列了两次"
+    assert set(paths) == _snapshot_leaf_paths()
+
+
+def test_kernel_state_mapping_paths_are_machine_readable() -> None:
+    """映射表两侧都是**点分路径**，不许压行、不许写散文。
+
+    压行（`board.width/height/hiddenRows/cells`）和散文
+    （`active（类型 / 朝向 / x / y，可空）`）都不是机器可读：机器没法把一行
+    拆成几个源字段，"内核加字段 → 快照必须同步加字段"这条纪律就守不住。
+    """
+    for entry in KERNEL_STATE_TO_SNAPSHOT:
+        assert _FIELD_PATH_RE.match(entry.kernel_field), entry.kernel_field
+        assert _FIELD_PATH_RE.match(entry.snapshot_path), entry.snapshot_path
+
+
+def test_kernel_state_mapping_derived_rows_have_a_real_source() -> None:
+    """标了 `derived` 的行：来源要么是内核直接存着的字段，要么是运行时状态。
+
+    结构指纹、扩展摘要是从别的状态算出来的；`rngState` 是运行时随机源实例的
+    可序列化状态——三种来源都不该被当成"内核存着的字段"重复计入。
+    """
+    stored = {e.kernel_field for e in KERNEL_STATE_TO_SNAPSHOT if not e.derived}
+    for entry in KERNEL_STATE_TO_SNAPSHOT:
+        if entry.derived:
+            assert entry.kernel_field in stored or entry.kernel_field in RUNTIME_ONLY_STATE, entry
+
+
+def test_runtime_only_state_never_enters_the_snapshot() -> None:
+    """运行时状态**不进快照**：标识符既不是快照字段，也不是内核存着的状态字段。
+
+    标识符与快照字段、内核状态字段**同一套命名体系**（英文）——这条断言才
+    可能真的报警。写成中文散文时它恒真（两边根本不是一个命名空间），是摆设。
+    """
+    runtime_ids = set(RUNTIME_ONLY_STATE)
+    assert runtime_ids == set(EXPECTED_RUNTIME_ONLY_STATE), "运行时状态清单与转录表不一致"
+    assert dict(RUNTIME_ONLY_STATE) == EXPECTED_RUNTIME_ONLY_STATE
+    assert not runtime_ids & set(SNAPSHOT_FIELDS), "运行时状态混进了快照"
+    assert not runtime_ids & _snapshot_leaf_paths(), "运行时状态混进了快照叶子"
+    stored = {e.kernel_field for e in KERNEL_STATE_TO_SNAPSHOT if not e.derived}
+    assert not runtime_ids & stored, "运行时状态混进了内核状态清单"
 
 
 def test_placement_info_is_frozen_dataclass() -> None:
@@ -1019,8 +1103,11 @@ def test_placement_cells_uses_cells_coordinate_constant() -> None:
 #: 标量名（形态 1）。
 _SCALAR_NAMES = frozenset({"int", "str", "bool", "float"})
 
-#: 形态 9 允许的命名结构——必须是成员表已声明的（`snapshot.py`）。
-_NAMED_STRUCTS = frozenset({"Board", "Active"})
+#: 形态 9 允许的命名结构——**从 `NAMED_STRUCTS` 推导**，不另抄一份名单。
+#: 抄一份的后果：成员表改了名，回验还认旧名，规则与机检悄悄分叉
+#: （文法表附加规则 4 要求"没登记的结构名一律不合规"，唯一守着它的只能是
+#: 这张注册表本身）。
+_NAMED_STRUCTS = frozenset(NAMED_STRUCTS)
 
 
 class _GrammarError(ValueError):
@@ -1147,6 +1234,7 @@ def _all_declared_type_strings() -> list[tuple[str, str]]:
         ("INT_TUPLE", INT_TUPLE),
         ("SCALAR_MAP", SCALAR_MAP),
         ("COORD_CELLS", COORD_CELLS),
+        ("BOARD_CELLS", BOARD_CELLS),
     ):
         pairs.append((f"types.{name}", value))
     for field in ENVELOPE_FIELDS:
@@ -1165,6 +1253,10 @@ def _all_declared_type_strings() -> list[tuple[str, str]]:
         pairs.append((f"board.{name}", field.type))
     for name, field in ACTIVE_FIELDS.items():
         pairs.append((f"active.{name}", field.type))
+    # `PlacementInfo` 的 dataclass 注解也是声明的类型串（spec §6.5 定稿的 6 条），
+    # 同样按封闭文法回验——S4 自称"全库类型串回验"，漏掉这 6 条就是漏了。
+    for field in dataclasses.fields(PlacementInfo):
+        pairs.append((f"placement.{field.name}", field.type))
     return pairs
 
 
@@ -1234,3 +1326,18 @@ def test_contracts_public_leaf_purity() -> None:
                 assert node.module in _ALLOWED_CONTRACTS_IMPORTS, (
                     f"{path.name}: from {node.module} import …"
                 )
+
+
+def test_package_all_matches_actual_exports() -> None:
+    """`contracts/__init__.py` 的 `__all__` 与实际导出**一一对应**。
+
+    漏一个导出名不报错——只是 `from tetris_kernel.contracts import X` 到时候
+    才失败（或者名字进不了包级 API）。这条断言把它变成当场就红。
+    """
+    exported = list(contracts_pkg.__all__)
+    assert len(exported) == len(set(exported)), "__all__ 里有重复名"
+    for name in exported:
+        assert hasattr(contracts_pkg, name), f"__all__ 声明了 {name}，包上却没有"
+    submodule_names = {"commands", "events", "placement", "snapshot", "types"}
+    public = {n for n in dir(contracts_pkg) if not n.startswith("_") and n not in submodule_names}
+    assert public == set(exported), "包级公开名与 __all__ 不一致"
