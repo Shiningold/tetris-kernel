@@ -98,7 +98,7 @@ S18 收尾（PROGRESS / ai_docs / README）
 | S1 | 分层空壳与打包可用 | — | 已完成 | `facd1d4`（配置修复另见 `cb24f7d`） |
 | S2 | 事件契约声明（44） | 清单 1/7/8 | 已完成 | `62a8c9a` |
 | S3 | 命令契约声明（16）+ 拒绝原因（12） | 清单 5/6 | 已完成 | `e4b4c63` |
-| S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/10/15 | 未开始 | — |
+| S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/4/10/15 | 已完成 | `d294e8b` |
 | S5 | 规则签名声明（8）+ `RuleContext` | 清单 9 | 未开始 | — |
 | S6 | 契约校验与基线脚本 | 清单 11/12/13/16 | 未开始 | — |
 | S7 | 随机源与时间源 | — | 未开始 | — |
@@ -258,19 +258,27 @@ S18 收尾（PROGRESS / ai_docs / README）
 
 - **目标**：快照字段的**名称与类型**定死，`PlacementInfo` 落在 `contracts/`。
 - **任务**
-  - [ ] 建 `contracts/snapshot.py`：快照字段声明表（21 顶层）+ `board` 子字段声明（5）
-  - [ ] 坐标系常量落进声明：x 右正、y 下正、**第 0 行是顶部**、`cells` 行优先
-  - [ ] `hiddenRows` 语义写死为**数量**（不是可见起始行）
-  - [ ] 建 `contracts/placement.py`：`PlacementInfo`（`frozen=True`）6 字段 —— `pieceType` · `rotation` · `cells` · `lastMoveWasRotation` · `kickIndex` · `kickOffset`
-  - [ ] 写定 **M0 内核状态清单**（spec §7.1）：内核状态字段 ↔ 快照字段一一对应（契约清单第 15 项）
+  - [x] 建 `contracts/snapshot.py`：快照字段声明表（21 顶层）+ `board` 子字段声明（5）
+  - [x] 坐标系常量落进声明：x 右正、y 下正、**第 0 行是顶部**、`cells` 行优先
+  - [x] `hiddenRows` 语义写死为**数量**（不是可见起始行）
+  - [x] 建 `contracts/placement.py`：`PlacementInfo`（`frozen=True`）6 字段 —— `pieceType` · `rotation` · `cells` · `lastMoveWasRotation` · `kickIndex` · `kickOffset`
+  - [x] 写定 **M0 内核状态清单**（spec §7.1）：内核状态字段 ↔ 快照字段一一对应（契约清单第 15 项）
 - **涉及文件**：`src/tetris_kernel/contracts/snapshot.py` · `src/tetris_kernel/contracts/placement.py` · `src/tetris_kernel/contracts/__init__.py` · `docs/spec-M0.md` §7.1（状态清单随实现同步）
 - **验证方案**
-  1. 测试：顶层字段数 = 21，`board` 子字段数 = 5，字段名与需求 §8.3 表逐条相等。
-  2. 测试：字段**类型声明**逐条相等（不是只比字段名）。
-  3. 测试：`PlacementInfo` 是 `frozen=True` dataclass，字段名与类型 = 需求约定的 6 条。
-  4. 机检：`contracts/` 内不出现 `import` 任何 `tetris_kernel.*` 之外的模块（公共叶子纪律）。
-- **完成判据**：声明齐、测试过、状态清单写定。
-- **提交**：`新功能：新增快照字段声明与 PlacementInfo 结构`
+  1. 测试：顶层字段数 = 21，`board` 子字段数 = 5，字段名与需求 §8.3 表逐条相等。→ 已验（另加 `Active` 4 子字段核对）
+  2. 测试：字段**类型声明**逐条相等（不是只比字段名）。→ 已验（含字段枚举顺序 = 需求表格顺序）
+  3. 测试：`PlacementInfo` 是 `frozen=True` dataclass，字段名与类型 = 需求约定的 6 条。→ 已验（字段顺序也锁死；`cells` 注解与 `COORD_CELLS` 常量的相等性有专门断言）
+  4. 机检：`contracts/` 内不出现 `import` 任何 `tetris_kernel.*` 之外的模块（公共叶子纪律）。→ 已验（AST 扫描 `contracts/*.py`，绝对导入白名单 = 标准库四项，相对导入放行）
+- **完成判据**：声明齐、测试过、状态清单写定。→ **达成**（130 passed；反向验证见下）
+- **提交**：`新功能：新增快照字段声明与 PlacementInfo 结构`（`d294e8b`）
+- **反向验证**（实跑）
+  - 把 `ghostDelta` 的类型由 `tuple[int, int]` 改成 `tuple[int, ...]` → **字段类型断言变红**（转录核对表逐条相等）。恢复后 130 passed。
+- **落定的判断**（需求 §8.3 没写死、实现期最容易各写各的三处）
+  - **类型文法补形态 9（命名结构引用）**：需求 §8.3 把 `board` / `active` 写成结构类型（`Board`、`Active | None`），封闭文法原先没有这一形态——不补就得写文法认不出的串，正是"看着在基线里、实际没被哈希"的失效模式。S3 曾把"加第 9 形态"记为 S6 的决定范围，**那指的是"字面量枚举"形态**；命名结构是 S4 自己的声明刚需，随声明一起落（`contracts/types.py` 文法表已注明来龙去脉）。命名结构**不是自由别名**：成员表必须在 `contracts/` 内另行声明，S6 解析器按成员表展开计算哈希。
+  - **`Active` 成员表单独声明**：需求 §8.3 的 `Active(pieceType, rotation, x, y)` 落成 `ACTIVE_FIELDS`（4 字段）——`active: Active | None` 的哈希要按它展开。
+  - **内核状态清单落成机器可读常量**：spec §7.1 的表格转录为 `KERNEL_STATE_TO_SNAPSHOT`（21 个快照字段全覆盖，断言守着），"不进快照的运行时状态"六项落成 `RUNTIME_ONLY_STATE`。清单自身不进基线，但"快照 = 内核状态全集"从此有断言守，不靠人记。
+  - **快照字段的类型引用常量**：`extensions` 用 `SCALAR_MAP`、`rngState` 用 `INT_TUPLE` 拼接，不复制字面量（架构 §4.4 末条）；`PlacementInfo.cells` 的 dataclass 注解写真类型（PEP 563 会把常量注解存成 `"COORD_CELLS"` 字面），与常量的相等性用断言钉死。
+  - **文法回验进测试文件**：`test_all_type_strings_match_grammar` 把全库类型串（事件负载 / 信封 / 元数据 / 命令参数 / 快照三张表 / 七个取值域常量）逐串按封闭文法解析，负例抽查保证解析器本身不空转。**S6 的正则解析器可参考它**，但解析器落 `tools/` 时以文法表为准重新实现。
 - **常见坑**
   - **`PlacementInfo` 放 `rules/`** → 它是中性交换结构，`rules` 可以 import `contracts`；放 `rules/` 就进了冻结区，变体想改 T-Spin 定义会直接撞 G4-1。
   - **把快照当成"只有这些字段"** → 需求 §8.3 明确是"至少包含"。内核每新增一个状态字段，快照必须同步新增一个字段，否则 FR-10.2 的存档恢复缺一块。
