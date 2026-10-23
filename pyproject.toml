@@ -4,13 +4,15 @@
 # 装依赖必须用 conda 的 py312 环境，禁止 uv sync / uv venv（会自建 .venv 绕开 py312）：
 #   uv pip install --python D:\miniconda3\envs\py312\python.exe -e .
 #   uv pip install --python D:\miniconda3\envs\py312\python.exe --group dev
+#
+# 分发渠道：只发 GitHub Releases，不发 PyPI（ADR-008）。包名因此不参与任何索引竞争。
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14"]
 build-backend = "uv_build"
 
 [project]
-name = "tetris"
+name = "tetris-kernel"
 version = "0.1.0"
 description = "以事件流为唯一信息载体的俄罗斯方块内核——底座而非游戏"
 readme = "README.md"

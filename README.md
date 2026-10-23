@@ -23,20 +23,15 @@
 
 ## 安装
 
-需要 Python 3.12 或更高版本。PyPI 是主渠道，国内三个来源均可达：
+需要 Python 3.12 或更高版本。**本项目只发布在 GitHub，不上 PyPI**——克隆源码后本地安装：
 
 ```bash
-# 直连
-pip install tetris
-
-# 清华镜像
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple tetris
-
-# 阿里镜像
-pip install -i https://mirrors.aliyun.com/pypi/simple/ tetris
+git clone <仓库地址>
+cd tetris-kernel
+pip install .
 ```
 
-免安装 exe（分窗口版 / 控制台版）的发布落点待定，发布时点在 M4 之后。
+不想装、只想玩的，等 M4 之后的 GitHub Release：分窗口版（双击即玩）与控制台版（跑 `sim` / `replay` / `inspect`）两个免安装 exe。
 
 ## 使用
 
