@@ -1,0 +1,77 @@
+r"""契约层共用的类型取值域。
+
+这些常量**不属于任何单一事件**——命令 `args`（S3）、快照字段（S4）、规则签名
+（S5）都要用。放在这里而不是 `events.py` 里，是为了让"事件负载声明"与
+"通用类型域"两件事各归其位：`events.py` 只描述事件，类型域在这里。
+
+公共叶子——**不 import 任何 `tetris_kernel.*` 模块，也不依赖第三方**。
+
+## 为什么字段类型用字符串
+
+类型声明写成**规范类型表达式字符串**（`"int"`、`"tuple[int, int]"`、
+`"tuple[tuple[str, int], ...]"`），而不是 `typing` 对象：
+
+- **哈希要跨进程稳定**。契约基线（架构 §4.4）按字段级哈希类型声明，
+  `hash(int)` 是按对象地址算的，跨进程必变；`typing` 对象的 `repr` 也会随
+  Python 版本漂移。规范字符串没有这两个问题。
+- **基线校验脚本要能解析它**（S6）：字符串可直接正则解析，也能直接写进 JSON。
+
+## 类型表达式的文法
+
+下面是**封闭文法**——只有这几种形态，禁止自由发挥。S6 的基线脚本按这张表写
+正则解析器，表里没有的形态一律视为**声明不合规**（而不是"尽量解析"）。
+
+| # | 形态 | 写法 | 例 |
+| --- | --- | --- | --- |
+| 1 | 标量 | `int` · `str` · `bool` · `float` | `int` |
+| 2 | 标量联合 | `T1 \| T2`（成员 ≥ 2） | `float \| int` |
+| 3 | 可空 | `T \| None` | `str \| None` |
+| 4 | 定长元组 | `tuple[T1, T2]` | `tuple[int, int]` |
+| 5 | 变长元组 | `tuple[T, ...]` | `tuple[str, ...]` |
+| 6 | 嵌套元组 | 逐层展开 | `tuple[tuple[int, int], ...]` |
+| 7 | 元组元素位含联合 | 元素的类型本身是联合 | `tuple[tuple[str, int \| float], ...]` |
+| 8 | 递归元组 | `tuple[...]` | `tuple[...]` |
+
+**三条附加规则**：
+
+1. **形态 2 与 3 分开**：`float | int` 是联合，`str | None` 是可空。`None` 只
+   出现在可空形态里，且**永远是联合的最后一项**。
+2. **形态 7 允许任意深度的嵌套**：元组的元素位可以是形态 1–7 的任意组合，
+   如 `tuple[tuple[str, int | str | bool | None | tuple[int, ...]], ...]`。
+3. **形态 8 只用于开放取值域**——元素结构与外层同构的嵌套元组，目前只有
+   信封的 `payload` / `metadata` 容器用它。
+
+**联合的成员顺序不参与语义，但一经写入不得重排**——它会进基线哈希，重排
+等于"已有键的哈希变化"。
+"""
+
+from __future__ import annotations
+
+#: 任意 JSON 兼容取值（含浮点）：用于信封的负载 / 元数据容器（形态 1 + 2 + 8）。
+JSON_VALUE = "int | str | bool | float | None | tuple[...]"
+
+#: 命令 `args` 的取值域：**禁浮点**（B-7 / ADR-025），只含 JSON 标量与元组。
+#: 覆盖契约 v1 的 16 条命令：`setLevel` 的 int、`injectGarbage` 的 int 与
+#: `tuple[int, ...]`、`writeCells` 的 `tuple[tuple[int, int, int], ...]`。
+ARGS_VALUE = "int | str | bool | None | tuple[int, ...] | tuple[tuple[int, int, int], ...]"
+
+#: 命令 `args` 的容器类型：字段名 → 取值，顺序稳定（不可变元组）。
+ARGS = f"tuple[tuple[str, {ARGS_VALUE}], ...]"
+
+#: 扁平 JSON 标量映射（插件配置、日志数据）：字段名 → 标量。
+SCALAR_MAP = "tuple[tuple[str, int | float | str | bool | None], ...]"
+
+#: 格子清单：`(x, y, 新值)`。
+CELLS = "tuple[tuple[int, int, int], ...]"
+
+#: 格子坐标清单：`(x, y)`。
+COORD_CELLS = "tuple[tuple[int, int], ...]"
+
+__all__ = [
+    "ARGS",
+    "ARGS_VALUE",
+    "CELLS",
+    "COORD_CELLS",
+    "JSON_VALUE",
+    "SCALAR_MAP",
+]

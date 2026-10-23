@@ -1,35 +1,20 @@
 """事件契约声明（契约 v1 · 44 条事件 + 信封 + 元数据）。
 
 公共叶子——**不 import 任何 `tetris_kernel.*` 模块，也不依赖第三方**；只用标准库
-（架构 §2.3 / §4.1）。本模块只做"声明"，不做"行为"：没有任何 dataclass 之外的
-运行时对象被构造出来。
+（架构 §2.3 / §4.1）。本模块只做"声明"，不做"行为"：只构造声明用的 dataclass
+与只读映射，不构造任何行为对象。
 
-## 为什么字段类型用字符串
+## 类型表达式怎么写
 
-负载字段的类型声明写成**规范类型表达式字符串**（`"int"`、`"tuple[int, int]"`、
-`"tuple[tuple[str, int], ...]"`），而不是 `typing` 对象：
-
-- **哈希要跨进程稳定**。契约基线（架构 §4.4）按字段级哈希类型声明，
-  `hash(int)` 是按对象地址算的，跨进程必变；`typing` 对象的 `repr` 也会随
-  Python 版本漂移。规范字符串没有这两个问题。
-- **基线校验脚本要能解析它**（S6）：字符串可直接正则解析，也能直接写进 JSON。
-
-表达式的文法（只有这几种形态，禁止自由发挥）：
-
-| 形态 | 写法 |
-| --- | --- |
-| 标量 | `int` · `str` · `bool` · `float` |
-| 可空 | `T | None` |
-| 定长元组 | `tuple[T1, T2]` |
-| 变长元组 | `tuple[T, ...]` |
-| 嵌套元组 | 逐层展开，如 `tuple[tuple[int, int], ...]` |
-| 递归元组 | `tuple[...]`——表示"元素结构与外层同构的嵌套元组"，仅用于开放取值域 |
+类型声明写成**规范类型表达式字符串**，文法与理由见 `tetris_kernel.contracts.types`
+——本模块只引用那里的取值域常量，不另立一套。
 
 ## 禁浮点只约束命令 `args`
 
 `args` 参与**重放**（参数不能漂），所以取值域里没有 `float`（B-7 / ADR-025）。
-事件负载不受这条约束——`render:frame` 的耗时、`metric:sampled` 的聚合值
-本来就带小数，按需求原文用 `float`。
+事件负载不受这条约束——`metric:sampled` 的聚合值本来就带小数，按需求原文用
+`int | float`；`render:frame` 的耗时另用**微秒整数**表达（`durationUs: int`），
+渲染耗时是测量值，不必引入浮点。
 """
 
 from __future__ import annotations
@@ -38,29 +23,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-# ---------------------------------------------------------------------------
-# 通用取值域
-# ---------------------------------------------------------------------------
+from .types import ARGS, CELLS, COORD_CELLS, JSON_VALUE, SCALAR_MAP
 
-#: 任意 JSON 兼容取值（含浮点）：用于信封的负载 / 元数据容器。
-JSON_VALUE = "int | str | bool | float | None | tuple[...]"
-
-#: 命令 `args` 的取值域：**禁浮点**（B-7 / ADR-025），只含 JSON 标量与元组。
-#: 变体写法按契约 v1 的 16 条命令取并集：`setLevel` 的 int、`injectGarbage`
-#: 的 int 与 `tuple[int, ...]`、`writeCells` 的 `tuple[tuple[int, int, int], ...]`。
-ARGS_VALUE = "int | str | bool | None | tuple[int, ...] | tuple[tuple[int, int, int], ...]"
-
-#: 命令 `args` 的容器类型：字段名 → 取值，顺序稳定（不可变元组）。
-ARGS = f"tuple[tuple[str, {ARGS_VALUE}], ...]"
-
-#: 扁平 JSON 标量映射（插件配置、日志数据）：字段名 → 标量。
-SCALAR_MAP = "tuple[tuple[str, int | float | str | bool | None], ...]"
-
-#: 格子清单：`(x, y, 新值)`。
-CELLS = "tuple[tuple[int, int, int], ...]"
-
-#: 格子坐标清单：`(x, y)`。
-COORD_CELLS = "tuple[tuple[int, int], ...]"
+#: 契约版本号（契约清单第 13 项）。**版本升级 = major 变更**——
+#: 改了它，旧录像与旧存档一律不再兼容（架构 §5.5 / 需求 §8）。
+CONTRACT_VERSION = "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +346,12 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                 PayloadField("toX", "int", "移动目标横坐标"),
                 PayloadField("toY", "int", "移动目标纵坐标"),
                 PayloadField("blocked", "bool", "是否受阻；受阻时实际未移动"),
-                PayloadField("cause", "str", "成因，如 command / gravity / softDrop"),
+                PayloadField(
+                    "cause",
+                    "str",
+                    "成因字符串，如 command / gravity / softDrop；"
+                    "**与元数据的 cause（命令追溯标识）无关**，两者同名不同义",
+                ),
             ),
         ),
     ),
@@ -446,7 +418,11 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                 PayloadField("y", "int", "锁定位置纵坐标"),
                 PayloadField("cells", COORD_CELLS, "占据的格子坐标 (x, y)"),
                 PayloadField("tSpin", "str", "T-Spin 标记，取值域由规则集定义"),
-                PayloadField("cause", "str", "成因，如 ground / hardDrop"),
+                PayloadField(
+                    "cause",
+                    "str",
+                    "成因字符串，如 ground / hardDrop；**与元数据的 cause 无关**",
+                ),
             ),
         ),
     ),
@@ -457,7 +433,11 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "kernel",
             (
                 PayloadField("stored", "str", "存入暂存槽的方块类型"),
-                PayloadField("taken", "str", "取出暂存槽的方块类型"),
+                PayloadField(
+                    "taken",
+                    "str | None",
+                    "取出暂存槽的方块类型；首次暂存时槽原为空，取 None",
+                ),
             ),
         ),
     ),
@@ -480,9 +460,16 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "board",
             "kernel",
             (
-                PayloadField("cells", CELLS, "变化格子清单 (x, y, 新值)"),
                 PayloadField(
-                    "cause", "str", "成因，如 lock / clear / collapse / writeCells / garbage"
+                    "cellChanges",
+                    CELLS,
+                    "变化格子清单 (x, y, 新值)；与 piece 事件只给坐标的 cells 不同义",
+                ),
+                PayloadField(
+                    "cause",
+                    "str",
+                    "成因字符串，如 lock / clear / collapse / writeCells / garbage；"
+                    "**与元数据的 cause（命令追溯标识）无关**，两者同名不同义",
                 ),
             ),
         ),
@@ -493,7 +480,11 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "board",
             "kernel",
             (
-                PayloadField("rows", "tuple[int, ...]", "被消行的行号"),
+                PayloadField(
+                    "rowIndexes",
+                    "tuple[int, ...]",
+                    "被消行的行号；注意与垃圾行的 rows（行数）不同义",
+                ),
                 PayloadField("count", "int", "消行数"),
                 PayloadField("tSpin", "str", "T-Spin 标记"),
                 PayloadField("classKey", "str", "计分类别键，如 single / double / triple / tetris"),
@@ -503,7 +494,15 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
     (
         "board:collapsed",
         _spec(
-            "board", "kernel", (PayloadField("cells", CELLS, "塌落后变化的格子清单 (x, y, 新值)"),)
+            "board",
+            "kernel",
+            (
+                PayloadField(
+                    "cellChanges",
+                    CELLS,
+                    "塌落后变化的格子清单 (x, y, 新值)；与 piece 事件只给坐标的 cells 不同义",
+                ),
+            ),
         ),
     ),
     (
@@ -512,7 +511,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "board",
             "kernel",
             (
-                PayloadField("rows", "int", "注入的垃圾行数"),
+                PayloadField("rows", "int", "注入的垃圾行数（行数，非行号）"),
                 PayloadField("holes", "tuple[int, ...]", "空洞所在列"),
             ),
         ),
@@ -532,7 +531,11 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                 PayloadField("delta", "int", "分数增量"),
                 PayloadField("before", "int", "变化前分数"),
                 PayloadField("after", "int", "变化后分数"),
-                PayloadField("cause", "str", "成因，如 clear / softDrop"),
+                PayloadField(
+                    "cause",
+                    "str",
+                    "成因字符串，如 clear / softDrop；**与元数据的 cause 无关**",
+                ),
             ),
         ),
     ),
@@ -565,6 +568,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "kernel",
             (
                 PayloadField("version", "int", "状态版本号，每次变更递增"),
+                PayloadField("rule", "str", "规则集标识，用于区分标准玩法与变体"),
                 PayloadField("phase", "str", "生命周期状态"),
                 PayloadField("score", "int", "当前分数"),
                 PayloadField("lines", "int", "累计消行数"),
@@ -572,7 +576,12 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                 PayloadField("combo", "int", "当前连击数"),
                 PayloadField("b2b", "bool", "当前背面连击状态"),
                 PayloadField("piecesPlaced", "int", "已放置方块数"),
-                PayloadField("activeType", "str | None", "活动方块类型；None 表示等待出生"),
+                PayloadField(
+                    "activeType",
+                    "str | None",
+                    "活动方块类型；None 表示等待出生。**这是快照 `active` 的类型投影**——"
+                    "只给类型，不给朝向与坐标；要完整活动方块请读快照",
+                ),
                 PayloadField("hold", "str | None", "暂存的方块类型"),
                 PayloadField("holdUsed", "bool", "本块是否已用过暂存"),
                 PayloadField("next", "tuple[str, ...]", "预览队列"),
@@ -598,7 +607,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "log",
             "log",
             (
-                PayloadField("level", "str", "日志级别"),
+                PayloadField("level", "str", "日志级别（info / warn / error 等），非游戏等级"),
                 PayloadField("channel", "str", "日志频道"),
                 PayloadField("message", "str", "日志消息"),
                 PayloadField("data", SCALAR_MAP, "附加数据，扁平 JSON 标量"),

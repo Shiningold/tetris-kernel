@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from tetris_kernel.contracts import (
+    CONTRACT_VERSION,
     ENVELOPE_FIELDS,
     EVENT_TYPES,
     METADATA_KEYS,
@@ -99,6 +100,241 @@ EXPECTED_PRODUCER_COUNTS: dict[str, int] = {
 }
 
 
+#: 每条事件的负载字段声明（字段名 → 类型），独立转录自 `contracts/events.py`。
+#:
+#: 这张表是**字段级的牙齿**：删掉一个字段、把一个类型改成别的、或悄悄加一个
+#: 字段，这里都会变红。需求 §8.1 的「关键负载」列是"举例"，声明必须**自足**
+#: ——回放校验要靠它，不能只写"够用就行"的半截字段（plan-M0.md S2 常见坑）。
+EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
+    "kernel:ready": {
+        "seed": "int",
+        "rule": "str",
+        "mode": "str",
+    },
+    "kernel:system:installed": {
+        "name": "str",
+        "config": "tuple[tuple[str, int | float | str | bool | None], ...]",
+    },
+    "kernel:system:removed": {
+        "name": "str",
+        "clean": "bool",
+    },
+    "kernel:error": {
+        "subscriber": "str",
+        "eventType": "str",
+        "eventSeq": "int",
+        "error": "str",
+    },
+    "kernel:quota-exceeded": {
+        "quota": "str",
+        "limit": "int",
+        "actual": "int",
+    },
+    "command:received": {
+        "commandType": "str",
+        "source": "str",
+        "args": (
+            "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
+            "| tuple[tuple[int, int, int], ...]], ...]"
+        ),
+    },
+    "command:accepted": {
+        "commandType": "str",
+        "commandSeq": "int",
+        "args": (
+            "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
+            "| tuple[tuple[int, int, int], ...]], ...]"
+        ),
+    },
+    "command:rejected": {
+        "commandType": "str",
+        "reason": "str",
+        "args": (
+            "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
+            "| tuple[tuple[int, int, int], ...]], ...]"
+        ),
+        "mergedCount": "int",
+    },
+    "game:created": {
+        "seed": "int",
+        "rule": "str",
+    },
+    "game:started": {
+        "level": "int",
+        "seed": "int",
+    },
+    "game:paused": {
+        "phase": "str",
+    },
+    "game:resumed": {
+        "phase": "str",
+    },
+    "game:over": {
+        "score": "int",
+        "lines": "int",
+        "reason": "str",
+    },
+    "game:reset": {
+        "seed": "int",
+    },
+    "clock:tick": {
+        "frame": "int",
+        "stepMs": "int",
+    },
+    "clock:gravity": {
+        "pieceType": "str",
+        "x": "int",
+        "y": "int",
+        "dx": "int",
+        "dy": "int",
+    },
+    "input:raw": {
+        "action": "str",
+        "kind": "str",
+    },
+    "input:intent": {
+        "action": "str",
+        "commandType": "str",
+    },
+    "rng:next": {
+        "value": "float | int",
+        "seq": "int",
+        "stateFingerprint": "str",
+    },
+    "piece:spawned": {
+        "pieceType": "str",
+        "x": "int",
+        "y": "int",
+        "next": "tuple[str, ...]",
+    },
+    "piece:moved": {
+        "fromX": "int",
+        "fromY": "int",
+        "toX": "int",
+        "toY": "int",
+        "blocked": "bool",
+        "cause": "str",
+    },
+    "piece:rotated": {
+        "fromRotation": "int",
+        "toRotation": "int",
+        "direction": "str",
+        "blocked": "bool",
+    },
+    "piece:kicked": {
+        "kickIndex": "int",
+        "offsetX": "int",
+        "offsetY": "int",
+    },
+    "piece:softdrop": {
+        "pieceType": "str",
+        "x": "int",
+        "y": "int",
+    },
+    "piece:harddrop": {
+        "pieceType": "str",
+        "distance": "int",
+        "x": "int",
+        "y": "int",
+        "cells": "tuple[tuple[int, int], ...]",
+    },
+    "piece:locked": {
+        "pieceType": "str",
+        "rotation": "int",
+        "x": "int",
+        "y": "int",
+        "cells": "tuple[tuple[int, int], ...]",
+        "tSpin": "str",
+        "cause": "str",
+    },
+    "piece:held": {
+        "stored": "str",
+        "taken": "str | None",
+    },
+    "piece:hold-denied": {
+        "reason": "str",
+    },
+    "piece:lock-delay-start": {
+        "delayFrames": "int",
+    },
+    "piece:lock-delay-reset": {
+        "resetCount": "int",
+    },
+    "board:changed": {
+        "cellChanges": "tuple[tuple[int, int, int], ...]",
+        "cause": "str",
+    },
+    "board:lines-cleared": {
+        "rowIndexes": "tuple[int, ...]",
+        "count": "int",
+        "tSpin": "str",
+        "classKey": "str",
+    },
+    "board:collapsed": {
+        "cellChanges": "tuple[tuple[int, int, int], ...]",
+    },
+    "board:garbage-received": {
+        "rows": "int",
+        "holes": "tuple[int, ...]",
+    },
+    "queue:refilled": {
+        "next": "tuple[str, ...]",
+    },
+    "score:changed": {
+        "delta": "int",
+        "before": "int",
+        "after": "int",
+        "cause": "str",
+    },
+    "score:combo-changed": {
+        "combo": "int",
+    },
+    "score:b2b-changed": {
+        "b2b": "bool",
+    },
+    "progress:level-changed": {
+        "fromLevel": "int",
+        "toLevel": "int",
+        "gravityInterval": "int",
+    },
+    "state:changed": {
+        "version": "int",
+        "rule": "str",
+        "phase": "str",
+        "score": "int",
+        "lines": "int",
+        "level": "int",
+        "combo": "int",
+        "b2b": "bool",
+        "piecesPlaced": "int",
+        "activeType": "str | None",
+        "hold": "str | None",
+        "holdUsed": "bool",
+        "next": "tuple[str, ...]",
+    },
+    "render:frame": {
+        "frame": "int",
+        "durationUs": "int",
+    },
+    "log:entry": {
+        "level": "str",
+        "channel": "str",
+        "message": "str",
+        "data": "tuple[tuple[str, int | float | str | bool | None], ...]",
+    },
+    "metric:sampled": {
+        "frame": "int",
+        "metrics": "tuple[tuple[str, int | float], ...]",
+    },
+    "achievement:unlocked": {
+        "id": "str",
+        "title": "str",
+        "triggerType": "str",
+        "triggerSeq": "int",
+    },
+}
+
+
 def test_event_registry_size() -> None:
     """事件总数 = 44（需求 §8.1）。"""
     assert len(EVENT_TYPES) == 44
@@ -145,6 +381,14 @@ def test_event_payload_declared(name: str) -> None:
         assert field.doc, f"{name}.{field.name}"
 
 
+@pytest.mark.parametrize("name", sorted(EXPECTED_PAYLOAD))
+def test_event_payload_fields_match_expectation(name: str) -> None:
+    """负载字段名与类型逐条相等——字段级漂移必须变红（plan-M0.md S2 任务第 2 条）。"""
+    spec: EventSpec = EVENT_TYPES[name]
+    actual = {field.name: field.type for field in spec.payload}
+    assert actual == EXPECTED_PAYLOAD[name], name
+
+
 def test_command_events_carry_args() -> None:
     """命令三段生命周期都必须带不可变 args（架构 §7.2）。"""
     for name in ("command:received", "command:accepted", "command:rejected"):
@@ -160,14 +404,14 @@ def test_args_payload_forbids_float() -> None:
 
 
 def test_envelope_fields() -> None:
-    """信封五字段：序号 / 帧号 / 类型 / 负载 / 元数据（需求 §8 / 架构 §5.1）。"""
-    assert [field.name for field in ENVELOPE_FIELDS] == [
-        "seq",
-        "frame",
-        "type",
-        "payload",
-        "metadata",
-    ]
+    """信封五字段**及其类型**（需求 §8 / 架构 §5.1，契约清单第 1 项）。"""
+    assert {field.name: field.type for field in ENVELOPE_FIELDS} == {
+        "seq": "int",
+        "frame": "int",
+        "type": "str",
+        "payload": "tuple[tuple[str, int | str | bool | float | None | tuple[...]], ...]",
+        "metadata": "tuple[tuple[str, int | str | bool | float | None | tuple[...]], ...]",
+    }
 
 
 def test_metadata_keys() -> None:
@@ -178,3 +422,36 @@ def test_metadata_keys() -> None:
         "producer": "str",
         "cause": "tuple[int, int] | None",
     }
+
+
+def test_contract_version_declared() -> None:
+    """契约版本号是机器可读的（契约清单第 13 项，plan-M0.md §5.3 归 S2）。"""
+    assert CONTRACT_VERSION == "v1"
+
+
+#: 同名但**跨域**的字段：同名不同型是有意为之，各自 doc 已消歧。
+#:
+#: - `level`：`game:started` / `state:changed` 是游戏等级（int），
+#:   `log:entry` 是日志级别（str）。两个域各用各的惯例，改名反而会让
+#:   日志字段偏离日志系统的通行叫法。
+#: - `cause`：负载层是成因字符串（str），元数据层是命令追溯标识
+#:   （`tuple[int, int] | None`）——**跨层**同名，断言不查元数据层。
+SAME_NAME_DIFFERENT_TYPE_ALLOWED = {"level"}
+
+
+def test_same_field_name_means_same_type() -> None:
+    """**同层**同名负载字段必须同类型——跨事件同名不同型会让通用提取代码踩空。
+
+    只查负载层（不含元数据）：元数据的 `cause` 是命令追溯标识，与负载的
+    `cause`（成因字符串）同名不同义是**有意为之**，已在各自 doc 里消歧。
+    """
+    seen: dict[str, tuple[str, str]] = {}
+    for name, spec in EVENT_TYPES.items():
+        for field in spec.payload:
+            previous = seen.get(field.name)
+            if previous is not None:
+                assert previous[1] == field.type or field.name in (
+                    SAME_NAME_DIFFERENT_TYPE_ALLOWED
+                ), f"{field.name} 在 {previous[0]} 是 {previous[1]}，在 {name} 却是 {field.type}"
+            else:
+                seen[field.name] = (name, field.type)
