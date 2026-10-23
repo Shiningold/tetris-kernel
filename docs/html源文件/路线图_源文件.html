@@ -95,32 +95,35 @@ p.secl{font-size:11px;color:var(--dim);margin-bottom:13px}
     <h1>TETRIS&nbsp;KERNEL · 迭代路线图</h1>
     <span class="sub">M0 骨架 → M1 可玩 → M2 可观测 → M3 可扩展 → M4 可重构</span>
     <div class="rt">
-      <span class="chip">功能条目 <b>145</b></span>
-      <span class="chip">关键决策 <b>20</b> · 门判据 <b>33</b></span>
+      <span class="chip">功能需求 <b>50</b> · NFR <b>9</b></span>
+      <span class="chip">关键决策 <b>20</b> · 事件 <b>44</b> · 命令 <b>16</b></span>
+      <span class="chip">门判据 <b>5</b> · M0/M1/M3 待补</span>
       <span class="chip on">技术栈 <b>不选型</b></span>
     </div>
   </div>
 
+  <p class="secl" style="margin:-12px 0 16px">图中只写已登记的编号：门判据见需求 §12（已登记 5 条，M0 / M1 / M3 待补）；任务编号随做随定，未登记者不编号。</p>
+
   <div class="tl">
     <div class="node n0"><div class="bar"></div><div class="id">M0</div><div class="nm">骨架</div>
       <div class="ds">命令进、事件出，完全无头跑通</div>
-      <div class="mk">31 条 · 判据 G0-1…G0-7</div></div>
+      <div class="mk">门判据待落定</div></div>
     <div class="gate"><div class="g">G0</div><div class="a">▶</div></div>
     <div class="node n1"><div class="bar"></div><div class="id">M1</div><div class="nm">可玩</div>
       <div class="ds">标准玩法完整，手感达标</div>
-      <div class="mk">28 条 · 判据 G1-1…G1-7</div></div>
+      <div class="mk">门判据待落定</div></div>
     <div class="gate"><div class="g">G1</div><div class="a">▶</div></div>
     <div class="node n2"><div class="bar"></div><div class="id">M2</div><div class="nm">可观测</div>
       <div class="ds">记录、重放、度量、逐帧检视</div>
-      <div class="mk">26 条 · 判据 G2-1…G2-6</div></div>
+      <div class="mk">门判据 G2-1 · G2-4</div></div>
     <div class="gate"><div class="g">G2</div><div class="a">▶</div></div>
     <div class="node n3"><div class="bar"></div><div class="id">M3</div><div class="nm">可扩展</div>
       <div class="ds">新增能力 = 新增文件（机器可验）</div>
-      <div class="mk">28 条 · 判据 G3-1…G3-7</div></div>
+      <div class="mk">门判据待落定</div></div>
     <div class="gate"><div class="g">G3</div><div class="a">▶</div></div>
     <div class="node n4"><div class="bar"></div><div class="id">M4</div><div class="nm">可重构</div>
       <div class="ds">落地变体，兑现"内核零改动"</div>
-      <div class="mk">32 条 · 判据 G4-1…G4-6</div></div>
+      <div class="mk">门判据 G4-1 · G4-2 · G4-6</div></div>
   </div>
 
   <div class="grid">
@@ -131,7 +134,7 @@ p.secl{font-size:11px;color:var(--dim);margin-bottom:13px}
       <div class="cb">
         <div class="lead">产出物是一个没有画面、没有输入、只能被脚本驱动的「逻辑心脏」。目的是在零干扰下把架构约束一次性钉死。</div>
         <div class="row"><div class="k">核心交付</div><div class="v">事件总线 · 命令通道 · 可注入时间源 · 可播种随机源 · 棋盘与方块纯函数 · 最小闭环 <em>（出生→重力→锁定→消行→再出生）</em></div></div>
-        <div class="row"><div class="k">代表条目</div><div class="v"><span class="kv"><span class="g">M0-4</span> 订阅者异常隔离 · <span class="g">M0-13</span> 固定步长禁读墙钟 · <span class="g">M0-15</span> 每次随机发事件 · <span class="g">M0-26</span> 事件完备性检查 · <span class="g">M0-29</span> 命令队列与轮次调度 · <span class="g">M0-31</span> 极简系统契约</span></div></div>
+        <div class="row"><div class="k">代表条目</div><div class="v"><span class="kv">订阅者异常隔离 · 固定步长禁读墙钟 · <span class="g">M0-15</span> 每次随机发事件 · <span class="g">M0-28</span> 契约文档 v1 · 事件完备性检查 · 命令队列与轮次调度 · 极简系统契约</span></div></div>
         <div class="row"><div class="k">开门判据</div><div class="v"><span class="kv">无头 10000 帧 · 状态变更 100% 伴随事件 · 同种子 10 次全等 · <span class="g">命令入队不在本轮生效</span> · 注入抛错订阅者内核存活</span></div></div>
         <div class="deco"><b>决策 1 重入语义</b>：<span class="pick">命令入队 + 同帧多轮（Round）</span>。订阅者在分发期间派发的命令一律进队列，当前分发结束后按 FIFO 执行，其产生的事件触发新一轮分发 —— 同一事件的所有订阅者因此看到同一份状态，递归被展开为轮次而非调用栈。轮次数与单帧命令数双上限，超限丢弃余量并发错误事件；AI 在帧内派的命令仍于本帧下一轮生效，不损失响应性。<br>
         <b>决策 2 事件粒度</b>：语义事件 / 批量差异事件 / 调试事件三级，调试事件默认关闭。<br>
@@ -162,7 +165,7 @@ p.secl{font-size:11px;color:var(--dim);margin-bottom:13px}
         <div class="row"><div class="k">开门判据</div><div class="v"><span class="kv">200 局回放四项全等 · 抛错订阅者被隔离 · 10 分钟 P99 达标 · <span class="g">关闭全部可观测系统后内核逐帧一致</span></span></div></div>
         <div class="deco"><b>决策 9 回放录什么</b>：<span class="pick">录命令序列，不录事件序列</span>。事件粒度会随版本调整而失效，不适合长期存档；事件流只作为回归断言基线。录的是被接受的命令（含 AI 的），来源随命令记录；<b>回放期间命令源独占</b>，AI / 教学 / 网络系统须卸载，否则「重放时 AI 也在下」会直接摧毁确定性。<br>
         <b>决策 10 日志级别放日志系统内</b>：事件不该知道自己有多重要 —— 同一事件排障时是 trace，演示时可能是 info。<br>
-        <b>G2-6 是关键</b>：它证明可观测性是纯旁路，没有反向污染内核。</div>
+        <b>「关闭全部可观测系统后内核逐帧一致」是 M2 的关键判据</b>：它证明可观测性是纯旁路，没有反向污染内核。</div>
       </div>
     </div>
 
