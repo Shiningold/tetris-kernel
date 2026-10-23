@@ -97,7 +97,7 @@ S18 收尾（PROGRESS / ai_docs / README）
 | S0 | 规格与计划入档 | — | 已完成 | `2185114` |
 | S1 | 分层空壳与打包可用 | — | 已完成 | `facd1d4`（配置修复另见 `cb24f7d`） |
 | S2 | 事件契约声明（44） | 清单 1/7/8 | 已完成 | `62a8c9a` |
-| S3 | 命令契约声明（16）+ 拒绝原因（12） | 清单 5/6 | 未开始 | — |
+| S3 | 命令契约声明（16）+ 拒绝原因（12） | 清单 5/6 | 已完成 | `e4b4c63` |
 | S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/10/15 | 未开始 | — |
 | S5 | 规则签名声明（8）+ `RuleContext` | 清单 9 | 未开始 | — |
 | S6 | 契约校验与基线脚本 | 清单 11/12/13/16 | 未开始 | — |
@@ -213,21 +213,34 @@ S18 收尾（PROGRESS / ai_docs / README）
 
 - **目标**：16 个命令的参数规格与 12 个拒绝原因有机器可读声明。
 - **任务**
-  - [ ] 建 `contracts/commands.py`：命令规格表（命令名 → 参数名 / 参数类型 / 是否可空 / 可拒绝情形）
-  - [ ] 拒绝原因枚举（**只增不改**）：`not_started` `paused` `game_over` `quota_exceeded` `invalid_argument` `level_out_of_range` `out_of_bounds` `illegal_transition` `no_active_piece` `hold_already_used` `not_authorized` `write_condition_failed`
-  - [ ] `args` 规格约束落地：只含 JSON 标量与元组、**禁浮点**、反序列化按命令类型还原
-  - [ ] 命令集**封闭且可枚举**（FR-2.1）：声明里是全集，不留"以后可能加"的占位
-- **涉及文件**：`src/tetris_kernel/contracts/commands.py` · `src/tetris_kernel/contracts/__init__.py`
+  - [x] 建 `contracts/commands.py`：命令规格表（命令名 → 参数名 / 参数类型 / 是否可空 / 可拒绝情形）
+  - [x] 拒绝原因枚举（**只增不改**）：`not_started` `paused` `game_over` `quota_exceeded` `invalid_argument` `level_out_of_range` `out_of_bounds` `illegal_transition` `no_active_piece` `hold_already_used` `not_authorized` `write_condition_failed`
+  - [x] `args` 规格约束落地：只含 JSON 标量与元组、**禁浮点**、反序列化按命令类型还原
+  - [x] 命令集**封闭且可枚举**（FR-2.1）：声明里是全集，不留"以后可能加"的占位
+- **涉及文件**：`src/tetris_kernel/contracts/commands.py` · `src/tetris_kernel/contracts/__init__.py` · `src/tetris_kernel/contracts/types.py`（新增 `INT_TUPLE` 常量）· `src/tetris_kernel/contracts/events.py`（改用该常量）· `tests/test_contracts_declarations.py`
 - **验证方案**
   1. 测试：命令总数 = 16；`setLevel` / `injectGarbage` / `writeCells` 三条**有参**，其余 13 条**无参**。
   2. 测试：拒绝原因集合 = 12 个值，与需求 §8.2 表逐条相等。
   3. 测试：所有命令的 `args` 声明里**不出现 `float`**（把这条写成断言，别靠眼睛）。
   4. 机检：`writeCells` 的 `cells` 类型是 `tuple[tuple[int, int, int], ...]`；`injectGarbage` 的 `holes` 是 `tuple[int, ...]`。
-- **完成判据**：声明与需求 §8.2 相符，四条断言全过。
-- **提交**：`新功能：新增 16 条命令与拒绝原因的契约声明`
+- **完成判据**：声明与需求 §8.2 相符，四条断言全过。**已达成**（113 passed；反向验证见下）。
+- **提交**：`新功能：新增 16 条命令与拒绝原因的契约声明`（`e4b4c63`）；前置一笔 `重构：统一 tuple[int, ...] 取值域常量的引用`（`5fffbbb`）
+- **反向验证**（实跑）
+  - `setLevel` 的 `level` 由 `int` 改成 `float` → **4 条断言同时变红**（转录核对 · 禁浮点 · 取值域成员 · 该命令参数类型）。
+  - 给 `setLevel` 补上三个生命周期原因 → **门禁不变式变红**（`setLevel` 不该受门禁约束）。
+  - 恢复后 113 passed。
+- **落定的判断**（需求 §8.2 没写死，实现期最容易各写各的三处）
+  - **统一生命周期门禁**：除 `start` / `pause` / `resume` / `reset` 外，改棋盘内容或活动方块位置的命令在 `phase != running` 时一律被拒，原因取 `not_started` / `paused` / `game_over`。`setLevel` **不受**门禁约束（它既不改棋盘内容也不改活动方块位置）。
+  - **配额是跨切的**：架构 §6.4 的命令数 / 轮次数配额超限时，被丢弃的**任何**命令都以 `quota_exceeded` 被拒，所以 16 条命令都带这个原因；`writeCells` 的单帧写入格子上限复用同一个原因值。
+  - **参数不合规格统一 `invalid_argument`**：类型不对、参数多余都算，16 条命令都可能因它被拒。
+  - 生命周期命令的状态问题走 `illegal_transition`（状态类），不是门禁三值。
+  - **门禁是推导值不是名单**：`is_lifecycle_gated()` 由"三个生命周期原因齐全"推出，另写一份名单的话加命令的人漏改名单、门禁就会静默失效。
 - **常见坑**
   - **`args` 允许浮点** → JSON 里 `1.0` 与 `1` 不可区分，重放拿到不同参数（B-7 / ADR-025）。注意 **`extensions` 允许浮点，口径不同是对的**：`args` 参与重放，`extensions` 不参与。
   - 把"旋转无合法落点"写进拒绝原因 → 它**不在列**：命令仍被接受，另发受阻事件（ADR-043）。
+  - **只照抄需求 §8.2 的「可被拒绝的情形」列** → 那一列是按命令列的散文，**漏了三条跨切规则**（门禁 / 配额 / 参数）。只抄列的话，`moveLeft` 的声明里不会有 `paused`，实现期就会出现"暂停期间命令照样执行"。
+  - **参数类型复制字面量** → `tuple[int, ...]` 这个形状原先在 `types.py` 的 `ARGS_VALUE` 联合与 `events.py` 的字段声明里各写了一遍，两处会静默分叉。已补 `types.INT_TUPLE` 并全部改为引用（架构 §4.4 末条）。
+  - **参数类型不在 `ARGS_VALUE` 取值域内** → 两处各写一份，改动时基线显示全绿而实际已分叉。已写成断言（`test_command_arg_types_within_args_value_domain`）。
 
 ---
 
