@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import BOARD_CELLS, INT_TUPLE, SCALAR_MAP, VECTOR2
+from .types import BOARD_CELLS, INT_TUPLE, NEXT_QUEUE, SCALAR_MAP, VECTOR2
 
 # ---------------------------------------------------------------------------
 # 声明结构
@@ -180,7 +180,7 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
         ),
         "hold": _field("hold", "str | None", "暂存的方块类型"),
         "holdUsed": _field("holdUsed", "bool", "本块是否已用过暂存"),
-        "next": _field("next", "tuple[str, ...]", "预览队列（5 个）"),
+        "next": _field("next", NEXT_QUEUE, "预览队列（5 个）"),
         "score": _field("score", "int", "当前分数"),
         "lines": _field("lines", "int", "累计消行数"),
         "level": _field("level", "int", "当前等级"),
@@ -265,7 +265,7 @@ KERNEL_STATE_TO_SNAPSHOT: tuple[KernelStateEntry, ...] = (
 #:
 #: 它们只活在当前进程，存档与渲染都不需要——事件序号（总线的唯一时间轴）、
 #: 轮次计数、命令数计数、同因拒绝合并表、订阅注册表、随机源实例本体（快照只
-#: 带走它的可序列化状态，见 `KERNEL_STATE_TO_SNAPSHOT` 里 `rngSource` 那条）。
+#: 带走它的可序列化状态，见 `KERNEL_STATE_TO_SNAPSHOT` 里 `rngInstance` 那条）。
 #:
 #: **用英文标识符，不用中文散文**：守卫要真的守得住，就得和快照字段、
 #: 内核状态字段**同一套命名体系**——两边都是英文标识符，"跑错的东西混进

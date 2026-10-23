@@ -71,6 +71,7 @@ from .types import (
     COORD_CELLS,
     INT_TUPLE,
     JSON_VALUE,
+    NEXT_QUEUE,
     SCALAR_MAP,
     VECTOR2,
 )
@@ -99,6 +100,7 @@ __all__ = [
     "LIFECYCLE_REJECT_REASONS",
     "METADATA_KEYS",
     "NAMED_STRUCTS",
+    "NEXT_QUEUE",
     "PRODUCER_LABELS",
     "REJECT_REASONS",
     "REJECT_REASON_CATEGORIES",

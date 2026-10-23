@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import ARGS, CELLS, COORD_CELLS, INT_TUPLE, JSON_VALUE, SCALAR_MAP
+from .types import ARGS, CELLS, COORD_CELLS, INT_TUPLE, JSON_VALUE, NEXT_QUEUE, SCALAR_MAP
 
 #: 契约版本号（契约清单第 13 项）。**版本升级 = major 变更**——
 #: 改了它，旧录像与旧存档一律不再兼容（架构 §5.5 / 需求 §8）。
@@ -331,7 +331,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                 PayloadField("pieceType", "str", "方块类型"),
                 PayloadField("x", "int", "出生横坐标"),
                 PayloadField("y", "int", "出生纵坐标"),
-                PayloadField("next", "tuple[str, ...]", "预览队列"),
+                PayloadField("next", NEXT_QUEUE, "预览队列"),
             ),
         ),
     ),
@@ -519,7 +519,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
     # ---------------- queue（1 条） ----------------
     (
         "queue:refilled",
-        _spec("queue", "kernel", (PayloadField("next", "tuple[str, ...]", "补充后的预览队列"),)),
+        _spec("queue", "kernel", (PayloadField("next", NEXT_QUEUE, "补充后的预览队列"),)),
     ),
     # ---------------- score（3 条） ----------------
     (
@@ -584,7 +584,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                 ),
                 PayloadField("hold", "str | None", "暂存的方块类型"),
                 PayloadField("holdUsed", "bool", "本块是否已用过暂存"),
-                PayloadField("next", "tuple[str, ...]", "预览队列"),
+                PayloadField("next", NEXT_QUEUE, "预览队列"),
             ),
         ),
     ),

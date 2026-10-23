@@ -70,8 +70,10 @@ r"""契约层共用的类型取值域。
    会逼内核在**每次调用规则接口时**深拷贝一份棋盘——消行判定是逐方块调用的
    热路径，拷贝会把规则模块变成性能瓶颈。`Sequence[T]` 表达的是"只读视图"。
    **形态 10 是 S5 落地规则签名时补的**（架构 §7.3.1 的签名表原文写的就是
-   `Sequence[Sequence[int]]`）。仓内形态 10 的串只有三条：`types.BOARD_VIEW`
-   与 `score_clear` 的 `groups: Sequence[ClearGroup]`。
+   `Sequence[Sequence[int]]`）。仓内形态 10 的**串只有两条**
+   （`types.BOARD_VIEW` 与 `Sequence[ClearGroup]`），**引用处三处**：
+   `scan_clears` / `classify_placement` 的 `board` 参数与 `score_clear` 的
+   `groups`。
 
 **联合的成员顺序不参与语义，但一经写入不得重排**——它会进基线哈希，重排
 等于"已有键的哈希变化"。
@@ -87,6 +89,14 @@ CELLS = "tuple[tuple[int, int, int], ...]"
 
 #: 整数清单：列号 / 行号等一维整数序列。
 INT_TUPLE = "tuple[int, ...]"
+
+#: 预览队列：方块类型的清单。
+#:
+#: 快照的 `next` 与三个事件的 `next` 负载（`piece:spawned` · `queue:refilled` ·
+#: `state:changed`）是**同一份形状**，所以引用同一个常量——**引用处一律用
+#: 常量，不复制字面量**（架构 §4.4 末条）：复制字面量的后果是常量改了、声明
+#: 没跟着改，两处静默分叉，基线却显示全绿。
+NEXT_QUEUE = "tuple[str, ...]"
 
 #: 命令 `args` 的取值域：**禁浮点**（B-7 / ADR-025），只含 JSON 标量与元组。
 #: 覆盖契约 v1 的 16 条命令：`setLevel` 的 int、`injectGarbage` 的 int 与
@@ -137,6 +147,7 @@ __all__ = [
     "COORD_CELLS",
     "INT_TUPLE",
     "JSON_VALUE",
+    "NEXT_QUEUE",
     "SCALAR_MAP",
     "VECTOR2",
 ]

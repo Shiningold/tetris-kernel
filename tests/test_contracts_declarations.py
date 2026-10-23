@@ -41,6 +41,7 @@ from tetris_kernel.contracts import (
     LIFECYCLE_REJECT_REASONS,
     METADATA_KEYS,
     NAMED_STRUCTS,
+    NEXT_QUEUE,
     PRODUCER_LABELS,
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
@@ -388,8 +389,17 @@ def test_event_registry_size() -> None:
 
 
 def test_event_registry_matches_requirement_table() -> None:
-    """注册表与需求 §8.1 的事件目录逐条相等：名字、命名空间、产出者。"""
+    """注册表与需求 §8.1 的事件目录逐条相等：名字、命名空间、产出者。
+
+    **三张表的键集合必须相等**：`EXPECTED_EVENTS`（名字 + 命名空间 + 产出者）
+    与 `EXPECTED_PAYLOAD`（字段级转录）是两张**各自独立**的表。键集合不等时，
+    从 `EXPECTED_PAYLOAD` 里删掉一个事件 → 该事件的字段级用例不再生成 →
+    **该事件静默失去字段级牙齿**（事件本身仍被另一张表守住，所以不是红灯，
+    只是少了一层守护）。这类「删一个键就少守一处」的退化，正是契约面最怕的
+    形状。
+    """
     assert set(EVENT_TYPES) == set(EXPECTED_EVENTS)
+    assert set(EXPECTED_PAYLOAD) == set(EVENT_TYPES)
     for name, (namespace, producer) in EXPECTED_EVENTS.items():
         spec = EVENT_TYPES[name]
         assert (spec.namespace, spec.producer) == (namespace, producer), name
@@ -1009,7 +1019,7 @@ def test_coordinate_conventions_match_requirement() -> None:
 
 
 def test_snapshot_types_reference_shared_constants() -> None:
-    """`extensions` / `rngState` / `board.cells` 引用 types.py 的取值域常量，不复制字面量。
+    """`extensions` / `rngState` / `board.cells` / `next` 引用 types.py 的取值域常量，不复制字面量。
 
     架构 §4.4 末条：同一形状只允许一处权威定义，引用处用常量——复制字面量
     会让两处各改各的，基线显示全绿而实际已经分叉。
@@ -1017,8 +1027,21 @@ def test_snapshot_types_reference_shared_constants() -> None:
     types_map = {name: field.type for name, field in SNAPSHOT_FIELDS.items()}
     assert types_map["extensions"] == SCALAR_MAP
     assert types_map["rngState"] == f"{INT_TUPLE} | None"
+    assert types_map["next"] == NEXT_QUEUE
     board_map = {name: field.type for name, field in BOARD_FIELDS.items()}
     assert board_map["cells"] == BOARD_CELLS
+
+
+def test_next_queue_payload_fields_reference_shared_constant() -> None:
+    """预览队列的 4 处声明引用 `types.NEXT_QUEUE`，不复制字面量。
+
+    快照的 `next` 与三个事件的 `next` 负载是**同一份形状**（架构 §4.4 末条）：
+    复制字面量的后果是常量改了、声明没跟着改，两处静默分叉而基线显示全绿。
+    """
+    for event_type in ("piece:spawned", "queue:refilled", "state:changed"):
+        field = next(f for f in EVENT_TYPES[event_type].payload if f.name == "next")
+        assert field.type == NEXT_QUEUE, event_type
+    assert SNAPSHOT_FIELDS["next"].type == NEXT_QUEUE
 
 
 def test_field_spec_names_match_their_keys() -> None:
@@ -1094,8 +1117,12 @@ def test_kernel_state_mapping_covers_every_snapshot_leaf() -> None:
     """M0 内核状态清单 ↔ 快照字段：**每个快照叶子字段恰好一个来源**。
 
     快照 = 内核状态全集（spec §7.1）：内核加状态字段，快照必须同步加字段。
-    叶子集合由 `NAMED_STRUCTS` 展开成员表算出——`board` / `active` 不是叶子，
-    它们的 5 + 4 个成员才是。
+    叶子集合由**快照模块自己的** `BOARD_FIELDS` / `ACTIVE_FIELDS` 展开算出——
+    `board` / `active` 不是叶子，它们的 5 + 4 个成员才是。
+
+    **不用 `NAMED_STRUCTS` 展开**：注册表是"哪些名字是命名结构"的判据，命中
+    范围比快照子结构宽得多（规则侧的五个结构也在里面），拿它当"快照里什么是
+    子结构"的判据，耦合一扩就变形（S5 报告 L3 的修订，见 `_snapshot_leaf_paths`）。
     """
     paths = [entry.snapshot_path for entry in KERNEL_STATE_TO_SNAPSHOT]
     assert len(paths) == len(set(paths)), "同一个快照字段被列了两次"
