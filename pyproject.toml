@@ -53,12 +53,11 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pyright]
 include = ["src"]
 pythonVersion = "3.12"
-# 默认 standard；内核与总线走 strict（见下方 overrides）
+# 默认 standard；内核与总线走 strict（见 strict 列表）
+# 注意：pyright 1.1.414 的配置已无 "overrides" 键——写 [[tool.pyright.overrides]]
+# 会被判为 unrecognized setting 而**静默失效**，子目录加严只能用 "strict" 路径列表。
 typeCheckingMode = "standard"
-
-[[tool.pyright.overrides]]
-include = ["src/tetris_kernel/kernel", "src/tetris_kernel/bus"]
-typeCheckingMode = "strict"
+strict = ["src/tetris_kernel/kernel", "src/tetris_kernel/bus"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
