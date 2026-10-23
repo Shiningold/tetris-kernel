@@ -281,6 +281,14 @@ tools/
 内核内部棋盘是可变 `list[list[int]]`，规则只读，写成 tuple 会逼内核在热路径上
 反复深拷贝。
 
+**取值域归谁定**：**内核要解读的字段**（`ctx.axis` 重力方向、`group.axis` 消行
+轴）取值域由契约层钉死且**构造即校验**；**内核只透传的字段**（`tSpin` /
+`classKey`）取值域由规则集定义。
+
+**`stepMs` 的语义待定**：架构只给了字段名与类型，没说它是谁算、给谁用（事件侧
+`gravityInterval` 是逻辑帧数，毫秒这条线在契约里没有第二个落点）——**实现期按
+major 变更流程定**。
+
 > 上表的**机器可读版**已落 `contracts/rules.py`（S5）：`RULE_SIGNATURES`（8 条，
 > 参数名 + 类型 + 返回类型）+ `RuleContext` 与四个中性交换结构（frozen dataclass）；
 > 命名结构注册表在 `contracts/structures.py` 的 `NAMED_STRUCTS`（结构名 → 成员表，
