@@ -50,19 +50,25 @@ from __future__ import annotations
 #: 任意 JSON 兼容取值（含浮点）：用于信封的负载 / 元数据容器（形态 1 + 2 + 8）。
 JSON_VALUE = "int | str | bool | float | None | tuple[...]"
 
+#: 格子清单：`(x, y, 新值)`。
+CELLS = "tuple[tuple[int, int, int], ...]"
+
+#: 整数清单：列号 / 行号等一维整数序列。
+INT_TUPLE = "tuple[int, ...]"
+
 #: 命令 `args` 的取值域：**禁浮点**（B-7 / ADR-025），只含 JSON 标量与元组。
 #: 覆盖契约 v1 的 16 条命令：`setLevel` 的 int、`injectGarbage` 的 int 与
-#: `tuple[int, ...]`、`writeCells` 的 `tuple[tuple[int, int, int], ...]`。
-ARGS_VALUE = "int | str | bool | None | tuple[int, ...] | tuple[tuple[int, int, int], ...]"
+#: `INT_TUPLE`、`writeCells` 的 `CELLS`。
+#:
+#: **引用处一律用常量，不复制字面量**（架构 §4.4 末条）——这里的成员就是下面
+#: 两个常量，声明侧引用它们即可，改一处不会与声明静默分叉。
+ARGS_VALUE = f"int | str | bool | None | {INT_TUPLE} | {CELLS}"
 
 #: 命令 `args` 的容器类型：字段名 → 取值，顺序稳定（不可变元组）。
 ARGS = f"tuple[tuple[str, {ARGS_VALUE}], ...]"
 
 #: 扁平 JSON 标量映射（插件配置、日志数据）：字段名 → 标量。
 SCALAR_MAP = "tuple[tuple[str, int | float | str | bool | None], ...]"
-
-#: 格子清单：`(x, y, 新值)`。
-CELLS = "tuple[tuple[int, int, int], ...]"
 
 #: 格子坐标清单：`(x, y)`。
 COORD_CELLS = "tuple[tuple[int, int], ...]"
@@ -72,6 +78,7 @@ __all__ = [
     "ARGS_VALUE",
     "CELLS",
     "COORD_CELLS",
+    "INT_TUPLE",
     "JSON_VALUE",
     "SCALAR_MAP",
 ]

@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import ARGS, CELLS, COORD_CELLS, JSON_VALUE, SCALAR_MAP
+from .types import ARGS, CELLS, COORD_CELLS, INT_TUPLE, JSON_VALUE, SCALAR_MAP
 
 #: 契约版本号（契约清单第 13 项）。**版本升级 = major 变更**——
 #: 改了它，旧录像与旧存档一律不再兼容（架构 §5.5 / 需求 §8）。
@@ -482,7 +482,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             (
                 PayloadField(
                     "rowIndexes",
-                    "tuple[int, ...]",
+                    INT_TUPLE,
                     "被消行的行号；注意与垃圾行的 rows（行数）不同义",
                 ),
                 PayloadField("count", "int", "消行数"),
@@ -512,7 +512,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "kernel",
             (
                 PayloadField("rows", "int", "注入的垃圾行数（行数，非行号）"),
-                PayloadField("holes", "tuple[int, ...]", "空洞所在列"),
+                PayloadField("holes", INT_TUPLE, "空洞所在列"),
             ),
         ),
     ),

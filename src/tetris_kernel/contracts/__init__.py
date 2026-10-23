@@ -23,6 +23,7 @@ from .types import (
     ARGS_VALUE,
     CELLS,
     COORD_CELLS,
+    INT_TUPLE,
     JSON_VALUE,
     SCALAR_MAP,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "COORD_CELLS",
     "ENVELOPE_FIELDS",
     "EVENT_TYPES",
+    "INT_TUPLE",
     "JSON_VALUE",
     "METADATA_KEYS",
     "PRODUCER_LABELS",
