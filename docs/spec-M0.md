@@ -260,7 +260,7 @@ tools/
 | 边界（拓扑） | `wrap_cell(x: int, y: int, w: int, h: int) -> tuple[int, int]` | 坐标映射**函数**，不是参数 |
 | 重力 | `gravity_vector(ctx: RuleContext) -> tuple[int, int]` | 方向必须是**向量 (x, y)**，横向重力时 dy = 0 |
 | 重力 | `gravity_interval(ctx: RuleContext) -> int` | 多少逻辑帧落一格 |
-| 消行 | `scan_clears(board: Sequence[Sequence[int]], ctx: RuleContext) -> tuple[ClearGroup, ...]` | 返回"轴 + 行/列索引 + 格子清单"，**不能只返回数量** |
+| 消行 | `scan_clears(board: Sequence[Sequence[int]], ctx: RuleContext) -> tuple[ClearGroup, ...]` | 返回"轴 + 行/列索引 + 格子清单 + 放置分类"，**不能只返回数量** |
 | 消行 | `classify_placement(board, placement: PlacementInfo, ctx) -> PlacementClass` | T-Spin 三分 + Mini，**归消行判定模块，不另开第五项** |
 | 计分 | `score_clear(groups, ctx, prev: ScoreState) -> ScoreDelta` | **纯函数**：返回增量与新状态，**落笔由内核做** |
 | 形状 | `shape_cells(ctx, pieceType: str, rotation: int) -> tuple[tuple[int, int], ...]` | **必须带 `ctx.axis`** |
@@ -269,6 +269,24 @@ tools/
 四条纪律：**规则集不可变**，随时间的一切都表达为关于 `ctx` 的纯函数 · 形状表与踢墙表**必须带轴维度** · T-Spin 判定需要 `PlacementInfo`（内核提供放置上下文）· `PlacementInfo` 放 `contracts/` **不放 `rules/`**（后者是冻结区）。
 
 `PlacementInfo` 6 字段：`pieceType: str` · `rotation: int` · `cells: tuple[tuple[int, int], ...]`（绝对坐标）· `lastMoveWasRotation: bool` · `kickIndex: int | None` · `kickOffset: tuple[int, int] | None`。
+
+**其余四个中性交换结构**（定义在 `contracts/`）：`PlacementClass`（`tSpin: str` · `classKey: str`）· `ClearGroup`（`axis: str` · `index: int` · `cells: tuple[tuple[int, int], ...]` · `classification: PlacementClass | None`）· `ScoreState`（`score` · `lines` · `combo` · `b2b` · `level`）· `ScoreDelta`（`scoreDelta: int` · `linesDelta: int` · `state: ScoreState`）。
+
+**T-Spin 分类怎么到达计分**：冻结的 `score_clear(groups, ctx, prev)` 里没有分类的位置，
+而计分模块看不见分类就没法算 T-Spin 的分值（FR-4.6）——所以分类**挂在消行组上**
+（`ClearGroup.classification`），内核拿到分类后挂上去再交给 `score_clear`。**不给
+签名加参数**（那是改冻结签名），**内核只搬运不判断**。
+
+**棋盘参数是只读序列**（`Sequence[Sequence[int]]`，类型文法形态 10），不是 tuple：
+内核内部棋盘是可变 `list[list[int]]`，规则只读，写成 tuple 会逼内核在热路径上
+反复深拷贝。
+
+> 上表的**机器可读版**已落 `contracts/rules.py`（S5）：`RULE_SIGNATURES`（8 条，
+> 参数名 + 类型 + 返回类型）+ `RuleContext` 与四个中性交换结构（frozen dataclass）；
+> 命名结构注册表在 `contracts/structures.py` 的 `NAMED_STRUCTS`（结构名 → 成员表，
+> 成员表**从声明推导**）。断言守着的是**逐条相等**：每条签名的参数名与类型与本表
+> 逐条相等，`gravity_vector` 必须是向量，形状表 / 踢墙表必须带 `ctx`，
+> `scan_clears` 不能只返回数量。
 
 ### 6.6 基线规则（两份基线，别混）
 
@@ -311,7 +329,7 @@ tools/
 
 **不进快照的状态**（只活在运行时）：事件序号、轮次计数、命令数计数、同因拒绝合并表、订阅注册表、随机源实例本体。
 
-> 上表的**机器可读版**已落 `contracts/snapshot.py`（S4，审查修订后）：对应表为 `KERNEL_STATE_TO_SNAPSHOT`——`KernelStateEntry(kernel_field, snapshot_path, derived)` 列表，**一行一字段**，两侧都是点分路径（`board.width` / `active.pieceType`），`derived` 标出"快照侧是算出来的"那三条（结构指纹、扩展摘要、随机源的可序列化状态）；"不进快照的状态"六项为 `RUNTIME_ONLY_STATE`（**英文标识符 → 中文说明**，与快照字段、内核状态字段同一套命名体系，守卫才真能触发）；形态 9 的结构名 ↔ 成员表登记在 `NAMED_STRUCTS`。断言守着的是**两个方向**：快照叶子字段恰好一个来源，且内核侧字段路径不许压行、不许写散文——实现期随 S8 复核。
+> 上表的**机器可读版**已落 `contracts/snapshot.py`（S4，审查修订后）：对应表为 `KERNEL_STATE_TO_SNAPSHOT`——`KernelStateEntry(kernel_field, snapshot_path, derived)` 列表，**一行一字段**，两侧都是点分路径（`board.width` / `active.pieceType`），`derived` 标出"快照侧是算出来的"那三条（结构指纹、扩展摘要、随机源的可序列化状态）；"不进快照的状态"六项为 `RUNTIME_ONLY_STATE`（**英文标识符 → 中文说明**，与快照字段、内核状态字段同一套命名体系，守卫才真能触发）；形态 9 的结构名 ↔ 成员表登记在 `contracts/structures.py` 的 `NAMED_STRUCTS`（**类型文法层面**的清单，快照 / 放置 / 规则三处共用，成员表**从声明推导**）。断言守着的是**两个方向**：快照叶子字段恰好一个来源，且内核侧字段路径不许压行、不许写散文——实现期随 S8 复核。
 
 ### 7.2 命令通道
 

@@ -99,7 +99,7 @@ S18 收尾（PROGRESS / ai_docs / README）
 | S2 | 事件契约声明（44） | 清单 1/7/8 | 已完成 | `62a8c9a` |
 | S3 | 命令契约声明（16）+ 拒绝原因（12） | 清单 5/6 | 已完成 | `e4b4c63` |
 | S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/4/10/15 | 已完成 | `d294e8b`（审查修订 `0a2117e`） |
-| S5 | 规则签名声明（8）+ `RuleContext` | 清单 9 | 未开始 | — |
+| S5 | 规则签名声明（8）+ `RuleContext` | 清单 9 | 已完成 | `5a55302` |
 | S6 | 契约校验与基线脚本 | 清单 11/12/13/16 | 未开始 | — |
 | S7 | 随机源与时间源 | — | 未开始 | — |
 | S8 | 快照与只读视图 | — | 未开始 | — |
@@ -278,7 +278,7 @@ S18 收尾（PROGRESS / ai_docs / README）
   - 把 `ghostDelta` 的类型由 `tuple[int, int]` 改成 `tuple[int, ...]` → **字段类型断言变红**（转录核对表逐条相等）。恢复后 130 passed。
   - 审查修订后复跑 7 组，**全部变红**：结构名改名（`Board` → `Grid`）→ 文法回验红 · 成员表字段改名（`width` → `cols`）→ 叶子覆盖红 · 内核状态清单少一行 → 叶子覆盖红 · 内核侧写成压行散文 → 路径格式红 · 运行时状态用快照字段名（`score`）→ **"运行时状态混进了快照"**红 · `PlacementInfo` 注解写成 `list[int]` → 文法回验红 · `__all__` 漏一个导出名 → 导出一致性红。恢复后 134 passed。
 - **审查修订**（`tests/ocr/S4-review.md`，9 项发现：3 中 · 6 低；逐条核实后**全部成立**，全部修掉）
-  - **M1 结构名与成员表脱钩**：规则（文法附加规则 4：没登记的结构名一律不合规）唯一守着的地方是测试里硬编码的名单 → 新增 `contracts/snapshot.py` 的 `NAMED_STRUCTS`（结构名 → 成员表），回验从它推导。**成员表改名，回验立刻变红**。
+  - **M1 结构名与成员表脱钩**：规则（文法附加规则 4：未登记的结构名一律不合规）唯一守着的地方是测试里硬编码的名单 → 新增 `NAMED_STRUCTS`（结构名 → 成员表，S4 落在 `contracts/snapshot.py`，**S5 已挪到 `contracts/structures.py`**），回验从它推导。**成员表改名，回验立刻变红**。
   - **M2 内核状态清单只有快照侧机器可读**：内核侧是散文（`board.width/height/hiddenRows/cells`、`active（类型 / 朝向 / x / y，可空）`）→ 改成 `KernelStateEntry` 列表，**一行一字段**、两侧点分路径，`derived` 标出算出来的字段。契约清单第 15 项要的纪律是**反向**的（内核加字段 → 快照必须同步加），散文守不住它。
   - **M3 运行时状态清单的守卫是摆设**：六项写的是中文散文，与英文标识符的快照字段**不同命名空间**，交集恒空 → 改英文标识符（映射到中文说明），守卫才真能报警。
   - **L1** `PlacementInfo` 的 6 条注解进文法回验 · **L2** `board.cells` 的形状提成 `types.BOARD_CELLS` · **L3** 删掉 `_SNAPSHOT_FIELDS` 可变别名（三张表统一写法）· **L4** 转录表头注明需求的 `JsonScalar` 是记号、此处按架构 §5.4 展开 · **L6** 补 `__all__` 与实际导出一致性断言。
@@ -305,23 +305,36 @@ S18 收尾（PROGRESS / ai_docs / README）
 
 - **目标**：四项规则接口 + 形状表 / 踢墙表接口的签名**在 M0 定稿**（ADR-061）。
 - **任务**
-  - [ ] 建 `contracts/rules.py`：8 条签名的机器可读声明
-  - [ ] `RuleContext`（`frozen=True`）：`frame` · `level` · `piecesPlaced` · `axis`（`down/left/right/up`）· `stepMs`
-  - [ ] 中性类型交换结构：`ClearGroup` · `PlacementClass` · `ScoreState` · `ScoreDelta`（**定义在 `contracts/`，不放 `rules/`**）
-  - [ ] 签名声明与 `docs/项目架构.md` §7.3.1 表格逐条比对
-- **涉及文件**：`src/tetris_kernel/contracts/rules.py` · `src/tetris_kernel/contracts/__init__.py`
+  - [x] 建 `contracts/rules.py`：8 条签名的机器可读声明
+  - [x] `RuleContext`（`frozen=True`）：`frame` · `level` · `piecesPlaced` · `axis`（`down/left/right/up`）· `stepMs`
+  - [x] 中性类型交换结构：`ClearGroup` · `PlacementClass` · `ScoreState` · `ScoreDelta`（**定义在 `contracts/`，不放 `rules/`**）
+  - [x] 签名声明与 `docs/项目架构.md` §7.3.1 表格逐条比对
+- **涉及文件**：`src/tetris_kernel/contracts/rules.py`（新建）· `src/tetris_kernel/contracts/structures.py`（新建，命名结构注册表）· `src/tetris_kernel/contracts/types.py`（文法补形态 10 + `VECTOR2` / `BOARD_VIEW` 常量）· `src/tetris_kernel/contracts/snapshot.py`（移出 `NAMED_STRUCTS`）· `src/tetris_kernel/contracts/__init__.py`
 - **验证方案**
-  1. 测试：签名条数 = 8；每条签名的**参数名与类型**与架构 §7.3.1 表格逐条相等。
-  2. 测试：`gravity_vector` 返回类型是 `tuple[int, int]`（**必须是向量，不能只有 dy**——横向重力时 dy = 0）。
-  3. 测试：`shape_cells` 与 `kick_offsets` 的参数里**必须带 `ctx`**（轴维度）。
-  4. 测试：`scan_clears` 返回 `tuple[ClearGroup, ...]`（**不能只返回数量**）。
-  5. 机检：`contracts/` 内不 import `kernel` / `rules` 的任何 dataclass。
-- **完成判据**：8 条签名 + `RuleContext` 声明齐，测试过。
-- **提交**：`新功能：新增规则接口签名与 RuleContext 声明`
+  1. 测试：签名条数 = 8；每条签名的**参数名与类型**与架构 §7.3.1 表格逐条相等。→ 已验（另加签名顺序 = 表格顺序、8 条按能力分组 = 四项接口 + 两张表）
+  2. 测试：`gravity_vector` 返回类型是 `tuple[int, int]`（**必须是向量，不能只有 dy**——横向重力时 dy = 0）。→ 已验
+  3. 测试：`shape_cells` 与 `kick_offsets` 的参数里**必须带 `ctx`**（轴维度）。→ 已验
+  4. 测试：`scan_clears` 返回 `tuple[ClearGroup, ...]`（**不能只返回数量**）。→ 已验
+  5. 机检：`contracts/` 内不 import `kernel` / `rules` 的任何 dataclass。→ 已验（AST 扫描，**越级相对导入也挡**——`from ..kernel import …` 是包内相对导入，绝对导入白名单看不见它）
+  6. 测试：文法回验覆盖 **S5 新增的类型串**（8 条签名的参数与返回类型 + 五个命名结构的成员表）。→ 已验（形态 10 是 S5 补的，回验器同步支持）
+- **完成判据**：8 条签名 + `RuleContext` 声明齐，测试过。→ **达成**（**151 passed**；反向验证见下）
+- **提交**：`新功能：新增规则接口签名与 RuleContext 声明`（`5a55302`）
+- **反向验证**（实跑 **11 组，全部变红**；还原后 151 passed）
+  - 签名参数改名（`ctx` → `context`）→ 逐条比对红 · `gravity_vector` 返回类型改成标量 `int` → 逐条比对红 · 形状表 / 踢墙表把 `ctx` 换成裸 `axis` 参数 → 逐条比对红 · `scan_clears` 只返回数量 → 逐条比对红 · `RuleContext` 字段改名 → 字段断言红 · 删掉 `ClearGroup.classification` → 交换结构字段断言红 · 重力方向词汇表改值 → 词汇表断言红 · 注册表里删掉一个命名结构 → **未登记的结构名文法红** · 快照子结构成员改名 → **键与声明分家断言红** · `contracts/` 越级相对导入 `kernel` → 纯净度红 · 棋盘参数类型从 `Sequence[...]` 改成 `tuple[...]` → 逐条比对红。
+- **落定的判断**
+  - **类型文法补形态 10（只读序列 `Sequence[T]`）**：架构 §7.3.1 的签名表原文写的就是 `Sequence[Sequence[int]]`，而内核内部棋盘是可变 `list[list[int]]`（架构 §7.1）——写成 `tuple[tuple[int, ...], ...]` 会逼内核在**逐方块调用的热路径上**每次深拷贝一份棋盘。形态 10 表达"只读视图"，取值域只有 `types.BOARD_VIEW` 与 `Sequence[ClearGroup]` 两条串。
+  - **命名结构注册表从 `snapshot.py` 挪到新模块 `structures.py`**：注册表是**类型文法层面**的东西（形态 9 的名单），快照 / 放置 / 规则三处共用，寄居在快照模块是历史巧合。成员表**一律从声明推导**（`FieldSpec` 表或 dataclass 注解），**不另抄一份**。
+  - **T-Spin 分类挂在 `ClearGroup.classification` 上，而不是给 `score_clear` 加参数**：冻结的签名表没有给分类留位置，而计分模块看不见分类就没法算 T-Spin 的分值（FR-4.6）。加参数就是改冻结签名（要走 major 变更），挂组上则一行签名不动。内核只做**搬运**，不重新判定。
+  - **`PlacementClass` 装两样**：`tSpin`（T-Spin 标记）+ `classKey`（计分类别键，与事件 `board:lines-cleared.classKey` 同名同义）。事件那两个字段同源，计分模块也按 `classKey` 查表。**两者的取值域由规则集定义，契约只声明类型**——换规则集就换词汇，钉死会把变体挡在门外。
+  - **`ScoreState` 用快照那套计分字段名**（`score` / `lines` / `combo` / `b2b` / `level`）：同一套命名体系，跨面改一个名字会立刻露馅（架构 §4.4 末条）。
+  - **两处 `axis` 是两套词汇**：`RuleContext.axis` 是重力方向（变体维度，契约层钉死），`ClearGroup.axis` 是"这组被消的是行还是列"（`row` / `column`）。同名不同义要在 docstring 里写死，别让实现期混用。
 - **常见坑**
   - **签名晚于实现** → `rules/` 自 M0 进冻结区，标准规则 M1 就要实现，签名晚于实现必被实现反向塑形，补维度即改冻结区。
   - **形状表 / 踢墙表不带轴维度** → M4-A5 要求表随重力方向变换，而表又不能由内核变换（内核不做变换）——接口不带轴就选不出表。
   - **顺手加"冷却 / 防抖动"维度** → 那是输入适配器的节流或插件自己的策略，**内核与规则集都不需要知道**。加了就是"补维度"，正是本阶段要避免的。
+  - **把"分类无处安放"当成改签名的理由** → `score_clear` 的参数表是冻结签名；解法是让分类搭消行组的便车（`ClearGroup.classification`），不是动签名。
+  - **命名结构注册表寄居在某个业务模块** → 它是文法层面的清单，规则侧结构一多就得从快照模块里往外搬；S5 直接新建 `structures.py`。
+  - **只声明规则签名、不把新类型串接进文法回验** → 新形态（形态 10）与新类型串不进回验，就是"看着在基线里、实际没被哈希"的失效模式（S3 的教训）。
 
 ---
 
