@@ -186,11 +186,14 @@ S18 收尾（PROGRESS / ai_docs / README）
   - [x] 产出者分布核对：内核 35 · 总线 1 · host 2 · 输入适配器 2 · 渲染器 1 · 日志 / 指标 / 成就各 1
   - [x] 负载字段声明用中性类型（`int` / `str` / `bool` / `tuple[...]`），**禁浮点**的约束只对命令 `args` 生效，事件负载按需求原文
   - [x] 在 `contracts/__init__.py` 导出注册表（公共叶子，**不 import 任何东西**）
-- **涉及文件**：`src/tetris_kernel/contracts/events.py` · `src/tetris_kernel/contracts/__init__.py`
+  - [x] 契约版本号 `CONTRACT_VERSION = "v1"` 进声明（清单第 13 项，§5.3 归 S2）
+  - [x] 共用取值域常量挪到 `contracts/types.py`（命令 / 快照 / 规则签名都要用，不该寄居在事件模块里）
+- **涉及文件**：`src/tetris_kernel/contracts/events.py` · `src/tetris_kernel/contracts/types.py` · `src/tetris_kernel/contracts/__init__.py`
 - **验证方案**
-  1. 新写 `tests/test_contracts_declarations.py::test_event_registry`（本阶段先建骨架，S15 补全）：断言**事件总数 = 44**、命名空间与需求表逐条相等、产出者分布等于上述 5 类计数。→ 已验（53 passed）
+  1. 新写 `tests/test_contracts_declarations.py::test_event_registry`（本阶段先建骨架，S15 补全）：断言**事件总数 = 44**、命名空间与需求表逐条相等、产出者分布等于上述 5 类计数。→ 已验（99 passed）
   2. 对照 `docs/需求与边界.md` §8.1 人工过一遍**负载字段名**（脚本只能比类型名，比不了字段语义）。→ 已过（44 条逐条过）
   3. `ruff check .` · `pyright src/tetris_kernel` → 零错。→ 已验
+  4. **反向验证**：删掉 `board:lines-cleared.classKey` → 红；把 `piece:locked.cells` 的类型改掉 → 红。→ 已验（两条断言都拦住）
 - **完成判据**：注册表 44 条与需求表逐条相符，测试通过。→ 达成
 - **提交**：`新功能：新增 44 条事件的机器可读声明` —— 含 `contracts/events.py` + `contracts/__init__.py` + 对应测试文件。
 - **常见坑**
@@ -198,6 +201,11 @@ S18 收尾（PROGRESS / ai_docs / README）
   - **命名空间当产出者** → `kernel:system:installed` 由 host 发，`kernel:error` 由总线发（ADR-063）。命名空间说的是"这件事属于内核实例"，不必然是内核干的。
   - 把"关键负载"当成"完整负载"照抄 §8.1 的举例 → §8.1 是"关键负载"，声明必须**自足**：回放校验要靠它，不能只写"够用就行"的半截字段。
   - **类型声明用 `typing` 对象而不是规范字符串** → `hash(int)` 按对象地址算，跨进程必变；`typing` 对象的 `repr` 随 Python 版本漂移。基线要的是**跨进程稳定**的哈希，所以类型写成规范类型表达式字符串（`"int"` / `"tuple[int, int]"`）。
+  - **类型文法的表认不出自己用的类型串** → 文法表是 S6 正则解析器的**规格书**，表里没有的形态会被"看着在基线里、实际没被哈希"，等于没进基线。定文法时必须拿实际用到的类型串逐条回验。
+  - **同名字段跨事件不同型** → 通用提取代码（回放校验、完备性检查）会踩空。**同层**的必须改名（`board:changed.cells` → `cellChanges`、`board:lines-cleared.rows` → `rowIndexes`）；**跨域**的（游戏 `level` vs 日志 `level`）改名反而会让字段偏离本域惯例，用 doc 消歧。
+  - **同名字段跨域可以，跨层不行** → 负载的 `cause`（成因字符串）与元数据的 `cause`（命令追溯标识）同名是**跨层**，且两个键都在同一个事件对象上，**必须改名**。
+  - **给可空字段漏掉 `| None`** → 首次暂存时暂存槽是空的，`taken` 没有值可写。类型只写 `str` 就得靠"空串"这类**没写进契约的约定**兜底，而基线哈希的是声明——约定不写下来等于没有。
+  - **共用取值域常量寄居在事件模块里** → 命令参数规格（S3）、快照字段（S4）都要用同一批类型域，寄居在 `events.py` 会让"事件声明"与"通用类型域"两件事纠缠不清。挪到 `contracts/types.py`。
 
 ---
 
