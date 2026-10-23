@@ -190,7 +190,7 @@ tools/
 
 | 命名空间 | 数量 | 事件 | 产出者 |
 | --- | --- | --- | --- |
-| kernel | 5 | `kernel:ready` · `kernel:system:installed` · `kernel:system:removed` · `kernel:error` · `kernel:quota-exceeded` | 内核 3 · host 2 |
+| kernel | 5 | `kernel:ready` · `kernel:system:installed` · `kernel:system:removed` · `kernel:error` · `kernel:quota-exceeded` | 内核 2 · 总线 1 · host 2 |
 | command | 3 | `command:received` · `command:accepted` · `command:rejected` | 内核 |
 | game | 6 | `game:created` · `game:started` · `game:paused` · `game:resumed` · `game:over` · `game:reset` | 内核 |
 | clock | 2 | `clock:tick` · `clock:gravity` | 内核 |
