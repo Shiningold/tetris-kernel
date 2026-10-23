@@ -6,6 +6,8 @@
 本文件只做**包内**导出：跨包 import 一个模块都不许有，第三方更不许有。
 - 事件目录：`tetris_kernel.contracts.events`
 - 命令目录：`tetris_kernel.contracts.commands`
+- 快照字段声明与内核状态清单：`tetris_kernel.contracts.snapshot`
+- T-Spin 判定输入结构：`tetris_kernel.contracts.placement`
 - 共用类型取值域与类型文法：`tetris_kernel.contracts.types`
 """
 
@@ -31,6 +33,17 @@ from .events import (
     PayloadField,
     namespace_of,
 )
+from .placement import PlacementInfo
+from .snapshot import (
+    ACTIVE_FIELDS,
+    BOARD_FIELDS,
+    COORDINATE_CONVENTIONS,
+    KERNEL_STATE_TO_SNAPSHOT,
+    RUNTIME_ONLY_STATE,
+    SNAPSHOT_FIELD_NAMES,
+    SNAPSHOT_FIELDS,
+    FieldSpec,
+)
 from .types import (
     ARGS,
     ARGS_VALUE,
@@ -44,27 +57,36 @@ from .types import (
 __all__ = [
     "ARGS",
     "ARGS_VALUE",
+    "ACTIVE_FIELDS",
+    "BOARD_FIELDS",
     "CELLS",
     "COMMANDS",
     "COMMAND_TYPES",
     "COMMAND_TYPE_FIELDS",
     "CONTRACT_VERSION",
+    "COORDINATE_CONVENTIONS",
     "COORD_CELLS",
     "ENVELOPE_FIELDS",
     "EVENT_TYPES",
     "INT_TUPLE",
     "JSON_VALUE",
+    "KERNEL_STATE_TO_SNAPSHOT",
     "LIFECYCLE_REJECT_REASONS",
     "METADATA_KEYS",
     "PRODUCER_LABELS",
     "REJECT_REASONS",
     "REJECT_REASON_CATEGORIES",
     "REJECT_REASON_CATEGORY_LABELS",
+    "RUNTIME_ONLY_STATE",
     "SCALAR_MAP",
+    "SNAPSHOT_FIELDS",
+    "SNAPSHOT_FIELD_NAMES",
     "CommandArg",
     "CommandSpec",
     "EventSpec",
+    "FieldSpec",
     "PayloadField",
+    "PlacementInfo",
     "is_lifecycle_gated",
     "namespace_of",
 ]
