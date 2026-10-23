@@ -10,7 +10,7 @@
 """
 
 from .commands import (
-    COMMAND_ARGS_TYPE,
+    COMMAND_TYPE_FIELDS,
     COMMAND_TYPES,
     COMMANDS,
     LIFECYCLE_REJECT_REASONS,
@@ -46,8 +46,8 @@ __all__ = [
     "ARGS_VALUE",
     "CELLS",
     "COMMANDS",
-    "COMMAND_ARGS_TYPE",
     "COMMAND_TYPES",
+    "COMMAND_TYPE_FIELDS",
     "CONTRACT_VERSION",
     "COORD_CELLS",
     "ENVELOPE_FIELDS",

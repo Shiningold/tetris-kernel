@@ -5,21 +5,23 @@
 
 ## 声明了什么
 
-- `COMMANDS`：命令名 → 命令规格（参数声明 + 可拒绝原因）。**封闭且可枚举**
-  （FR-2.1）——这张表就是 v1 的全集，不留「以后可能加」的占位。
+- `COMMANDS`：命令名 → 命令规格（参数声明 + 是否受门禁 + 可拒绝原因）。
+  **封闭且可枚举**（FR-2.1）——这张表就是 v1 的全集，不留「以后可能加」的占位。
 - `REJECT_REASONS`：12 个拒绝原因，**只增不改**（需求 §8.2）。
 - `REJECT_REASON_CATEGORIES`：拒绝原因的分类（需求 §8.2 的「类」列）。
+- `COMMAND_TYPE_FIELDS`：事件侧承载**命令名**的负载字段——命令集在事件侧的落点。
 
-命令名就是 `command:received` / `command:accepted` / `command:rejected` 三个事件
-负载里 `commandType` 的取值——两处必须是同一批名字。
+命令名就是 `command:received` / `command:accepted` / `command:rejected` /
+`input:intent` 四个事件负载里 `commandType` 的取值——两处必须是同一批名字，
+所以那张字段表由本模块声明（见 `COMMAND_TYPE_FIELDS`）。
 
 ## args 的三条约束
 
 1. **禁浮点**（B-7 / ADR-025）：`args` 参与重放，JSON 里 `1.0` 与 `1` 不可区分。
    **这条只约束 `args`**——事件负载不受约束：`extensions` 与 `metric:sampled`
    允许浮点，口径不同是对的（`extensions` 不参与重放判定）。
-2. **只含 JSON 标量与元组**：容器类型是 `COMMAND_ARGS_TYPE`（= `ARGS`），取值域
-   是 `ARGS_VALUE`；每个参数的类型必须是这个取值域的成员。
+2. **只含 JSON 标量与元组**：容器类型是 `types.ARGS`，取值域是 `types.ARGS_VALUE`；
+   每个参数的类型必须是这个取值域的成员。
 3. **反序列化按命令类型还原**：每个命令的参数声明（参数名 + 类型）**就是**它的
    还原目标形状——`args` 进了录像，回放时按这条声明把元组还原成命令自己的参数。
 
@@ -31,6 +33,8 @@
 - **统一生命周期门禁**（需求 §8.2 的门禁注）：除 `start` / `pause` / `resume` /
   `reset` 外，所有**改变棋盘内容或活动方块位置**的命令，在 `phase != running`
   时一律被拒，原因取 `not_started` / `paused` / `game_over`。
+  **门禁归属由 `CommandSpec.lifecycle_gated` 这一个必填字段决定**，三个门禁
+  原因由它派生——手写它们会被 `_cmd` 拒绝。
 - **配额是跨切的**（架构 §6.4）：命令数 / 轮次数配额超限时，被丢弃的**任何**
   命令都以 `quota_exceeded` 被拒——所以 16 条命令都带这个原因。`writeCells`
   的单帧写入格子数上限复用同一个原因值。
@@ -56,7 +60,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import ARGS, CELLS, INT_TUPLE
+from .types import CELLS, INT_TUPLE
 
 # ---------------------------------------------------------------------------
 # 声明结构
@@ -85,7 +89,16 @@ class CommandArg:
 class CommandSpec:
     """一条命令的声明。
 
-    字段：命令名 · 参数声明 · 可拒绝原因 · 中文说明。
+    字段：命令名 · 参数声明 · 是否受生命周期门禁 · 可拒绝原因 · 中文说明。
+
+    `lifecycle_gated` 是**必填的显式表态**：加命令时必须对门禁说一句话，
+    漏表态直接 `TypeError`，不会安静地当成"不受门禁"。
+
+    它同时是门禁三值的**唯一来源**——`reject_reasons` 里的
+    `not_started` / `paused` / `game_over` 由它派生（见 `_cmd`）。
+    反过来做（手写三值、再推导标志）不行：推导的输入也是人手写的字面量，
+    漏写三值时标志会安静地返回 False，门禁随之失效——而门禁失效的代价是
+    "暂停期间命令照样执行"。
 
     `reject_reasons` 是**该命令可能被拒绝的全部原因**，不只是需求 §8.2
     那一列写着的——跨切的配额与参数原因也算在内（见模块 docstring）。
@@ -93,6 +106,7 @@ class CommandSpec:
 
     name: str
     args: tuple[CommandArg, ...]
+    lifecycle_gated: bool
     reject_reasons: tuple[str, ...]
     doc: str
 
@@ -166,22 +180,34 @@ def _reasons(*names: str) -> tuple[str, ...]:
     return tuple(sorted(set(names), key=_REASON_INDEX.__getitem__))
 
 
-#: 命令 `args` 的容器类型（引用 `types.py` 的常量，不复制字面量——架构 §4.4 末条）。
-#: 16 条命令的 `args` 都是这个形状；`command:*` 三个事件的 `args` 负载同源。
-COMMAND_ARGS_TYPE = ARGS
-
-
 def _cmd(
     name: str,
     doc: str,
+    *,
+    lifecycle_gated: bool,
     args: tuple[CommandArg, ...] = (),
     reject_reasons: tuple[str, ...] = (),
 ) -> CommandSpec:
-    """构造命令声明（内部用，省掉重复写 CommandSpec(...)）。"""
+    """构造命令声明（内部用，省掉重复写 CommandSpec(...)）。
+
+    **门禁三值由 `lifecycle_gated` 派生**，手写它们会被拒——门禁的归属只有
+    这一个来源，派生出来的原因不可能与标志分叉。`lifecycle_gated` 没有
+    默认值：加命令时必须显式表态，漏了直接 `TypeError`。
+    """
+    stray = [reason for reason in reject_reasons if reason in LIFECYCLE_REJECT_REASONS]
+    if stray:
+        raise ValueError(
+            f"{name}：{stray} 由 lifecycle_gated 派生，不要手写"
+            "（受门禁约束就传 lifecycle_gated=True）"
+        )
+    reasons = tuple(reject_reasons)
+    if lifecycle_gated:
+        reasons += LIFECYCLE_REJECT_REASONS
     return CommandSpec(
         name=name,
         args=args,
-        reject_reasons=_reasons(*reject_reasons),
+        lifecycle_gated=lifecycle_gated,
+        reject_reasons=_reasons(*reasons),
         doc=doc,
     )
 
@@ -197,6 +223,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "start",
             "开始一局新游戏。已开局时拒绝（状态不合法）。",
+            lifecycle_gated=False,
             reject_reasons=("invalid_argument", "illegal_transition"),
         ),
     ),
@@ -205,6 +232,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "pause",
             "暂停内核（游戏内暂停）。内核级暂停期间帧号照走，但推进许可被门禁收回。",
+            lifecycle_gated=False,
             reject_reasons=("invalid_argument", "illegal_transition"),
         ),
     ),
@@ -213,6 +241,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "resume",
             "恢复运行。`resume` 生效的那一帧不推进，这是设计不是缺陷（架构 §6.7）。",
+            lifecycle_gated=False,
             reject_reasons=("invalid_argument", "illegal_transition"),
         ),
     ),
@@ -221,6 +250,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "reset",
             "重置：结束当前局并开新局，帧号 / 帧内序号 / 版本号一并归零（架构 §6.1）。",
+            lifecycle_gated=False,
             reject_reasons=("invalid_argument", "illegal_transition"),
         ),
     ),
@@ -230,14 +260,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "moveLeft",
             "活动方块左移一格。手感参数（DAS / ARR）归输入适配器，内核只认原子命令。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     (
@@ -245,14 +269,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "moveRight",
             "活动方块右移一格。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     (
@@ -260,14 +278,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "softDrop",
             "软降一格（给分不落锁）。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     (
@@ -275,14 +287,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "hardDrop",
             "硬降：直落到底并锁定。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     # ---------------- 旋转（3 条） ----------------
@@ -291,14 +297,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "rotateCW",
             "顺时针旋转。**旋转无合法落点时命令仍被接受**，另发受阻事件（ADR-043）。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     (
@@ -306,14 +306,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "rotateCCW",
             "逆时针旋转。同样：旋转无合法落点不拒绝，另发受阻事件。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     (
@@ -321,14 +315,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         _cmd(
             "rotate180",
             "旋转 180 度。踢墙表必须覆盖 180°（架构 §7.3.1）。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "no_active_piece",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "no_active_piece"),
         ),
     ),
     # ---------------- 暂存与推进（2 条） ----------------
@@ -338,16 +326,13 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "hold",
             "暂存当前方块并取出暂存槽里的方块。**本块已用过暂存时拒绝**。"
             "需求 §8.2 给 hold 列的可拒绝情形只有这一条，因此这里不额外列 "
-            "`no_active_piece`——若实现期发现 running 态确有「无活动方块」的窗口，"
-            "再按 major 变更流程补。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-                "hold_already_used",
-            ),
+            "`no_active_piece`——但**两侧口径的缺口要挂在明处**：事件侧 "
+            "`piece:held.taken` 已经是 `str | None`（v1 承认暂存槽可以是空的），"
+            "命令侧却没说「running 态没有活动方块时 hold 怎么办」。"
+            "该窗口是否存在要等实现期确认，届时按 major 变更流程定，"
+            "不要在实现期临时加一个拒绝原因。",
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument", "hold_already_used"),
         ),
     ),
     (
@@ -357,13 +342,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "推进一帧。**帧号 +1 与推进许可是两件事**：帧号在 tick 出队时就 +1，"
             "推进许可（`clock:tick` + `advance_frame()`）在 tick 被接受时才授予"
             "（架构 §6.1）。tick 自身不计入命令数配额，但占帧内序号 0。",
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument"),
         ),
     ),
     # ---------------- 参数类（1 条） ----------------
@@ -374,6 +354,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "设置当前等级。越界时拒绝。**不受生命周期门禁约束**——它不改棋盘内容"
             "也不改活动方块位置，需求 §8.2 给它的可拒绝情形只有「越界」。",
             args=(CommandArg("level", "int", False, "目标等级；取值域由规则集定义，越界即拒绝"),),
+            lifecycle_gated=False,
             reject_reasons=("quota_exceeded", "invalid_argument", "level_out_of_range"),
         ),
     ),
@@ -387,13 +368,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
                 CommandArg("rows", "int", False, "注入的垃圾行数（行数，不是行号）"),
                 CommandArg("holes", INT_TUPLE, False, "空洞所在列；空元组 = 每行不挖空洞"),
             ),
-            reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
-                "quota_exceeded",
-                "invalid_argument",
-            ),
+            lifecycle_gated=True,
+            reject_reasons=("quota_exceeded", "invalid_argument"),
         ),
     ),
     (
@@ -412,10 +388,8 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
                     "待变更格子清单 (x, y, 新值)；内核校验后落笔并照常发出 board:changed",
                 ),
             ),
+            lifecycle_gated=True,
             reject_reasons=(
-                "not_started",
-                "paused",
-                "game_over",
                 "quota_exceeded",
                 "invalid_argument",
                 "out_of_bounds",
@@ -432,12 +406,33 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(dict(_COMMAND_SPECS))
 #: 命令类型名的稳定序列（枚举顺序 = 需求 §8.2 的表格顺序）。
 COMMAND_TYPES: tuple[str, ...] = tuple(name for name, _ in _COMMAND_SPECS)
 
+#: 事件侧承载**命令名**的负载字段：`(事件类型, 字段名)`。
+#:
+#: 这些字段的取值域 = `COMMAND_TYPES`——命令集"封闭且可枚举"（FR-2.1）在
+#: 事件侧的落点。**事件负载的类型语言里没有字面量枚举形态**（`types.py` 的
+#: 封闭文法只有 8 形），所以取值域只能这样声明：声明这张表，再断言"凡是承载
+#: 命令名的字段都在表里、且类型一致"。**运行时的取值域校验归 S9/S11**——
+#: 派发了表外的命令名，内核要拒。
+#:
+#: 声明放在命令侧而不是事件侧：命令集是命令面的东西，事件侧只负责承载。
+COMMAND_TYPE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("command:accepted", "commandType"),
+    ("command:received", "commandType"),
+    ("command:rejected", "commandType"),
+    ("input:intent", "commandType"),
+)
+
 
 def is_lifecycle_gated(command_type: str) -> bool:
     """该命令是否受**统一生命周期门禁**约束。
 
-    这是**推导值**，不是另写一份名单：门禁三值齐全 ⇔ 受门禁约束。
-    推导的好处是两份名单不可能分叉——另写一份的话，加命令的人漏改名单，
-    门禁就会静默失效（而门禁失效的代价是「暂停期间命令照样执行」）。
+    门禁的归属是 `CommandSpec.lifecycle_gated` 这一个**必填字段**——加命令
+    时漏表态会直接 `TypeError`，不会安静地当成"不受门禁"。
+
+    未知命令名抛 `ValueError`（不是 `KeyError`）并带上可用名字：这是包级
+    导出的公开 API，报错要能直接看懂的。
     """
-    return set(LIFECYCLE_REJECT_REASONS) <= set(COMMANDS[command_type].reject_reasons)
+    spec = COMMANDS.get(command_type)
+    if spec is None:
+        raise ValueError(f"未知命令类型：{command_type!r}（可用：{', '.join(COMMAND_TYPES)}）")
+    return spec.lifecycle_gated

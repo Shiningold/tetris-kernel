@@ -12,7 +12,7 @@ import pytest
 from tetris_kernel.contracts import (
     ARGS,
     ARGS_VALUE,
-    COMMAND_ARGS_TYPE,
+    COMMAND_TYPE_FIELDS,
     COMMAND_TYPES,
     COMMANDS,
     CONTRACT_VERSION,
@@ -370,7 +370,7 @@ def test_producer_distribution() -> None:
 
 
 def test_producer_labels_cover_all_producers() -> None:
-    """每个产出者代号都有中文名，反之亦然。"""
+    """每个产出者代号都有对应名称（`host` 在需求 §8.1 里就是 `host`），反之亦然。"""
     used = {spec.producer for spec in EVENT_TYPES.values()}
     assert used == set(PRODUCER_LABELS)
 
@@ -744,8 +744,7 @@ def test_command_args_forbid_float() -> None:
     事件负载（如 `metric:sampled`）允许浮点，口径不同是对的。
     """
     assert "float" not in ARGS_VALUE
-    assert "float" not in COMMAND_ARGS_TYPE
-    assert COMMAND_ARGS_TYPE == ARGS
+    assert "float" not in ARGS
     for name, spec in COMMANDS.items():
         for arg in spec.args:
             assert "float" not in arg.type, f"{name}.{arg.name}"
@@ -771,6 +770,37 @@ def test_lifecycle_gate_commands() -> None:
     for name, spec in COMMANDS.items():
         has_all = set(LIFECYCLE_REJECT_REASONS) <= set(spec.reject_reasons)
         assert has_all == is_lifecycle_gated(name), name
+
+
+def test_lifecycle_gate_is_explicit() -> None:
+    """门禁归属是**必填的显式字段**——不是从拒绝原因反推出来的。
+
+    反推的做法有个洞：加命令的人漏写三个生命周期原因，标志会安静地变成
+    False，门禁随之失效（代价是「暂停期间命令照样执行」）。标志无默认值，
+    漏表态直接 `TypeError`。
+    """
+    for name, spec in COMMANDS.items():
+        assert spec.lifecycle_gated == (name in EXPECTED_GATED_COMMANDS), name
+
+
+def test_command_type_fields_carry_command_names() -> None:
+    """事件侧承载命令名的字段：**都在 `COMMAND_TYPE_FIELDS` 里，且类型一致**。
+
+    事件负载的类型语言里没有字面量枚举形态，所以取值域（= `COMMAND_TYPES`）
+    只能这样落地：声明 + 断言「凡是承载命令名的字段都在表里」。
+    """
+    for event_type, field_name in COMMAND_TYPE_FIELDS:
+        spec = EVENT_TYPES[event_type]
+        field = next(f for f in spec.payload if f.name == field_name)
+        assert field.type == "str", f"{event_type}.{field_name}"
+    listed = set(COMMAND_TYPE_FIELDS)
+    actual = {
+        (event_type, field.name)
+        for event_type, spec in EVENT_TYPES.items()
+        for field in spec.payload
+        if field.name == "commandType"
+    }
+    assert actual == listed
 
 
 def test_write_cells_cells_type() -> None:
