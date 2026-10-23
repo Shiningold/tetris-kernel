@@ -22,7 +22,7 @@
 - [ ] 建 GitHub 仓库并配 `remote`（当前仓库无远程）· 选许可证并补 `LICENSE`
 - [ ] 把 README 里的 `<仓库地址>` 占位换成真实 GitHub 地址
 - [x] README：GitHub 安装方式 + `python -m tetris_kernel` 入口
-- [x] `git init` 并按提交规范切了九笔（历史记录从此进 git）
+- [x] `git init` 并按提交规范切了历史（历史记录从此进 git；提交标题统一为 `类型：主题`）
 
 ## 卡点
 
