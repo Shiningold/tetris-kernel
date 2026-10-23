@@ -94,8 +94,8 @@ S18 收尾（PROGRESS / ai_docs / README）
 
 | 阶段 | 主题 | 覆盖门判据 | 状态 | 提交 |
 | --- | --- | --- | --- | --- |
-| S0 | 规格与计划入档 | — | 已完成 | 待提交 |
-| S1 | 分层空壳与打包可用 | — | 未开始 | — |
+| S0 | 规格与计划入档 | — | 已完成 | `2185114` |
+| S1 | 分层空壳与打包可用 | — | 已完成 | `facd1d4`（配置修复另见 `cb24f7d`） |
 | S2 | 事件契约声明（44） | 清单 1/7/8 | 未开始 | — |
 | S3 | 命令契约声明（16）+ 拒绝原因（12） | 清单 5/6 | 未开始 | — |
 | S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/10/15 | 未开始 | — |
@@ -138,14 +138,14 @@ S18 收尾（PROGRESS / ai_docs / README）
   - [x] 读完全部上游文档（需求与边界 / 项目架构 / 决策记录 / 契约清单 / ai_docs）
   - [x] 写 `docs/spec-M0.md`（目标 / 输入输出 / 边界 / 非功能 / 验收）
   - [x] 写 `docs/plan-M0.md`（本文件：阶段 / 验证 / 提交策略）
-  - [ ] 复核：本计划引用的编号在 `docs/需求与边界.md` §12 编号空间注册表里都能查到
+  - [x] 复核：本计划引用的编号在 `docs/需求与边界.md` §12 编号空间注册表里都能查到
 - **涉及文件**：`docs/spec-M0.md` · `docs/plan-M0.md`
 - **验证方案**
   1. 人检：逐条对照 `docs/spec-M0.md` §4「范围外」与 `docs/需求与边界.md` §12，确认没有把 M1–M4 的需求拉进 M0。
   2. 机检：grep 本文件出现的 `G0-n` / `M0-n` / `ADR-nnn` / `FR-x.y` / `NFR-n` / `AC-n` / `B-n` / `X-n`，逐个回上游文档确认存在；**查不到的编号一律改掉，不许留坏引用**。
   3. 机检：`ruff format --check .` 不因本文件报错（Markdown 不参与，但确认没误伤 .py）。
 - **完成判据**：两份文档入库，无坏引用，无未登记编号被引用。
-- **提交**：`文档：新增 M0 规格与分阶段执行计划` —— 含 `docs/spec-M0.md` + `docs/plan-M0.md`（纯文档，**不与任何代码混提**）。
+- **提交**：`文档：新增 M0 规格与分阶段执行计划` —— 含 `docs/spec-M0.md` + `docs/plan-M0.md`（纯文档，**不与任何代码混提**）。→ **`2185114`**
 - **常见坑**：把 `docs/` 现有三份文档的内容抄进来 → 两处维护同一件事必然漂移。规格只写"要做成什么样"，引用上游即可。
 
 ---
@@ -154,25 +154,26 @@ S18 收尾（PROGRESS / ai_docs / README）
 
 - **目标**：八个子包就位，项目可安装，四条依赖契约第一次真跑起来。
 - **任务**
-  - [ ] 建 `src/tetris_kernel/__init__.py`（uv_build 需要它存在才能构建）
-  - [ ] 建七个子包 `kernel/ bus/ rules/ contracts/ systems/ adapters/ host/`，各带 `__init__.py`
-  - [ ] 建 `systems/` 下五个子模块空包：`log/ metrics/ replay/ achievements/ ai/`（`pyproject.toml` 的 independence 契约点名了它们，**缺一个 `lint-imports` 就报错**）
-  - [ ] 建 `tests/` 与 `tools/` 空目录（各带 `__init__.py` 需求的除外——`tools/` 不进包）
-  - [ ] 装依赖：`uv pip install --python D:\miniconda3\envs\py312\python.exe -e .`
-  - [ ] 再装 dev 组：同参数 `--group dev`
-  - [ ] 跑通 `lint-imports`，确认**四条契约全部 kept**
+  - [x] 建 `src/tetris_kernel/__init__.py`（uv_build 需要它存在才能构建）
+  - [x] 建七个子包 `kernel/ bus/ rules/ contracts/ systems/ adapters/ host/`，各带 `__init__.py`
+  - [x] 建 `systems/` 下五个子模块空包：`log/ metrics/ replay/ achievements/ ai/`（`pyproject.toml` 的 independence 契约点名了它们，**缺一个 `lint-imports` 就报错**）
+  - [x] 建 `tests/` 与 `tools/` 空目录（各带 `__init__.py` 需求的除外——`tools/` 不进包）
+  - [x] 装依赖：`uv pip install --python D:\miniconda3\envs\py312\python.exe -e .`
+  - [x] 再装 dev 组：同参数 `--group dev`
+  - [x] 跑通 `lint-imports`，确认**四条契约全部 kept**
 - **涉及文件**：`src/tetris_kernel/**`（仅空壳）· `tests/.gitkeep` · `tools/.gitkeep`
 - **验证方案**
-  1. `D:\miniconda3\envs\py312\python.exe -c "import tetris_kernel; print(tetris_kernel.__file__)"` → 指向本仓库 `src/` 下。
-  2. `lint-imports` → 输出 4 条契约全部 `kept`，无 `broken`。
-  3. `ruff check .` → 零错；`pyright src/tetris_kernel` → 零错。
-  4. `pytest` → 无测试可收集不算失败（退出码 5 时视作通过）。
+  1. `D:\miniconda3\envs\py312\python.exe -c "import tetris_kernel; print(tetris_kernel.__file__)"` → 指向本仓库 `src/` 下。→ 已验
+  2. `lint-imports` → 输出 4 条契约全部 `kept`，无 `broken`。→ 已验（4 kept, 0 broken）
+  3. `ruff check .` → 零错；`pyright src/tetris_kernel` → 零错。→ 已验
+  4. `pytest` → 无测试可收集不算失败（退出码 5 时视作通过）。→ 已验（no tests ran，退出码 5）
 - **完成判据**：可导入、可安装、四条契约 kept、静态检查零错。
-- **提交**：`新功能：搭起分层空壳与打包骨架` —— 含 `src/tetris_kernel/**` 空壳 + `tests/` `tools/` 占位。
+- **提交**：`新功能：搭起分层空壳与打包骨架` —— 含 `src/tetris_kernel/**` 空壳 + `tests/` `tools/` 占位。→ **`facd1d4`**
 - **常见坑**
   - **先装依赖后建壳** → uv_build 找不到 `src/tetris_kernel/__init__.py`，构建直接失败。
   - 漏建 `systems/` 下五个子模块 → independence 契约找不到模块，`lint-imports` 报错，而错误信息指向依赖方向，看不出真实原因是"包不存在"。
   - 用了 `pip install` / `uv sync` / `uv venv` → 装到 base 或自建 `.venv`，绕开 py312（ADR-051）。
+  - **`pyright` 的 `[[tool.pyright.overrides]]` 已被 1.1.414 移除** → 写成 overrides 只会得到一行 `Config contains unrecognized setting "overrides"` 警告，**strict 静默失效、退出码仍是 0**。子目录加严要用 `strict = ["路径"]`（已实测生效）。
 
 ---
 
