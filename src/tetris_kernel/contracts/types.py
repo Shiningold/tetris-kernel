@@ -32,11 +32,12 @@ r"""契约层共用的类型取值域。
 | 7 | 元组元素位含联合 | 元素的类型本身是联合 | `tuple[tuple[str, int \| float], ...]` |
 | 8 | 递归元组 | `tuple[...]` | `tuple[...]` |
 | 9 | 命名结构 | `Board` · `Active`（大写开头的标识符） | `Board` |
+| 10 | 只读序列 | `Sequence[T]`（T 为形态 1–9 的任意类型表达式） | `Sequence[Sequence[int]]` |
 
 **取值域也是形态 2**：像 `ARGS_VALUE` / `JSON_VALUE` 这样的取值域是"标量 + 元组
 形态"的联合，**不是新的形态**。
 
-**三条附加规则**：
+**五条附加规则**：
 
 1. **形态 2 与 3 分开**：`float | int` 是联合，`str | None` 是可空。`None` 表示
    JSON null，**可以作为联合的普通成员**（与其它成员并列，如
@@ -52,12 +53,22 @@ r"""契约层共用的类型取值域。
    需求原文就是这么写的（`board: Board`、`active: Active | None`）。命名结构
    **不是自由命名的别名**：成员表必须在 `contracts/` 内另行声明
    （`snapshot.py` 的 `BOARD_FIELDS` / `ACTIVE_FIELDS`），并登记在
-   `snapshot.py` 的 `NAMED_STRUCTS`（结构名 → 成员表）里，S6 解析器把它当
+   `structures.py` 的 `NAMED_STRUCTS`（结构名 → 成员表）里，S6 解析器把它当
    引用处，哈希按成员表展开计算——**`NAMED_STRUCTS` 里没登记的结构名一律
    不合规**（回验从 `NAMED_STRUCTS` 推导结构名集合，不另抄一份名单）。
    **形态 9 是 S4 落地快照声明时补的**（此前 S3 曾把"加第 9 形态"记为 S6
    的决定范围，那指的是"字面量枚举"形态；命名结构是 S4 自己的声明刚需，
    不补就得写文法认不出的串）。
+   **S5 又把形态 9 的适用范围从快照扩到规则侧**：`RuleContext` /
+   `PlacementClass` / `ClearGroup` / `ScoreState` / `ScoreDelta` 与
+   `PlacementInfo` 同样是命名结构，同样登记在同一张注册表里——注册表是
+   **类型文法层面**的东西，不是快照模块的私产。
+5. **形态 10 只用于规则接口的棋盘参数**：内核内部棋盘是可变结构
+   `list[list[int]]`（架构 §7.1），规则只读。写成 `tuple[tuple[int, ...], ...]`
+   会逼内核在**每次调用规则接口时**深拷贝一份棋盘——消行判定是逐方块调用的
+   热路径，拷贝会把规则模块变成性能瓶颈。`Sequence[T]` 表达的是"只读视图"。
+   **形态 10 是 S5 落地规则签名时补的**（架构 §7.3.1 的签名表原文写的就是
+   `Sequence[Sequence[int]]`）。
 
 **联合的成员顺序不参与语义，但一经写入不得重排**——它会进基线哈希，重排
 等于"已有键的哈希变化"。
@@ -100,13 +111,29 @@ COORD_CELLS = "tuple[tuple[int, int], ...]"
 #: 数组（行优先，第 0 行是顶部）。快照的 `board.cells` 引用它。
 BOARD_CELLS = "tuple[tuple[int, ...], ...]"
 
+#: 二维向量（坐标 / 位移）：`(x, y)`。
+#:
+#: 快照的 `ghostDelta` 与规则接口的向量返回类型（`wrap_cell` / `gravity_vector`）
+#: 是同一形状——**引用处一律用常量，不复制字面量**（架构 §4.4 末条）。
+VECTOR2 = "tuple[int, int]"
+
+#: 只读棋盘视图：行优先的每行格子值，**只读序列**（类型文法形态 10）。
+#:
+#: 规则接口拿到的是**视图**，不是拷贝：内核内部棋盘是可变结构
+#: `list[list[int]]`（架构 §7.1），规则只读。写 `tuple[tuple[int, ...], ...]`
+#: 会逼内核在**每次调用规则接口时**深拷贝一份棋盘——消行判定是逐方块调用的
+#: 热路径。规则签名的 `board` 参数引用它。
+BOARD_VIEW = "Sequence[Sequence[int]]"
+
 __all__ = [
     "ARGS",
     "ARGS_VALUE",
     "BOARD_CELLS",
+    "BOARD_VIEW",
     "CELLS",
     "COORD_CELLS",
     "INT_TUPLE",
     "JSON_VALUE",
     "SCALAR_MAP",
+    "VECTOR2",
 ]

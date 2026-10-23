@@ -13,8 +13,6 @@
 - `BOARD_FIELDS`：`board` 子结构的 5 个字段（需求 §8.3 的棋盘子表）。
 - `ACTIVE_FIELDS`：`Active` 结构的 4 个字段（需求 §8.3：
   `Active(pieceType, rotation, x, y)`）。
-- `NAMED_STRUCTS`：命名结构注册表（结构名 → 成员表）——类型文法形态 9 的
-  唯一权威清单，成员表改名这里立刻跟着改。
 - `COORDINATE_CONVENTIONS`：坐标系约定（契约清单第 4 项）——落在声明里
   便于复核，不留在散文里。
 - `KERNEL_STATE_TO_SNAPSHOT`：M0 内核状态清单（spec §7.1，契约清单第 15 项）
@@ -40,7 +38,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import BOARD_CELLS, INT_TUPLE, SCALAR_MAP
+from .types import BOARD_CELLS, INT_TUPLE, SCALAR_MAP, VECTOR2
 
 # ---------------------------------------------------------------------------
 # 声明结构
@@ -149,18 +147,10 @@ ACTIVE_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
     }
 )
 
-#: **命名结构注册表**（类型文法形态 9）：结构名 → 成员表。
-#:
-#: 形态 9 的结构名**不是自由命名的别名**（`types.py` 附加规则 4）：只有登记在
-#: 这里的名字才合规，S6 的基线脚本按成员表展开计算哈希。**这张表是成员的
-#: 唯一权威清单**——文法回验从它推导结构名集合，不再另抄一份名单（抄一份的
-#: 后果：成员表改了名，回验还认旧名，两边悄悄分叉）。
-NAMED_STRUCTS: Mapping[str, Mapping[str, FieldSpec]] = MappingProxyType(
-    {
-        "Board": BOARD_FIELDS,
-        "Active": ACTIVE_FIELDS,
-    }
-)
+#: **命名结构注册表**在 `tetris_kernel.contracts.structures`（类型文法形态 9）：
+#: 它是**类型文法层面**的东西——快照的 `Board` / `Active`、放置的 `PlacementInfo`、
+#: 规则的五个结构共用同一张表，所以它住在自己的模块里，不寄居在快照模块。
+#: 结构名 → 成员表；成员表改名这里立刻跟着改。
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +174,7 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
         ),
         "ghostDelta": _field(
             "ghostDelta",
-            "tuple[int, int]",
+            VECTOR2,
             "幽灵落点相对活动方块的**位移向量** (dx, dy)。标准玩法恒为 (0, n)；"
             "重力可旋转等变体下 dx 亦可为非零，故不能用单一纵坐标表达",
         ),
@@ -296,7 +286,6 @@ __all__ = [
     "BOARD_FIELDS",
     "COORDINATE_CONVENTIONS",
     "KERNEL_STATE_TO_SNAPSHOT",
-    "NAMED_STRUCTS",
     "RUNTIME_ONLY_STATE",
     "SNAPSHOT_FIELDS",
     "SNAPSHOT_FIELD_NAMES",

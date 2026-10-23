@@ -1,10 +1,10 @@
-"""契约声明测试（S2 事件 / S3 命令 / S4 快照与放置 · S15 补全）。
+"""契约声明测试（S2 事件 / S3 命令 / S4 快照与放置 / S5 规则签名 · S15 补全）。
 
 当前覆盖：事件注册表（44 条）、命名空间、产出者分布、信封与元数据声明、
 命令规格（16 条）与拒绝原因枚举（12 值）、快照字段声明（21 顶层 + board 5
 子字段 + active 4 子字段）、坐标系约定、M0 内核状态清单、PlacementInfo、
-类型文法回验与公共叶子纯净度。
-S5 落地后，规则签名的对应断言补进本文件。
+规则接口签名（8 条）与四个中性交换结构、命名结构注册表、类型文法回验与
+公共叶子纯净度。
 """
 
 from __future__ import annotations
@@ -21,9 +21,12 @@ from tetris_kernel.contracts import (
     ACTIVE_FIELDS,
     ARGS,
     ARGS_VALUE,
+    AXIS_VALUES,
     BOARD_CELLS,
     BOARD_FIELDS,
+    BOARD_VIEW,
     CELLS,
+    CLEAR_AXIS_VALUES,
     COMMAND_TYPE_FIELDS,
     COMMAND_TYPES,
     COMMANDS,
@@ -42,13 +45,21 @@ from tetris_kernel.contracts import (
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
     REJECT_REASONS,
+    RULE_SIGNATURE_NAMES,
+    RULE_SIGNATURES,
     RUNTIME_ONLY_STATE,
     SCALAR_MAP,
     SNAPSHOT_FIELD_NAMES,
     SNAPSHOT_FIELDS,
+    VECTOR2,
+    ClearGroup,
     CommandSpec,
     EventSpec,
+    PlacementClass,
     PlacementInfo,
+    RuleContext,
+    ScoreDelta,
+    ScoreState,
     is_lifecycle_gated,
     namespace_of,
 )
@@ -1004,16 +1015,57 @@ def test_snapshot_types_reference_shared_constants() -> None:
     assert board_map["cells"] == BOARD_CELLS
 
 
+def test_field_spec_names_match_their_keys() -> None:
+    """字段声明表里，**键与 `FieldSpec.name` 必须是同一个名字**。
+
+    表是"字段名 → 声明"的映射。键与声明里的名字分家时，声明面就自相矛盾：
+    基线按键算哈希、按声明读名字，两边对不上，错误被摊平到看不见的地方
+    （S5 反向验证 M9 实测：把 `Board.width` 的声明改名，全库仍然全绿）。
+    """
+    for table_name, table in (
+        ("SNAPSHOT_FIELDS", SNAPSHOT_FIELDS),
+        ("BOARD_FIELDS", BOARD_FIELDS),
+        ("ACTIVE_FIELDS", ACTIVE_FIELDS),
+    ):
+        for key, spec in table.items():
+            assert spec.name == key, f"{table_name}[{key}] 的声明里写着 {spec.name}"
+
+
 def test_named_structs_registry_matches_member_tables() -> None:
     """形态 9 的结构名 ↔ 成员表：**一张注册表说了算**（`NAMED_STRUCTS`）。
 
     命名结构不是自由别名——文法表附加规则 4 要求"没登记的结构名一律不合规"。
-    注册表的键必须是需求 §8.3 定名的 `Board` / `Active`，值必须就是
-    `BOARD_FIELDS` / `ACTIVE_FIELDS`：两处对不上，S6 按成员表展开哈希时就会
-    取错表。**回验从这张表推导结构名集合，不另抄一份名单**——抄一份的后果是
-    成员表改了名，回验还认旧名，两边悄悄分叉。
+    成员表**从声明推导**：`Board` / `Active` 取自 `BOARD_FIELDS` /
+    `ACTIVE_FIELDS`，其余取自 frozen dataclass 的字段注解（`PlacementInfo` 与
+    规则侧的五个结构）——**注解即声明**，另抄一张表就是抄一份会漂移的副本。
+    **回验从这张表推导结构名集合，不另抄一份名单**——抄一份的后果是成员表改了
+    名，回验还认旧名，两边悄悄分叉。
     """
-    assert dict(NAMED_STRUCTS) == {"Board": BOARD_FIELDS, "Active": ACTIVE_FIELDS}
+    assert set(NAMED_STRUCTS) == {
+        "Board",
+        "Active",
+        "PlacementInfo",
+        "RuleContext",
+        "PlacementClass",
+        "ClearGroup",
+        "ScoreState",
+        "ScoreDelta",
+    }
+    assert dict(NAMED_STRUCTS["Board"]) == {name: spec.type for name, spec in BOARD_FIELDS.items()}
+    assert dict(NAMED_STRUCTS["Active"]) == {
+        name: spec.type for name, spec in ACTIVE_FIELDS.items()
+    }
+    for name, cls in (
+        ("PlacementInfo", PlacementInfo),
+        ("RuleContext", RuleContext),
+        ("PlacementClass", PlacementClass),
+        ("ClearGroup", ClearGroup),
+        ("ScoreState", ScoreState),
+        ("ScoreDelta", ScoreDelta),
+    ):
+        assert dict(NAMED_STRUCTS[name]) == {
+            field.name: str(field.type) for field in dataclasses.fields(cls)
+        }, name
     for name, members in NAMED_STRUCTS.items():
         assert members, f"{name} 的成员表是空的"
 
@@ -1097,6 +1149,268 @@ def test_placement_cells_uses_cells_coordinate_constant() -> None:
 
 
 # ---------------------------------------------------------------------------
+# S5：规则接口签名（架构 §7.3.1 · 8 条）与中性交换结构
+#
+# 架构 §7.3.1 的签名表，独立转录一份做交叉核对。转录的是「架构写了什么」，
+# 不是「声明写了什么」——拿声明自证，机检就只是证明自己没写错。
+# ---------------------------------------------------------------------------
+
+#: 键 = 签名名；值 = (参数声明 ((参数名, 类型串), ...), 返回类型串)。
+EXPECTED_RULE_SIGNATURES: dict[str, tuple[tuple[tuple[str, str], ...], str]] = {
+    "wrap_cell": (
+        (("x", "int"), ("y", "int"), ("w", "int"), ("h", "int")),
+        "tuple[int, int]",
+    ),
+    "gravity_vector": ((("ctx", "RuleContext"),), "tuple[int, int]"),
+    "gravity_interval": ((("ctx", "RuleContext"),), "int"),
+    "scan_clears": (
+        (("board", "Sequence[Sequence[int]]"), ("ctx", "RuleContext")),
+        "tuple[ClearGroup, ...]",
+    ),
+    "classify_placement": (
+        (
+            ("board", "Sequence[Sequence[int]]"),
+            ("placement", "PlacementInfo"),
+            ("ctx", "RuleContext"),
+        ),
+        "PlacementClass",
+    ),
+    "score_clear": (
+        (
+            ("groups", "Sequence[ClearGroup]"),
+            ("ctx", "RuleContext"),
+            ("prev", "ScoreState"),
+        ),
+        "ScoreDelta",
+    ),
+    "shape_cells": (
+        (("ctx", "RuleContext"), ("pieceType", "str"), ("rotation", "int")),
+        "tuple[tuple[int, int], ...]",
+    ),
+    "kick_offsets": (
+        (
+            ("ctx", "RuleContext"),
+            ("pieceType", "str"),
+            ("fromRotation", "int"),
+            ("toRotation", "int"),
+        ),
+        "tuple[tuple[int, int], ...]",
+    ),
+}
+
+#: 签名在架构 §7.3.1 表格里的顺序。
+EXPECTED_RULE_SIGNATURE_ORDER = (
+    "wrap_cell",
+    "gravity_vector",
+    "gravity_interval",
+    "scan_clears",
+    "classify_placement",
+    "score_clear",
+    "shape_cells",
+    "kick_offsets",
+)
+
+#: 8 条签名按能力分组：四项接口（边界 / 重力 / 消行 / 计分）+ 两张表
+#: （形状 / 踢墙）。FR-4.9：规则模块按这四项分别可插拔，**不另开第五项**。
+EXPECTED_SIGNATURE_GROUPS: dict[str, tuple[str, ...]] = {
+    "边界（拓扑）": ("wrap_cell",),
+    "重力": ("gravity_vector", "gravity_interval"),
+    "消行": ("scan_clears", "classify_placement"),
+    "计分": ("score_clear",),
+    "形状": ("shape_cells",),
+    "踢墙": ("kick_offsets",),
+}
+
+#: 四个中性交换结构的字段声明（字段名 + 类型串），**顺序也是契约**。
+EXPECTED_EXCHANGE_STRUCTURE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "PlacementClass": (("tSpin", "str"), ("classKey", "str")),
+    "ClearGroup": (
+        ("axis", "str"),
+        ("index", "int"),
+        ("cells", "tuple[tuple[int, int], ...]"),
+        ("classification", "PlacementClass | None"),
+    ),
+    "ScoreState": (
+        ("score", "int"),
+        ("lines", "int"),
+        ("combo", "int"),
+        ("b2b", "bool"),
+        ("level", "int"),
+    ),
+    "ScoreDelta": (
+        ("scoreDelta", "int"),
+        ("linesDelta", "int"),
+        ("state", "ScoreState"),
+    ),
+}
+
+
+def test_rule_signature_count_is_eight() -> None:
+    """规则接口签名 = **8 条**（四项接口 + 形状表 / 踢墙表，架构 §7.3.1）。"""
+    assert len(RULE_SIGNATURES) == 8
+    assert len(RULE_SIGNATURE_NAMES) == 8
+    assert len(set(RULE_SIGNATURE_NAMES)) == 8
+
+
+def test_rule_signatures_match_architecture_table() -> None:
+    """每条签名的**参数名与类型**与架构 §7.3.1 表格逐条相等。
+
+    参数名即契约：改名 = major 变更（签名进基线，架构 §7.6）。
+    """
+    assert set(RULE_SIGNATURES) == set(EXPECTED_RULE_SIGNATURES)
+    for name, (params, returns) in EXPECTED_RULE_SIGNATURES.items():
+        signature = RULE_SIGNATURES[name]
+        assert tuple((param.name, param.type) for param in signature.params) == params, name
+        assert signature.returns == returns, name
+
+
+def test_rule_signature_order_matches_architecture_table() -> None:
+    """签名顺序 = 架构 §7.3.1 表格顺序（顺序进基线，不得重排）。"""
+    assert RULE_SIGNATURE_NAMES == EXPECTED_RULE_SIGNATURE_ORDER
+
+
+def test_rule_signatures_cover_four_capabilities_and_two_tables() -> None:
+    """8 条 = 四项接口 + 两张表，**不另开第五项**（FR-4.9）。"""
+    grouped = tuple(name for group in EXPECTED_SIGNATURE_GROUPS.values() for name in group)
+    assert sorted(grouped) == sorted(RULE_SIGNATURE_NAMES)
+    assert len(grouped) == len(set(grouped)), "同一条签名被分到了两个能力下"
+
+
+def test_gravity_vector_returns_a_vector_not_only_dy() -> None:
+    """`gravity_vector` 返回**向量 (x, y)**，不能只有 dy——横向重力时 dy = 0。"""
+    assert RULE_SIGNATURES["gravity_vector"].returns == "tuple[int, int]"
+    assert RULE_SIGNATURES["gravity_vector"].returns != "int"
+
+
+def test_shape_and_kick_tables_carry_the_axis_dimension() -> None:
+    """形状表 / 踢墙表**必须带 `ctx`**（轴维度）。
+
+    M4-A5 要求表随重力方向变换，而变换由规则集整体提供、内核不做变换——
+    接口不带轴就选不出表（架构 §7.3.1 纪律 2）。**这是签名必须现在定的核心理由**。
+    """
+    for name in ("shape_cells", "kick_offsets"):
+        params = RULE_SIGNATURES[name].params
+        assert params[0].name == "ctx", name
+        assert params[0].type == "RuleContext", name
+
+
+def test_scan_clears_returns_groups_not_a_count() -> None:
+    """`scan_clears` 返回 `tuple[ClearGroup, ...]`——**不能只返回数量**。
+
+    只返回数量，内核就不知道消的是哪几行、哪几个格子，塌落动画与计分都失去
+    素材（架构 §7.3.1）。
+    """
+    assert RULE_SIGNATURES["scan_clears"].returns == "tuple[ClearGroup, ...]"
+    assert RULE_SIGNATURES["scan_clears"].returns != "int"
+
+
+def test_score_clear_takes_previous_state_and_returns_delta() -> None:
+    """`score_clear` 是纯函数：吃旧状态、吐增量与新状态，**落笔由内核做**。"""
+    params = {param.name: param.type for param in RULE_SIGNATURES["score_clear"].params}
+    assert params == {
+        "groups": "Sequence[ClearGroup]",
+        "ctx": "RuleContext",
+        "prev": "ScoreState",
+    }
+    assert RULE_SIGNATURES["score_clear"].returns == "ScoreDelta"
+
+
+def test_rule_context_fields_match_architecture() -> None:
+    """`RuleContext` 5 字段，与架构 §7.3.1 逐条相等（**顺序也是契约**）。
+
+    注解在 `from __future__ import annotations` 下以源码字符串形式存进
+    `__dataclass_fields__[*].type`，跨进程稳定——S6 基线脚本直接按它哈希。
+    """
+    actual = tuple((field.name, str(field.type)) for field in dataclasses.fields(RuleContext))
+    assert actual == (
+        ("frame", "int"),
+        ("level", "int"),
+        ("piecesPlaced", "int"),
+        ("axis", "str"),
+        ("stepMs", "int"),
+    )
+
+
+def test_exchange_structure_fields_match_declaration() -> None:
+    """四个中性交换结构的字段与声明逐条相等，**字段顺序也锁死**。"""
+    for cls in (PlacementClass, ClearGroup, ScoreState, ScoreDelta):
+        expected = EXPECTED_EXCHANGE_STRUCTURE_FIELDS[cls.__name__]
+        actual = tuple((field.name, str(field.type)) for field in dataclasses.fields(cls))
+        assert actual == expected, cls.__name__
+
+
+def test_exchange_structures_are_frozen() -> None:
+    """规则集不可变：`RuleContext` 与四个交换结构都是 frozen dataclass。
+
+    规则集一旦持有可变状态，FR-10.2 的存档恢复就得额外序列化规则集状态
+    （架构 §7.3.1 纪律 1）。
+    """
+    for cls in (RuleContext, PlacementClass, ClearGroup, ScoreState, ScoreDelta):
+        assert cls.__dataclass_params__.frozen is True  # type: ignore[attr-defined]
+
+
+def test_clear_group_cells_use_the_shared_coordinate_constant() -> None:
+    """`ClearGroup.cells` 的类型与 `COORD_CELLS` 是同一条（架构 §4.4 末条）。"""
+    cells_type = {field.name: str(field.type) for field in dataclasses.fields(ClearGroup)}["cells"]
+    assert cells_type == COORD_CELLS
+
+
+def test_clear_group_carries_the_placement_classification() -> None:
+    """T-Spin 分类**有地方可去**：`ClearGroup.classification`。
+
+    冻结的 `score_clear(groups, ctx, prev)` 只吃消行组，分类若无处安放，
+    计分模块就看不见 T-Spin，T-Spin 的分值没法算（FR-4.6）。分类挂在组上，
+    而不是给签名加参数——加参数就是改冻结签名。
+    """
+    fields = {field.name: str(field.type) for field in dataclasses.fields(ClearGroup)}
+    assert fields["classification"] == "PlacementClass | None"
+
+
+def test_rule_signature_types_reference_shared_constants() -> None:
+    """签名里的共享形状引用 `types.py` 的常量，不复制字面量（架构 §4.4 末条）。
+
+    复制字面量会两处各改各的，基线显示全绿而实际已经分叉。
+    """
+    scan_params = {param.name: param.type for param in RULE_SIGNATURES["scan_clears"].params}
+    assert scan_params["board"] == BOARD_VIEW
+    assert RULE_SIGNATURES["wrap_cell"].returns == VECTOR2
+    assert RULE_SIGNATURES["gravity_vector"].returns == VECTOR2
+    assert RULE_SIGNATURES["shape_cells"].returns == COORD_CELLS
+    assert RULE_SIGNATURES["kick_offsets"].returns == COORD_CELLS
+
+
+def test_axis_vocabularies_are_not_mixed() -> None:
+    """重力方向与消行轴是**两套**词汇，别混成一套。
+
+    `RuleContext.axis` 是重力方向（变体维度，契约层钉死）；`ClearGroup.axis`
+    是"这组被消的是行还是列"。标准玩法下两者对应 `down` ↔ `row`。
+    """
+    assert AXIS_VALUES == ("down", "left", "right", "up")
+    assert CLEAR_AXIS_VALUES == ("row", "column")
+    assert not set(AXIS_VALUES) & set(CLEAR_AXIS_VALUES)
+
+
+def test_contracts_never_import_kernel_or_rules() -> None:
+    """`contracts/` 内**不 import `kernel` / `rules` 的任何 dataclass**（架构 §7.3）。
+
+    规则接口只用中性类型——否则 `kernel > rules` 契约第一天就红，然后大概率被
+    加豁免，契约就废了。**越级相对导入也要挡**：绝对导入被白名单挡下，
+    `from ..kernel.snapshot import …` 却是包内相对导入，白名单看不见它。
+    """
+    contracts_dir = Path(contracts_pkg.__file__).parent
+    for path in sorted(contracts_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.level <= 1, f"{path.name}：越级相对导入（level={node.level}）"
+                module = node.module or ""
+                assert not module.startswith("tetris_kernel."), f"{path.name}：{module}"
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith("tetris_kernel."), f"{path.name}：{alias.name}"
+
+
+# ---------------------------------------------------------------------------
 # S4：类型文法回验（plan-M0.md 卡点：S4/S5 新增类型串要按新规则回验，别只写不验）
 # ---------------------------------------------------------------------------
 
@@ -1152,6 +1466,9 @@ def _parse_type(text: str) -> set[str]:
         if word == "tuple":
             parse_tuple()
             return "tuple"
+        if word == "Sequence":
+            parse_sequence()
+            return "sequence"
         if word in _SCALAR_NAMES:
             forms.add("1")
             return word
@@ -1212,6 +1529,16 @@ def _parse_type(text: str) -> set[str]:
         expect("]")
         forms.add("4")
 
+    def parse_sequence() -> None:
+        """解析 `Sequence[T]`（形态 10：只读序列容器，T 为形态 1–9 的任意组合）。"""
+        nonlocal pos
+        if pos >= n or text[pos] != "[":
+            raise _GrammarError(f"{text!r}：Sequence 后必须是 [")
+        pos += 1
+        parse_union()
+        expect("]")
+        forms.add("10")
+
     kinds = parse_union()
     if len(kinds) >= 2:
         if len(kinds) == 2 and kinds[1] == "none":
@@ -1256,28 +1583,46 @@ def _all_declared_type_strings() -> list[tuple[str, str]]:
     # `PlacementInfo` 的 dataclass 注解也是声明的类型串（spec §6.5 定稿的 6 条），
     # 同样按封闭文法回验——S4 自称"全库类型串回验"，漏掉这 6 条就是漏了。
     for field in dataclasses.fields(PlacementInfo):
-        pairs.append((f"placement.{field.name}", field.type))
+        pairs.append((f"placement.{field.name}", str(field.type)))
+    # 规则接口签名的参数与返回类型（S5）：签名进基线，类型串同样要按文法回验。
+    for name, signature in RULE_SIGNATURES.items():
+        for param in signature.params:
+            pairs.append((f"rule:{name}.{param.name}", param.type))
+        pairs.append((f"rule:{name}.returns", signature.returns))
+    # 命名结构的成员表（S5）：注册表里的每个成员类型都按文法回验——
+    # 形态 9 的成员类型变了而没人验，基线展开时才会发现。
+    for struct_name, members in NAMED_STRUCTS.items():
+        for member_name, member_type in members.items():
+            pairs.append((f"struct:{struct_name}.{member_name}", member_type))
     return pairs
 
 
 def test_all_type_strings_match_grammar() -> None:
-    """全部类型串按封闭文法回验（plan-M0.md S4 任务第 3 条）。
+    """全部类型串按封闭文法回验（plan-M0.md S4 任务第 3 条 · S5 续）。
 
     - 解析失败 = 文法表里没有的形态，红；
-    - 命名结构引用必须是已声明的 `Board` / `Active`（形态 9）；
+    - 命名结构引用必须是**已登记**的结构名（形态 9，名单从 `NAMED_STRUCTS` 推导）；
     - 形态 8（递归元组）只允许 `JSON_VALUE` 与信封 `payload` / `metadata`
-      两个容器串（开放取值域专用，文法附加规则第 3 条）。
+      两个容器串（开放取值域专用，文法附加规则第 3 条）；
+    - 形态 10（只读序列）只允许棋盘视图与消行组序列（文法附加规则第 5 条）。
     """
     recursive_allowed = {
         JSON_VALUE,
         f"tuple[tuple[str, {JSON_VALUE}], ...]",
     }
+    # 形态 10 的允许取值：棋盘只读视图 + 消行组序列。
+    # 这里抄的是**限制**不是声明——声明侧的类型串各自有常量或唯一出处。
+    sequence_allowed = {BOARD_VIEW, "Sequence[ClearGroup]"}
     for where, type_string in _all_declared_type_strings():
         forms = _parse_type(type_string)
         assert forms, where
         if "8" in forms:
             assert type_string in recursive_allowed, (
                 f"{where}：形态 8 只用于开放取值域（{type_string}）"
+            )
+        if "10" in forms:
+            assert type_string in sequence_allowed, (
+                f"{where}：形态 10 只用于棋盘视图 / 消行组序列（{type_string}）"
             )
 
 
@@ -1338,6 +1683,14 @@ def test_package_all_matches_actual_exports() -> None:
     assert len(exported) == len(set(exported)), "__all__ 里有重复名"
     for name in exported:
         assert hasattr(contracts_pkg, name), f"__all__ 声明了 {name}，包上却没有"
-    submodule_names = {"commands", "events", "placement", "snapshot", "types"}
+    submodule_names = {
+        "commands",
+        "events",
+        "placement",
+        "rules",
+        "snapshot",
+        "structures",
+        "types",
+    }
     public = {n for n in dir(contracts_pkg) if not n.startswith("_") and n not in submodule_names}
     assert public == set(exported), "包级公开名与 __all__ 不一致"
