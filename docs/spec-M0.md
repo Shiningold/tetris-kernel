@@ -32,7 +32,7 @@
 1. 五道门 G0-1…G0-5 全过，且每道门有一个可复跑的测试。
 2. `docs/契约v1清单.md` 16 项全勾，`contracts/` 基线已生成，生成基线的那次提交 message 写明「契约 v1 冻结」。
 3. `kernel/` + `rules/` 冻结哈希基线已生成（**M0 收尾才生成**，不是开工时）。
-4. 四条静态检查全绿：`ruff check .` · `pyright src/tetris_kernel` · `lint-imports` · `pytest`。
+4. 四条静态检查全绿：`ruff check .` · `pyright` · `lint-imports` · `pytest`。
 5. 开放项 B（单帧逻辑开销真实值）、C（每帧真实事件数）已采集并落档。
 
 ---
@@ -394,7 +394,7 @@ major 变更流程定**。
 | 项 | 要求 | 判定方式 |
 | --- | --- | --- |
 | 依赖方向 | `host > adapters > systems > bus > kernel > rules > contracts` 零违规；变体不 import kernel/bus/adapters/host；系统之间互不直调；内核/总线/规则不依赖第三方 | `lint-imports`（4 条契约全过） |
-| 类型 | `kernel/` 与 `bus/` 走 **strict**，其余 standard | `pyright src/tetris_kernel` 零错 |
+| 类型 | `kernel/` 与 `bus/` 走 **strict**，其余 standard | `pyright` 零错 |
 | Lint / 格式 | ruff 0.17.1（环境内那一份），line-length 100 | `ruff check .` · `ruff format` |
 | 内核纯净度 | 无第三方 import、无平台名、无墙钟读 | `tools/check_kernel_purity.py`（AST + 文本扫描） |
 | 事件登记 | 事件类型必须已登记在 `contracts/` | `tools/check_event_registry.py` |
@@ -425,7 +425,7 @@ M0 收尾时 **16 项全勾**：机检 11 项由 `contracts/` 的机器可读声
 
 ### 9.3 质量门（每道都必须是红的）
 
-`ruff check .` · `ruff format --check .` · `pyright src/tetris_kernel` · `lint-imports` · `pytest` · 四条 `tools/` 脚本。
+`ruff check .` · `ruff format --check .` · `pyright` · `lint-imports` · `pytest` · 四条 `tools/` 脚本。
 
 ### 9.4 开放项 B / C 的采集与落档
 

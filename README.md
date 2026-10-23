@@ -79,7 +79,7 @@ uv pip install --group dev
 | --- | --- |
 | 跑测试 | `pytest` |
 | Lint / 格式化 | `ruff check .` · `ruff format` |
-| 类型检查 | `pyright src/tetris_kernel` |
+| 类型检查 | `pyright`（覆盖 `src/` 与 `tools/`） |
 | 依赖方向检查 | `lint-imports` |
 | 构建 | `uv build`（产出 sdist + wheel） |
 

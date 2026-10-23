@@ -751,7 +751,7 @@ S18 收尾（PROGRESS / ai_docs / README）
 # 前置：conda activate py312（3.12.13）。禁 base、禁 pip install、禁 uv sync / uv venv
 ruff check .
 ruff format --check .
-pyright src/tetris_kernel
+pyright
 lint-imports
 pytest -q
 python tools\check_kernel_purity.py

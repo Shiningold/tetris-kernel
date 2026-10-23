@@ -18,7 +18,7 @@
 
 - conda 环境 **`py312`**（3.12.13）；⚠️ `base` 是 3.13.9，禁用。**禁** **`pip install`** **/** **`uv sync`** **/** **`uv venv`**（后两者自建 `.venv`，绕开 py312）。
 - 装依赖：`uv pip install --python D:\miniconda3\envs\py312\python.exe -e .`，再同参数 `--group dev`。
-- 测试 `pytest`｜检查 `ruff check .` · `pyright src/tetris_kernel` · `lint-imports`｜格式化 `ruff format`｜构建 `uv build`。细节见 `项目架构.md` §1.2–§1.3。
+- 测试 `pytest`｜检查 `ruff check .` · `pyright`（覆盖 `src/` 与 `tools/`）· `lint-imports`｜格式化 `ruff format`｜构建 `uv build`。细节见 `项目架构.md` §1.2–§1.3。
 - 仓库已建，提交规范见下。
 
 ## Git 提交规范
