@@ -18,6 +18,18 @@
 
 docstring 不算——那是散文，不是声明。
 
+## 命中之后怎么判（审查修订 L2）
+
+只看 `词:词` 的**形状**会把普通字符串也当成事件类型——契约层出现一个
+`"note:todo"`（说明文案、映射键、诊断标签）就被拦，是误报；**误报会让
+整个机制失效**。所以分两档：
+
+- **命名空间已登记**（`kernel` / `board` / `piece` …，**从注册表推导**，不另抄
+  一份名单）→ 形状对得上却没登记 → **红**：这才是真问题（在既有命名空间下
+  私造事件类型）。
+- **命名空间未登记** → **警告**：可能是新命名空间的事件，也可能是普通字符串，
+  拿不准就别拦——但要说一声。
+
 ## 用法
 
 ```
@@ -25,7 +37,8 @@ python tools/check_event_registry.py
 python tools/check_event_registry.py --path src/tetris_kernel/contracts
 ```
 
-退出码：0 = 全部已登记；1 = 有未登记的事件类型；2 = 用法或 IO 错误。
+退出码：0 = 全部已登记（可能有警告）；1 = 有未登记的事件类型；2 = 用法或 IO 错误
+（**目录不存在也算 2**——「我没扫到」和「我扫了没问题」不能是同一个结果）。
 """
 
 from __future__ import annotations
@@ -42,6 +55,7 @@ from _toolkit import SRC_ROOT, configure_output, iter_python_files, relative_to_
 sys.path.insert(0, str(SRC_ROOT))
 
 from tetris_kernel.contracts import EVENT_TYPES  # noqa: E402
+from tetris_kernel.contracts.events import namespace_of  # noqa: E402
 
 #: 包根（默认扫描范围）。
 PACKAGE_ROOT = SRC_ROOT / "tetris_kernel"
@@ -49,6 +63,12 @@ PACKAGE_ROOT = SRC_ROOT / "tetris_kernel"
 #: 事件类型的形状：`命名空间:名字`（名字可含 `:` 与 `-`），例如
 #: `kernel:ready` / `board:lines-cleared` / `kernel:system:installed`。
 EVENT_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?::[a-z0-9]+(?:-[a-z0-9]+)*)+$")
+
+#: **已登记的事件命名空间**——从注册表推导，不另抄一份名单。
+#:
+#: 抄一份的后果：注册表加了新命名空间而这张名单没跟着改，新命名空间下私造的
+#: 事件类型就会从"红"降级成"警告"（规则与机检悄悄分叉）。
+EVENT_NAMESPACES = frozenset(namespace_of(event_type) for event_type in EVENT_TYPES)
 
 
 @dataclass(frozen=True)
@@ -58,6 +78,7 @@ class Finding:
     path: str
     line: int
     event_type: str
+    blocking: bool = True
 
 
 def _docstring_nodes(tree: ast.AST) -> set[int]:
@@ -87,21 +108,35 @@ def check_file(path: Path) -> list[Finding]:
         text = node.value
         if not EVENT_TYPE_PATTERN.match(text):
             continue
-        if text not in EVENT_TYPES:
-            findings.append(Finding(rel, node.lineno, text))
+        if text in EVENT_TYPES:
+            continue
+        namespace = text.split(":", 1)[0]
+        findings.append(
+            Finding(
+                rel,
+                node.lineno,
+                text,
+                blocking=namespace in EVENT_NAMESPACES,
+            )
+        )
     return findings
 
 
-def check_paths(roots: list[Path]) -> list[Finding]:
-    """检查若干目录下的全部 `.py` 文件。"""
+def check_paths(roots: list[Path]) -> tuple[list[Finding], list[Path]]:
+    """检查若干目录下的全部 `.py` 文件。
+
+    返回（发现, **缺失的目录**）。目录不存在是 IO 错误，不是"这里没有违规"
+    （审查修订 M2）：路径打错就全绿，是守护脚本最坏的失败模式。
+    """
     findings: list[Finding] = []
+    missing: list[Path] = []
     for root in roots:
         if not root.is_dir():
-            print(f"目录不存在：{relative_to_repo(root)}", file=sys.stderr)
+            missing.append(root)
             continue
         for path in iter_python_files(root):
             findings += check_file(path)
-    return findings
+    return findings, missing
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,16 +155,27 @@ def main(argv: list[str] | None = None) -> int:
     roots = args.path if args.path else [PACKAGE_ROOT]
     print(f"注册表里有 {len(EVENT_TYPES)} 条事件类型。")
     try:
-        findings = check_paths(roots)
+        findings, missing = check_paths(roots)
     except (OSError, SyntaxError) as error:
         print(f"扫描失败：{error}", file=sys.stderr)
         return 2
 
-    for finding in findings:
-        print(f"{finding.path}:{finding.line}: 未登记的事件类型 {finding.event_type!r}")
+    for root in missing:
+        print(f"目录不存在：{relative_to_repo(root)}")
+        print(f"目录不存在：{relative_to_repo(root)}", file=sys.stderr)
 
-    if findings:
-        print(f"事件类型登记检查失败：{len(findings)} 处未登记。", file=sys.stderr)
+    blocking = [finding for finding in findings if finding.blocking]
+    warnings = [finding for finding in findings if not finding.blocking]
+    for finding in findings:
+        mark = "红" if finding.blocking else "警告"
+        print(f"{finding.path}:{finding.line}: [{mark}] 未登记的事件类型 {finding.event_type!r}")
+
+    print(f"红 {len(blocking)} 条 · 警告 {len(warnings)} 条")
+    if missing:
+        print(f"有 {len(missing)} 个目录不存在：没扫到 ≠ 扫过没问题。", file=sys.stderr)
+        return 2
+    if blocking:
+        print(f"事件类型登记检查失败：{len(blocking)} 处未登记。", file=sys.stderr)
         return 1
     print("事件类型登记检查通过。")
     return 0

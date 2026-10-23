@@ -54,12 +54,23 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, cast
 
 from _toolkit import configure_output, relative_to_repo
 
 #: 帧循环的约定位置（S14 落地后才有）。
 RUNNER_MODULE = "tetris_kernel.host.headless"
 RUNNER_FUNCTION = "run_frames"
+
+
+class FrameRunner(Protocol):
+    """帧循环的协议：`(seed=…, frames=…)` → 逐帧吐出 `(耗时微秒, 事件条数)`。
+
+    **写成协议而不是 `object`**：协议让调用点有类型可查（审查修订 L7 指出
+    `_load_runner()` 返回 `object` 只能靠 `# type: ignore` 撑着）。
+    """
+
+    def __call__(self, *, seed: int, frames: int) -> Iterator[tuple[int, int]]: ...
 
 
 @dataclass(frozen=True)
@@ -127,7 +138,7 @@ def summarize(costs_us: list[int], event_counts: list[int]) -> Summary:
     )
 
 
-def _load_runner() -> object:
+def _load_runner() -> FrameRunner:
     """取内核的无头帧循环（S14 之后才有）。"""
     import importlib
 
@@ -141,7 +152,7 @@ def _load_runner() -> object:
     runner = getattr(module, RUNNER_FUNCTION, None)
     if runner is None:
         raise RuntimeError(f"{RUNNER_MODULE} 里没有 {RUNNER_FUNCTION}()")
-    return runner
+    return cast(FrameRunner, runner)
 
 
 def _synthetic_samples(frames: int, seed: int) -> Iterator[tuple[int, int]]:
@@ -161,7 +172,7 @@ def _measure(frames: int, seed: int) -> tuple[list[int], list[int]]:
     runner = _load_runner()
     costs: list[int] = []
     events: list[int] = []
-    for sample in runner(seed=seed, frames=frames):  # type: ignore[operator]
+    for sample in runner(seed=seed, frames=frames):
         elapsed_us, event_count = sample
         costs.append(int(elapsed_us))
         events.append(int(event_count))

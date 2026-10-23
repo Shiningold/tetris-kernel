@@ -28,6 +28,25 @@
 `id()` **只警告不阻断**（架构 §5.3 明说）——它不读墙钟，但会让同一状态在
 不同进程里长得不一样，值得提一句，不值得拦。
 
+## 写法的变体一律认（审查修订）
+
+只看「属性调用」会漏掉一大片写法，所以这里先把**导入绑定**追出来，再把调用
+还原成「模块.原始名」的标准形状：
+
+| 写法 | 还原成 |
+| --- | --- |
+| `import time` → `time.time()` | `time.time` |
+| `import time as t` → `t.time()` | `time.time` |
+| `from time import time` → `time()` | `time.time` |
+| `import datetime` → `datetime.datetime.now()` | `datetime.datetime.now` |
+| `from datetime import datetime` → `datetime.now()` | `datetime.datetime.now` |
+| `import random as r` → `r.random()` | `random.random` |
+
+**属性链与别名都要追**：第一版只认 `Name.attr` 形状，于是
+`datetime.datetime.now()`（属性链）、`from time import time` 之后的 `time()`、
+`import random as r` 之后的 `r.random()` 全都漏网——实测三种都绿。
+**守卫要能触发，漏网的守卫等于没守。**
+
 ## 用法
 
 ```
@@ -35,7 +54,8 @@ python tools/check_kernel_purity.py            # 扫冻结区
 python tools/check_kernel_purity.py --path src/tetris_kernel/bus   # 另扫一处
 ```
 
-退出码：0 = 干净（可能有警告）；1 = 有违规；2 = 用法或 IO 错误。
+退出码：0 = 干净（可能有警告）；1 = 有违规；2 = 用法或 IO 错误
+（**目录不存在也算 2**——「我没扫到」和「我扫了没问题」不能是同一个结果）。
 """
 
 from __future__ import annotations
@@ -57,35 +77,51 @@ INTERNAL_ROOT = "tetris_kernel"
 #: **随机源模块**（相对 `src/tetris_kernel/`）：`random.Random()` 只允许出现在这里。
 RANDOM_SOURCE_MODULE = "kernel/rng.py"
 
-#: 墙钟读的函数名（按模块分组）。架构 §5.3 点名的全在这儿，另补了同族的
-#: `localtime` / `gmtime`（它们读的是墙上时刻）。
-WALL_CLOCK_FUNCTIONS: dict[str, frozenset[str]] = {
-    "time": frozenset(
-        {
-            "time",
-            "time_ns",
-            "monotonic",
-            "monotonic_ns",
-            "perf_counter",
-            "perf_counter_ns",
-            "process_time",
-            "process_time_ns",
-            "localtime",
-            "gmtime",
-        }
-    ),
-    "datetime": frozenset({"now", "utcnow", "today"}),
-    "os": frozenset({"urandom"}),
-    "uuid": frozenset({"uuid1", "uuid3", "uuid4", "uuid5", "getnode"}),
-}
+#: 墙钟读的**标准形状**（模块.原始名）。架构 §5.3 点名的全在这儿，另补了同族的
+#: `localtime` / `gmtime`（它们读的是墙上时刻）与 `datetime` 的几种取法。
+WALL_CLOCK_PATHS = frozenset(
+    {
+        "time.time",
+        "time.time_ns",
+        "time.monotonic",
+        "time.monotonic_ns",
+        "time.perf_counter",
+        "time.perf_counter_ns",
+        "time.process_time",
+        "time.process_time_ns",
+        "time.localtime",
+        "time.gmtime",
+        "os.urandom",
+        "uuid.uuid1",
+        "uuid.uuid3",
+        "uuid.uuid4",
+        "uuid.uuid5",
+        "uuid.getnode",
+        "datetime.datetime.now",
+        "datetime.datetime.utcnow",
+        "datetime.datetime.today",
+        "datetime.date.now",
+        "datetime.date.today",
+        "datetime.now",
+        "datetime.today",
+    }
+)
 
 #: 平台名——出现即说明代码在按操作系统分叉。
+#:
+#: **只收歧义小的**：`"nt"` / `"posix"` 是 `os.name` 的取值，也是极短的常见词，
+#: 内核里出现一个值为 `"nt"` 的普通字符串（模式名、状态缩写）就会被**阻断**。
+#: 误报会让整个机制失效，所以这两个**不收**——`os.name` 与 `sys.platform`
+#: 的**读取**由属性检查结构性地抓住（见 `PLATFORM_ATTRIBUTES`），不靠字面量。
 PLATFORM_NAMES = frozenset(
-    {"win32", "linux", "linux2", "darwin", "cygwin", "nt", "posix", "aix", "freebsd"}
+    {"win32", "linux", "linux2", "darwin", "cygwin", "aix", "freebsd", "sunos"}
 )
 
 #: 平台判定入口（属性访问）：`sys.platform` / `os.name`。
-PLATFORM_ATTRIBUTES = frozenset({("sys", "platform"), ("os", "name")})
+PLATFORM_ATTRIBUTES = frozenset({"sys.platform", "os.name"})
+
+#: 导入绑定：本地名 → (来源模块根, 原始名)。原始名为 `None` 表示「这是模块本身」。
+Binding = tuple[str, str | None]
 
 
 @dataclass(frozen=True)
@@ -116,32 +152,97 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
     return ids
 
 
-def _module_of_import(node: ast.Import | ast.ImportFrom) -> str:
-    """取导入的根模块名（相对导入返回空串）。"""
-    if isinstance(node, ast.ImportFrom):
-        if node.level and node.level > 0:
-            return ""  # 包内相对导入
-        return (node.module or "").split(".")[0]
-    return node.names[0].name.split(".")[0]
+def _import_bindings(tree: ast.AST) -> dict[str, Binding]:
+    """建立「本地名 → (来源模块根, 原始名)」的导入绑定表。
+
+    **别名与 from-import 都要追**：只认「模块名 + 属性名」这一个形状的话，
+    `import time as t` 之后的 `t.time()`、`from time import time` 之后的 `time()`
+    就都成了看不见的调用。
+    """
+    bindings: dict[str, Binding] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                local = alias.asname or root
+                bindings[local] = (root, None)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                continue  # 包内相对导入
+            root = (node.module or "").split(".")[0]
+            for alias in node.names:
+                bindings[alias.asname or alias.name] = (root, alias.name)
+    return bindings
+
+
+def _dotted_path(node: ast.expr) -> str | None:
+    """把属性链还原成点分路径（`datetime.datetime.now` → 字符串）。"""
+    parts: list[str] = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
+def _canonical_path(path: str, bindings: dict[str, Binding]) -> str:
+    """把本地写法还原成「模块.原始名」的标准形状。
+
+    - `t.time()` + `import time as t` → `time.time`
+    - `time()` + `from time import time` → `time.time`
+    - `datetime.datetime.now()` + `import datetime` → `datetime.datetime.now`
+    - `datetime.now()` + `from datetime import datetime` → `datetime.datetime.now`
+    """
+    head, _, rest = path.partition(".")
+    binding = bindings.get(head)
+    if binding is None:
+        return path
+    module_root, original = binding
+    if original is None:
+        return f"{module_root}.{rest}" if rest else module_root
+    tail = f".{rest}" if rest else ""
+    return f"{module_root}.{original}{tail}"
 
 
 def _check_imports(tree: ast.AST, path: str) -> list[Finding]:
-    """第三方 import 检查。"""
+    """第三方 import 检查。
+
+    **一条 import 语句里的每个名字都要判**：只判第一个的话，
+    `import os, numpy` 会整条漏过（`numpy` 藏在第二个名字里）。
+    """
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Import | ast.ImportFrom):
-            continue
-        root = _module_of_import(node)
-        if not root:
-            continue
-        if root in STDLIB_MODULES or root == INTERNAL_ROOT:
-            continue
-        line = getattr(node, "lineno", 0)
-        name = getattr(node, "names", [None])[0]
-        detail = getattr(name, "name", "") if name is not None else ""
-        findings.append(
-            Finding(path, line, "第三方 import", f"内核只能依赖标准库，发现 {detail or root}")
-        )
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in STDLIB_MODULES or root == INTERNAL_ROOT:
+                    continue
+                findings.append(
+                    Finding(
+                        path,
+                        node.lineno,
+                        "第三方 import",
+                        f"内核只能依赖标准库，发现 {alias.name}",
+                    )
+                )
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                continue  # 包内相对导入
+            root = (node.module or "").split(".")[0]
+            if not root or root in STDLIB_MODULES or root == INTERNAL_ROOT:
+                continue
+            names = "、".join(alias.name for alias in node.names)
+            findings.append(
+                Finding(
+                    path,
+                    node.lineno,
+                    "第三方 import",
+                    f"内核只能依赖标准库，发现 from {node.module} import {names}",
+                )
+            )
     return findings
 
 
@@ -149,15 +250,19 @@ def _check_platform_imports(tree: ast.AST, path: str) -> list[Finding]:
     """`platform` 模块本身就不许出现。"""
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Import | ast.ImportFrom):
-            continue
-        if _module_of_import(node) != "platform":
-            continue
-        findings.append(Finding(path, getattr(node, "lineno", 0), "平台名", "不得 import platform"))
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "platform":
+                    findings.append(Finding(path, node.lineno, "平台名", "不得 import platform"))
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "platform":
+                findings.append(Finding(path, node.lineno, "平台名", "不得 from platform import …"))
     return findings
 
 
-def _check_platform_attributes(tree: ast.AST, path: str) -> list[Finding]:
+def _check_platform_attributes(
+    tree: ast.AST, path: str, bindings: dict[str, Binding]
+) -> list[Finding]:
     """平台判定属性：`sys.platform` / `os.name`。
 
     **单独一条**，不挂在调用检查里——`sys.platform == "win32"` 是个比较，
@@ -165,48 +270,43 @@ def _check_platform_attributes(tree: ast.AST, path: str) -> list[Finding]:
     """
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+        if not isinstance(node, ast.Attribute):
             continue
-        if (node.value.id, node.attr) in PLATFORM_ATTRIBUTES:
+        path_str = _dotted_path(node)
+        if path_str is None:
+            continue
+        canonical = _canonical_path(path_str, bindings)
+        if canonical in PLATFORM_ATTRIBUTES:
             findings.append(
-                Finding(
-                    path,
-                    node.lineno,
-                    "平台名",
-                    f"不得读 {node.value.id}.{node.attr}（按操作系统分叉）",
-                )
+                Finding(path, node.lineno, "平台名", f"不得读 {canonical}（按操作系统分叉）")
             )
     return findings
 
 
-def _check_calls(tree: ast.AST, path: str, allow_random: bool) -> list[Finding]:
-    """墙钟读、平台判定、未注入随机源——都从**调用点**认。"""
+def _check_calls(
+    tree: ast.AST, path: str, bindings: dict[str, Binding], allow_random: bool
+) -> list[Finding]:
+    """墙钟读、未注入随机源——从**调用点**认，形状先还原再判。"""
     findings: list[Finding] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+        path_str = _dotted_path(node.func)
+        if path_str is None:
             continue
-        module = func.value.id
-        attr = func.attr
-        if module == "random":
-            if attr == "Random" and allow_random:
+        canonical = _canonical_path(path_str, bindings)
+        if canonical.startswith("random."):
+            if canonical == "random.Random" and allow_random:
                 continue  # 被注入的随机源：只许在随机源模块里
-            findings.append(
-                Finding(
-                    path,
-                    node.lineno,
-                    "随机源",
-                    f"random.{attr}()：模块级随机数不可播种、不可复现"
-                    if attr != "Random"
-                    else "random.Random()：未注入的随机源，只许出现在随机源模块",
-                )
+            message = (
+                "random.Random()：未注入的随机源，只许出现在随机源模块"
+                if canonical == "random.Random"
+                else f"{canonical}()：模块级随机数不可播种、不可复现"
             )
+            findings.append(Finding(path, node.lineno, "随机源", message))
             continue
-        banned = WALL_CLOCK_FUNCTIONS.get(module)
-        if banned and attr in banned:
-            findings.append(Finding(path, node.lineno, "墙钟读", f"不得读墙钟：{module}.{attr}()"))
+        if canonical in WALL_CLOCK_PATHS:
+            findings.append(Finding(path, node.lineno, "墙钟读", f"不得读墙钟：{canonical}()"))
     return findings
 
 
@@ -248,27 +348,34 @@ def check_file(path: Path, allow_random: bool) -> list[Finding]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     rel = relative_to_repo(path)
+    bindings = _import_bindings(tree)
     findings: list[Finding] = []
     findings += _check_imports(tree, rel)
     findings += _check_platform_imports(tree, rel)
-    findings += _check_platform_attributes(tree, rel)
-    findings += _check_calls(tree, rel, allow_random)
+    findings += _check_platform_attributes(tree, rel, bindings)
+    findings += _check_calls(tree, rel, bindings, allow_random)
     findings += _check_platform_literals(tree, rel, _docstring_nodes(tree))
     findings += _check_id_calls(tree, rel)
     return findings
 
 
-def check_paths(roots: list[Path]) -> list[Finding]:
-    """检查若干目录下的全部 `.py` 文件。"""
+def check_paths(roots: list[Path]) -> tuple[list[Finding], list[Path]]:
+    """检查若干目录下的全部 `.py` 文件。
+
+    返回（发现, **缺失的目录**）。目录不存在**不是"这里没有违规"**——
+    它是 IO 错误，退出码该是 2；当成"干净"就是把「我没扫到」和「我扫了没问题」
+    混成同一个结果，那是最坏的失败模式（审查修订 M2）。
+    """
     findings: list[Finding] = []
+    missing: list[Path] = []
     for root in roots:
         if not root.is_dir():
-            print(f"目录不存在：{relative_to_repo(root)}", file=sys.stderr)
+            missing.append(root)
             continue
         for path in iter_python_files(root):
             allow_random = relative_to_repo(path).endswith(RANDOM_SOURCE_MODULE)
             findings += check_file(path, allow_random)
-    return findings
+    return findings, missing
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -286,10 +393,15 @@ def main(argv: list[str] | None = None) -> int:
 
     roots = args.path if args.path else list(FROZEN_DIRS)
     try:
-        findings = check_paths(roots)
+        findings, missing = check_paths(roots)
     except (OSError, SyntaxError) as error:
         print(f"扫描失败：{error}", file=sys.stderr)
         return 2
+
+    for root in missing:
+        # stdout 也打一份：CI 常只收 stdout，只写 stderr 容易看不见。
+        print(f"目录不存在：{relative_to_repo(root)}")
+        print(f"目录不存在：{relative_to_repo(root)}", file=sys.stderr)
 
     blocking = [finding for finding in findings if finding.blocking]
     warnings = [finding for finding in findings if not finding.blocking]
@@ -297,7 +409,13 @@ def main(argv: list[str] | None = None) -> int:
         mark = "红" if finding.blocking else "警告"
         print(f"{finding.path}:{finding.line}: [{finding.category}·{mark}] {finding.message}")
 
-    print(f"扫了 {len(roots)} 个目录：违规 {len(blocking)} 条 · 警告 {len(warnings)} 条")
+    print(
+        f"扫了 {len(roots) - len(missing)} 个目录：违规 {len(blocking)} 条"
+        f" · 警告 {len(warnings)} 条"
+    )
+    if missing:
+        print(f"有 {len(missing)} 个目录不存在：没扫到 ≠ 扫过没问题。", file=sys.stderr)
+        return 2
     if blocking:
         print("内核纯净度检查失败。", file=sys.stderr)
         return 1

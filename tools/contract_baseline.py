@@ -14,6 +14,10 @@
 - **禁止已有键的哈希变化**：改既有字段的类型 = major 变更。
 - **已有键消失也红**：改名 = 删旧键 + 加新键，只看「新增」会把它当成纯新增
   ——**成员表是从声明推导的，改名会被误判**。所以删键必须报出来。
+- **冻结面整条增删也红**：规则签名（架构 §7.3.1 的 8 条）与命名结构注册表是
+  **v1 冻结面**，整条新增只产生新键——按「新增键放行」会一路绿灯。所以两条
+  **计数键**（`count/ruleSignature` · `count/namedStruct`）把条数钉住。
+  事件与命令**不加**计数键：架构 §4.4 明确允许新增事件与命令。
 
 ## 为什么基线要按字段级而不是压成一坨
 
@@ -36,7 +40,7 @@
 ```
 python tools/contract_baseline.py                    # 校验（默认）
 python tools/contract_baseline.py --update-baseline   # 生成 / 刷新基线
-python tools/contract_baseline.py --checklist         # 只看清单状态
+python tools/contract_baseline.py --checklist-only    # 只看清单状态
 python tools/contract_baseline.py --print-entries     # 打印当前条目（排查用）
 ```
 
@@ -153,10 +157,21 @@ def collect_entries() -> list[Entry]:
 
     **结构性的那几条是刻意加的**：参数顺序、门禁归属、拒绝原因、生产者这些
     改动不体现在任何单个字段的类型串上，不单独钉住就等于没进基线。
+
+    **两条计数键管"整条增删"**：签名与命名结构是 v1 冻结面，整条新增只产生
+    新键——按"新增键放行"的口径会一路绿灯（审查修订 M3）。
     """
     entries: list[Entry] = []
+    seen: set[str] = set()
 
     def add(key: str, canonical: str) -> None:
+        # 撞键必须当场炸：`entries` 是 list，转 dict 时**后写的会静默顶掉前写的**
+        # ——某条声明就这么没进基线，而基线看起来全绿（审查修订 L4）。
+        # 结构性键（producer / returns / paramOrder …）与字段名共用一套命名空间，
+        # 所以这条断言不是摆设。
+        if key in seen:
+            raise ValueError(f"基线键重复：{key}")
+        seen.add(key)
         entries.append(Entry(key=key, canonical=canonical, digest=blake2b_hex(canonical)))
 
     def add_type(key: str, type_text: str) -> None:
@@ -201,6 +216,19 @@ def collect_entries() -> list[Entry]:
     for struct_name, members in NAMED_STRUCTS.items():
         for member_name, member_type in members.items():
             add_type(f"struct/{struct_name}/{member_name}", member_type)
+
+    # -- 结构性计数键：整条增删要红（审查修订 M3） --
+    #
+    # 签名是 v1 冻结面（架构 §7.3.1 的 **8 条** · ADR-061）：**整条新增一条签名**
+    # 只产生新键，按"新增键放行"的口径会一路绿灯放过去——比改参数更大的接口变更
+    # 反而更难被发现。命名结构注册表同理（它是形态 9 的展开源，加一个结构就是
+    # 加一份契约面）。计数键一变，已有键的哈希就变 → 红。
+    #
+    # **事件与命令不加计数键**：架构 §4.4 明确「允许新增键（新增字段、事件、
+    # 命令）」——新增事件 / 命令是正常成长，不该红；签名与命名结构是**冻结面**，
+    # 增删要红。两者口径不同，是有意的。
+    add("count/ruleSignature", str(len(RULE_SIGNATURES)))
+    add("count/namedStruct", str(len(NAMED_STRUCTS)))
 
     return entries
 
@@ -351,6 +379,10 @@ def main(argv: list[str] | None = None) -> int:
         entries = collect_entries()
     except GrammarError as error:
         print(f"契约声明不符合类型文法，拒绝进基线：{error}", file=sys.stderr)
+        return 2
+    except ValueError as error:
+        # 键撞了 / 条数对不上——**当场报错，不让它悄悄少一条声明**。
+        print(f"契约声明自身有问题，拒绝进基线：{error}", file=sys.stderr)
         return 2
 
     if args.print_entries:
