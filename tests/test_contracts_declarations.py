@@ -1,7 +1,8 @@
-"""契约声明测试（S2 骨架 · S15 补全）。
+"""契约声明测试（S2 事件 / S3 命令 · S15 补全）。
 
-当前覆盖：事件注册表（44 条）、命名空间、产出者分布、信封与元数据声明。
-S3–S5 落地后，命令 / 快照 / 规则签名的对应断言补进本文件。
+当前覆盖：事件注册表（44 条）、命名空间、产出者分布、信封与元数据声明、
+命令规格（16 条）与拒绝原因枚举（12 值）。
+S4–S5 落地后，快照 / 规则签名的对应断言补进本文件。
 """
 
 from __future__ import annotations
@@ -9,12 +10,23 @@ from __future__ import annotations
 import pytest
 
 from tetris_kernel.contracts import (
+    ARGS,
+    ARGS_VALUE,
+    COMMAND_ARGS_TYPE,
+    COMMAND_TYPES,
+    COMMANDS,
     CONTRACT_VERSION,
     ENVELOPE_FIELDS,
     EVENT_TYPES,
+    LIFECYCLE_REJECT_REASONS,
     METADATA_KEYS,
     PRODUCER_LABELS,
+    REJECT_REASON_CATEGORIES,
+    REJECT_REASON_CATEGORY_LABELS,
+    REJECT_REASONS,
+    CommandSpec,
     EventSpec,
+    is_lifecycle_gated,
     namespace_of,
 )
 
@@ -455,3 +467,333 @@ def test_same_field_name_means_same_type() -> None:
                 ), f"{field.name} 在 {previous[0]} 是 {previous[1]}，在 {name} 却是 {field.type}"
             else:
                 seen[field.name] = (name, field.type)
+
+
+# ---------------------------------------------------------------------------
+# S3：命令契约声明（需求 §8.2）
+#
+# 下面三张表**独立转录**自 `docs/需求与边界.md` §8.2，与 `contracts/commands.py`
+# 的声明互为对照。转录的是「需求写了什么」，不是「实现写了什么」——
+# 两者相等才有意义。
+# ---------------------------------------------------------------------------
+
+#: 16 条命令的参数规格。键 = 命令名，值 = ((参数名, 类型, 是否可空), ...)。
+EXPECTED_COMMAND_ARGS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    # 生命周期（4 条）——全无参
+    "start": (),
+    "pause": (),
+    "resume": (),
+    "reset": (),
+    # 移动与下落（4 条）——全无参
+    "moveLeft": (),
+    "moveRight": (),
+    "softDrop": (),
+    "hardDrop": (),
+    # 旋转（3 条）——全无参
+    "rotateCW": (),
+    "rotateCCW": (),
+    "rotate180": (),
+    # 暂存与推进（2 条）——全无参
+    "hold": (),
+    "tick": (),
+    # 参数类（1 条）
+    "setLevel": (("level", "int", False),),
+    # 外部写入（2 条）
+    "injectGarbage": (("rows", "int", False), ("holes", "tuple[int, ...]", False)),
+    "writeCells": (("cells", "tuple[tuple[int, int, int], ...]", False),),
+}
+
+#: 拒绝原因枚举（12 值），转录自需求 §8.2 的分类表。
+EXPECTED_REJECT_REASONS: tuple[str, ...] = (
+    "not_started",
+    "paused",
+    "game_over",
+    "quota_exceeded",
+    "invalid_argument",
+    "level_out_of_range",
+    "out_of_bounds",
+    "illegal_transition",
+    "no_active_piece",
+    "hold_already_used",
+    "not_authorized",
+    "write_condition_failed",
+)
+
+#: 拒绝原因的分类（需求 §8.2 的「类」列）。键 = 分类代号。
+EXPECTED_REJECT_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "lifecycle": ("not_started", "paused", "game_over"),
+    "quota": ("quota_exceeded",),
+    "parameter": ("invalid_argument", "level_out_of_range", "out_of_bounds"),
+    "state": ("illegal_transition", "no_active_piece", "hold_already_used"),
+    "controlled_write": ("not_authorized", "write_condition_failed"),
+}
+
+#: 每条命令的可拒绝原因。转录自需求 §8.2 的「可被拒绝的情形」列，
+#: **加上三条跨切规则**（统一生命周期门禁 · 配额 · 参数不合规格）。
+EXPECTED_COMMAND_REJECT_REASONS: dict[str, frozenset[str]] = {
+    # 生命周期命令：状态问题走 illegal_transition，不是门禁三值
+    "start": frozenset({"invalid_argument", "illegal_transition"}),
+    "pause": frozenset({"invalid_argument", "illegal_transition"}),
+    "resume": frozenset({"invalid_argument", "illegal_transition"}),
+    "reset": frozenset({"invalid_argument", "illegal_transition"}),
+    # 移动 / 下落 / 旋转：门禁三值 + 无活动方块
+    "moveLeft": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    "moveRight": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    "softDrop": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    "hardDrop": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    "rotateCW": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    "rotateCCW": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    "rotate180": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "no_active_piece",
+        }
+    ),
+    # 暂存：门禁三值 + 本块已用过暂存
+    "hold": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "hold_already_used",
+        }
+    ),
+    # 推进：未在运行中 = 门禁三值
+    "tick": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+        }
+    ),
+    # 设置等级：不受门禁约束，只有越界
+    "setLevel": frozenset({"quota_exceeded", "invalid_argument", "level_out_of_range"}),
+    # 注入垃圾行：改棋盘内容 → 受门禁约束
+    "injectGarbage": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+        }
+    ),
+    # 受控写入：门禁三值 + 越界 / 未授权 / 条件不满足（配额共用 quota_exceeded）
+    "writeCells": frozenset(
+        {
+            "not_started",
+            "paused",
+            "game_over",
+            "quota_exceeded",
+            "invalid_argument",
+            "out_of_bounds",
+            "not_authorized",
+            "write_condition_failed",
+        }
+    ),
+}
+
+#: 受统一生命周期门禁约束的命令（需求 §8.2 的门禁注）。
+#: = 改变棋盘内容或活动方块位置、且不是生命周期命令本身的那批。
+EXPECTED_GATED_COMMANDS: frozenset[str] = frozenset(
+    {
+        "moveLeft",
+        "moveRight",
+        "softDrop",
+        "hardDrop",
+        "rotateCW",
+        "rotateCCW",
+        "rotate180",
+        "hold",
+        "tick",
+        "injectGarbage",
+        "writeCells",
+    }
+)
+
+
+def test_command_registry_size() -> None:
+    """命令总数 = 16（需求 §8.2）。"""
+    assert len(COMMANDS) == 16
+
+
+def test_command_registry_is_closed_and_enumerable() -> None:
+    """命令集**封闭且可枚举**（FR-2.1）：注册表就是全集，不留占位。"""
+    assert set(COMMANDS) == set(EXPECTED_COMMAND_ARGS)
+    assert COMMAND_TYPES == tuple(COMMANDS)
+    assert len(COMMAND_TYPES) == len(set(COMMAND_TYPES))
+    for name, spec in COMMANDS.items():
+        assert spec.name == name, name
+        assert spec.doc, name
+
+
+def test_command_args_match_requirement_table() -> None:
+    """每条命令的参数名 / 类型 / 可空性，与需求 §8.2 逐条相等。"""
+    for name, expected in EXPECTED_COMMAND_ARGS.items():
+        spec: CommandSpec = COMMANDS[name]
+        actual = tuple((arg.name, arg.type, arg.nullable) for arg in spec.args)
+        assert actual == expected, name
+        arg_names = [arg.name for arg in spec.args]
+        assert len(arg_names) == len(set(arg_names)), name
+        for arg in spec.args:
+            assert arg.doc, f"{name}.{arg.name}"
+
+
+def test_only_three_commands_take_args() -> None:
+    """三条**有参**（`setLevel` / `injectGarbage` / `writeCells`），其余 13 条无参。"""
+    with_args = {name for name, spec in COMMANDS.items() if spec.args}
+    assert with_args == {"setLevel", "injectGarbage", "writeCells"}
+    assert len(COMMANDS) - len(with_args) == 13
+
+
+def test_reject_reason_enum() -> None:
+    """拒绝原因集合 = 12 个值，与需求 §8.2 逐条相等（契约清单第 6 项）。"""
+    assert len(REJECT_REASONS) == 12
+    assert set(REJECT_REASONS) == set(EXPECTED_REJECT_REASONS)
+
+
+def test_reject_reason_categories() -> None:
+    """拒绝原因的分类与需求 §8.2 的「类」列相等，且不重不漏。"""
+    assert {k: tuple(v) for k, v in REJECT_REASON_CATEGORIES.items()} == (
+        EXPECTED_REJECT_CATEGORIES
+    )
+    covered: list[str] = []
+    for reasons in REJECT_REASON_CATEGORIES.values():
+        covered.extend(reasons)
+    assert len(covered) == len(set(covered)), "分类之间有重叠"
+    assert set(covered) == set(REJECT_REASONS), "分类没有覆盖全部拒绝原因"
+    assert set(REJECT_REASON_CATEGORY_LABELS) == set(REJECT_REASON_CATEGORIES)
+    for label in REJECT_REASON_CATEGORY_LABELS.values():
+        assert label
+
+
+def test_command_reject_reasons_match_expectation() -> None:
+    """每条命令的可拒绝原因逐条相等——多一个少一个都要红。"""
+    for name, expected in EXPECTED_COMMAND_REJECT_REASONS.items():
+        spec = COMMANDS[name]
+        assert set(spec.reject_reasons) == expected, name
+        assert set(spec.reject_reasons) <= set(REJECT_REASONS), name
+
+
+def test_command_args_forbid_float() -> None:
+    """命令 `args` 禁浮点（B-7 / ADR-025）——写成断言，不靠眼睛看。
+
+    `args` 参与重放，JSON 里 `1.0` 与 `1` 不可区分。**只有 `args` 受这条约束**：
+    事件负载（如 `metric:sampled`）允许浮点，口径不同是对的。
+    """
+    assert "float" not in ARGS_VALUE
+    assert "float" not in COMMAND_ARGS_TYPE
+    assert COMMAND_ARGS_TYPE == ARGS
+    for name, spec in COMMANDS.items():
+        for arg in spec.args:
+            assert "float" not in arg.type, f"{name}.{arg.name}"
+
+
+def test_command_arg_types_within_args_value_domain() -> None:
+    """每个参数的类型必须是 `ARGS_VALUE` 取值域的成员。
+
+    这条是**防分叉**的：参数类型若不在取值域里，说明两处各写了一份，
+    改动时基线会显示全绿而实际已经分叉。
+    """
+    members = set(ARGS_VALUE.split(" | "))
+    for name, spec in COMMANDS.items():
+        for arg in spec.args:
+            assert arg.type in members, f"{name}.{arg.name}: {arg.type}"
+
+
+def test_lifecycle_gate_commands() -> None:
+    """统一生命周期门禁：受门禁约束的命令**三个生命周期原因齐全**，
+    不受门禁约束的一个都不带（需求 §8.2 的门禁注）。"""
+    gated = {name for name in COMMANDS if is_lifecycle_gated(name)}
+    assert gated == set(EXPECTED_GATED_COMMANDS)
+    for name, spec in COMMANDS.items():
+        has_all = set(LIFECYCLE_REJECT_REASONS) <= set(spec.reject_reasons)
+        assert has_all == is_lifecycle_gated(name), name
+
+
+def test_write_cells_cells_type() -> None:
+    """机检：`writeCells` 的 `cells` 类型是 `tuple[tuple[int, int, int], ...]`。"""
+    args = {arg.name: arg.type for arg in COMMANDS["writeCells"].args}
+    assert args["cells"] == "tuple[tuple[int, int, int], ...]"
+
+
+def test_inject_garbage_holes_type() -> None:
+    """机检：`injectGarbage` 的 `holes` 是 `tuple[int, ...]`。"""
+    args = {arg.name: arg.type for arg in COMMANDS["injectGarbage"].args}
+    assert args["holes"] == "tuple[int, ...]"
+    assert args["rows"] == "int"
+
+
+def test_set_level_arg_type() -> None:
+    """机检：`setLevel` 的 `level` 是 `int`。"""
+    args = {arg.name: arg.type for arg in COMMANDS["setLevel"].args}
+    assert args["level"] == "int"
+
+
+def test_no_arg_is_nullable_in_v1() -> None:
+    """契约 v1 的 16 条命令**没有可空参数**——`holes` 用空元组表示"无空洞"。"""
+    for name, spec in COMMANDS.items():
+        for arg in spec.args:
+            assert not arg.nullable, f"{name}.{arg.name}"

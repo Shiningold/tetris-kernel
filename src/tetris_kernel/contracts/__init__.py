@@ -5,9 +5,22 @@
 
 本文件只做**包内**导出：跨包 import 一个模块都不许有，第三方更不许有。
 - 事件目录：`tetris_kernel.contracts.events`
+- 命令目录：`tetris_kernel.contracts.commands`
 - 共用类型取值域与类型文法：`tetris_kernel.contracts.types`
 """
 
+from .commands import (
+    COMMAND_ARGS_TYPE,
+    COMMAND_TYPES,
+    COMMANDS,
+    LIFECYCLE_REJECT_REASONS,
+    REJECT_REASON_CATEGORIES,
+    REJECT_REASON_CATEGORY_LABELS,
+    REJECT_REASONS,
+    CommandArg,
+    CommandSpec,
+    is_lifecycle_gated,
+)
 from .events import (
     CONTRACT_VERSION,
     ENVELOPE_FIELDS,
@@ -32,16 +45,26 @@ __all__ = [
     "ARGS",
     "ARGS_VALUE",
     "CELLS",
+    "COMMANDS",
+    "COMMAND_ARGS_TYPE",
+    "COMMAND_TYPES",
     "CONTRACT_VERSION",
     "COORD_CELLS",
     "ENVELOPE_FIELDS",
     "EVENT_TYPES",
     "INT_TUPLE",
     "JSON_VALUE",
+    "LIFECYCLE_REJECT_REASONS",
     "METADATA_KEYS",
     "PRODUCER_LABELS",
+    "REJECT_REASONS",
+    "REJECT_REASON_CATEGORIES",
+    "REJECT_REASON_CATEGORY_LABELS",
     "SCALAR_MAP",
+    "CommandArg",
+    "CommandSpec",
     "EventSpec",
     "PayloadField",
+    "is_lifecycle_gated",
     "namespace_of",
 ]
