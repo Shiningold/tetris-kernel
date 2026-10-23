@@ -32,7 +32,7 @@ r"""契约层共用的类型取值域。
 | 7 | 元组元素位含联合 | 元素的类型本身是联合 | `tuple[tuple[str, int \| float], ...]` |
 | 8 | 递归元组 | `tuple[...]` | `tuple[...]` |
 | 9 | 命名结构 | `Board` · `Active`（大写开头的标识符） | `Board` |
-| 10 | 只读序列 | `Sequence[T]`（T 为形态 1–9 的任意类型表达式） | `Sequence[Sequence[int]]` |
+| 10 | 只读序列 | `Sequence[T]`（T 为形态 1–10，可再嵌套） | `Sequence[Sequence[int]]` |
 
 **取值域也是形态 2**：像 `ARGS_VALUE` / `JSON_VALUE` 这样的取值域是"标量 + 元组
 形态"的联合，**不是新的形态**。
@@ -49,8 +49,9 @@ r"""契约层共用的类型取值域。
    如 `tuple[tuple[str, int | str | bool | None | tuple[int, ...]], ...]`。
 3. **形态 8 只用于开放取值域**——元素结构与外层同构的嵌套元组，目前只有
    信封的 `payload` / `metadata` 容器用它。
-4. **形态 9 只用于需求 §8.3 定名的子结构**——快照的 `Board` / `Active`，
-   需求原文就是这么写的（`board: Board`、`active: Active | None`）。命名结构
+4. **形态 9 只用于 `contracts/` 内登记过的命名结构**——快照的 `Board` / `Active`
+   （需求 §8.3 就是这么写的：`board: Board`、`active: Active | None`），以及规则侧的
+   六个结构。命名结构
    **不是自由命名的别名**：成员表必须在 `contracts/` 内另行声明
    （`snapshot.py` 的 `BOARD_FIELDS` / `ACTIVE_FIELDS`），并登记在
    `structures.py` 的 `NAMED_STRUCTS`（结构名 → 成员表）里，S6 解析器把它当
@@ -63,12 +64,13 @@ r"""契约层共用的类型取值域。
    `PlacementClass` / `ClearGroup` / `ScoreState` / `ScoreDelta` 与
    `PlacementInfo` 同样是命名结构，同样登记在同一张注册表里——注册表是
    **类型文法层面**的东西，不是快照模块的私产。
-5. **形态 10 只用于规则接口的棋盘参数**：内核内部棋盘是可变结构
+5. **形态 10 只用于规则接口的棋盘参数与消行组序列**：内核内部棋盘是可变结构
    `list[list[int]]`（架构 §7.1），规则只读。写成 `tuple[tuple[int, ...], ...]`
    会逼内核在**每次调用规则接口时**深拷贝一份棋盘——消行判定是逐方块调用的
    热路径，拷贝会把规则模块变成性能瓶颈。`Sequence[T]` 表达的是"只读视图"。
    **形态 10 是 S5 落地规则签名时补的**（架构 §7.3.1 的签名表原文写的就是
-   `Sequence[Sequence[int]]`）。
+   `Sequence[Sequence[int]]`）。仓内形态 10 的串只有三条：`types.BOARD_VIEW`
+   与 `score_clear` 的 `groups: Sequence[ClearGroup]`。
 
 **联合的成员顺序不参与语义，但一经写入不得重排**——它会进基线哈希，重排
 等于"已有键的哈希变化"。

@@ -45,6 +45,7 @@ from tetris_kernel.contracts import (
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
     REJECT_REASONS,
+    RULE_SET_DEFINED_FIELDS,
     RULE_SIGNATURE_NAMES,
     RULE_SIGNATURES,
     RUNTIME_ONLY_STATE,
@@ -956,11 +957,16 @@ def _snapshot_leaf_paths() -> set[str]:
     """快照的**叶子**字段路径集合（顶层 21 + `board` 5 + `active` 4 展开）。
 
     结构字段（`board` / `active`）本身不是叶子——它的内容由成员表展开。
-    展开依据是 `NAMED_STRUCTS`（形态 9 的成员表注册表），不是另抄一份名单。
+    展开依据是**快照模块自己的成员表**（`BOARD_FIELDS` / `ACTIVE_FIELDS`），
+    不是全局的 `NAMED_STRUCTS`：注册表现在有 8 个结构（快照 2 + 放置 1 +
+    规则 5），拿"注册表里有没有这个名字"当"是不是快照子结构"的判据太宽——
+    将来加一个类型为 `ScoreState` 的快照字段，它会被静默展开成子结构，
+    叶子集合断言会以极难懂的方式变红。
     """
+    snapshot_structs = {"Board": BOARD_FIELDS, "Active": ACTIVE_FIELDS}
     leaves: set[str] = set()
     for name, field in SNAPSHOT_FIELDS.items():
-        members = NAMED_STRUCTS.get(field.type.removesuffix(" | None"))
+        members = snapshot_structs.get(field.type.removesuffix(" | None"))
         if members is None:
             leaves.add(name)
         else:
@@ -1029,6 +1035,20 @@ def test_field_spec_names_match_their_keys() -> None:
     ):
         for key, spec in table.items():
             assert spec.name == key, f"{table_name}[{key}] 的声明里写着 {spec.name}"
+
+
+def test_snapshot_struct_types_come_from_the_snapshot_module() -> None:
+    """快照字段的类型串里出现的**结构名**必须来自快照模块自己的成员表。
+
+    命名结构注册表现在有 8 个结构（快照 2 + 放置 1 + 规则 5），而快照的子结构
+    只有 `board` / `active` 两个。将来加一个类型为 `ScoreState` 的快照字段，
+    它会被"注册表命中"静默展开成子结构——叶子集合断言会以极难懂的方式变红。
+    """
+    snapshot_structs = {"Board", "Active"}
+    for name, field in SNAPSHOT_FIELDS.items():
+        base = field.type.removesuffix(" | None")
+        if base in NAMED_STRUCTS:
+            assert base in snapshot_structs, f"快照字段 {name} 用了非快照结构 {base}"
 
 
 def test_named_structs_registry_matches_member_tables() -> None:
@@ -1390,6 +1410,81 @@ def test_axis_vocabularies_are_not_mixed() -> None:
     assert not set(AXIS_VALUES) & set(CLEAR_AXIS_VALUES)
 
 
+def test_contract_level_domains_are_enforced_at_construction() -> None:
+    """契约层钉死的取值域**构造即校验**——域外的值当场被拒。
+
+    取值域只活在散文里等于没有取值域：内核读 `ctx.axis` 才知道重力朝哪、
+    读 `group.axis` 才知道消的是行还是列，规则集写错轴会一路飘到渲染层。
+    """
+    assert RuleContext(frame=0, level=1, piecesPlaced=0, axis="down", stepMs=0).axis == "down"
+    with pytest.raises(ValueError):
+        RuleContext(frame=0, level=1, piecesPlaced=0, axis="diagonal", stepMs=0)
+    assert ClearGroup(axis="row", index=3, cells=()).index == 3
+    with pytest.raises(ValueError):
+        ClearGroup(axis="diagonal", index=3, cells=())
+
+
+def test_rule_set_defined_fields_name_real_fields() -> None:
+    """`RULE_SET_DEFINED_FIELDS` 点名的字段**必须真实存在**，且是 `str` 字段。
+
+    这张表是"取值归属的表态"，表里的名字写错（结构名 / 字段名拼错）会让
+    豁免失效——某个 `str` 字段既没校验也没被点名，却没人发现。
+    顺带断言：规则集定义的取值**不被契约层拦**（换规则集就换词汇）。
+    """
+    structs = {
+        "RuleContext": RuleContext,
+        "PlacementClass": PlacementClass,
+        "ClearGroup": ClearGroup,
+        "ScoreState": ScoreState,
+        "ScoreDelta": ScoreDelta,
+    }
+    for (struct_name, field_name), doc in RULE_SET_DEFINED_FIELDS.items():
+        assert doc, (struct_name, field_name)
+        assert struct_name in structs, struct_name
+        fields = {f.name: str(f.type) for f in dataclasses.fields(structs[struct_name])}
+        assert field_name in fields, (struct_name, field_name)
+        assert fields[field_name] == "str", (struct_name, field_name)
+        values = {f.name: "" for f in dataclasses.fields(structs[struct_name])}
+        values[field_name] = "__不在取值域内__"
+        structs[struct_name](**values)  # 规则集定义的取值，契约层不拦
+
+
+def test_every_str_field_declares_its_domain() -> None:
+    """规则侧结构里**每个 `str` 字段都必须表态**。
+
+    要么在契约层钉死取值域并**构造即校验**，要么被 `RULE_SET_DEFINED_FIELDS`
+    点名为"规则集定义"。两头都不沾的字段：新加一个 `str` 字段却忘了表态，
+    这条断言会红。
+    """
+    structs = (RuleContext, PlacementClass, ClearGroup, ScoreState, ScoreDelta)
+    for struct in structs:
+        for field in dataclasses.fields(struct):
+            if str(field.type) != "str":
+                continue
+            key = (struct.__name__, field.name)
+            if key in RULE_SET_DEFINED_FIELDS:
+                continue
+            values = {f.name: "" for f in dataclasses.fields(struct)}
+            values[field.name] = "__不在取值域内__"
+            # 错误信息要指名**这个**字段——否则另一个字段的校验先炸，断言就白过。
+            with pytest.raises(ValueError, match=field.name):
+                struct(**values)  # type: ignore[arg-type]
+
+
+def test_member_types_rejects_non_string_annotations() -> None:
+    """成员表推导要求注解是**源码字符串**——否则会产出非法类型串。
+
+    缺 `from __future__ import annotations` 的模块里，`field.type` 是运行时
+    类型对象，`str()` 出来是 `"<class 'int'>"` 这种带模块前缀的写法：既不是
+    形态 9 的标识符，也不是合法类型串，而它会被基线哈希进去。
+    """
+    from tetris_kernel.contracts.structures import _member_types
+
+    no_future = dataclasses.make_dataclass("NoFuture", [("value", int)])
+    with pytest.raises(TypeError):
+        _member_types(no_future)
+
+
 def test_contracts_never_import_kernel_or_rules() -> None:
     """`contracts/` 内**不 import `kernel` / `rules` 的任何 dataclass**（架构 §7.3）。
 
@@ -1613,6 +1708,7 @@ def test_all_type_strings_match_grammar() -> None:
     # 形态 10 的允许取值：棋盘只读视图 + 消行组序列。
     # 这里抄的是**限制**不是声明——声明侧的类型串各自有常量或唯一出处。
     sequence_allowed = {BOARD_VIEW, "Sequence[ClearGroup]"}
+    used_sequences: set[str] = set()
     for where, type_string in _all_declared_type_strings():
         forms = _parse_type(type_string)
         assert forms, where
@@ -1624,6 +1720,12 @@ def test_all_type_strings_match_grammar() -> None:
             assert type_string in sequence_allowed, (
                 f"{where}：形态 10 只用于棋盘视图 / 消行组序列（{type_string}）"
             )
+            used_sequences.add(type_string)
+    # 白名单不许有陈旧条目——形态 10 的用法变了（加了 / 删了），白名单要跟着改。
+    assert used_sequences == sequence_allowed, (
+        f"形态 10 白名单与实际用法不一致：多出 {used_sequences - sequence_allowed}，"
+        f"少了 {sequence_allowed - used_sequences}"
+    )
 
 
 def test_grammar_rejects_unknown_forms() -> None:

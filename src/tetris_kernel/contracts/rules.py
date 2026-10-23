@@ -56,6 +56,24 @@ kernel 的任何 dataclass**（架构 §7.3）。否则 `kernel > rules` 契约�
   `AXIS_VALUES`）——变体维度，契约层钉死。
 - `ClearGroup.axis` = **消行轴**（`row` / `column`，见 `CLEAR_AXIS_VALUES`）——
   这组被消的是行还是列。标准玩法（重力向下）下两者对应 `down` ↔ `row`。
+
+## 取值域怎么绑到字段上
+
+**取值域只活在散文里，等于没有取值域。** 两条判据：
+
+- **内核要解读的字段 → 契约层钉死**：内核读 `ctx.axis` 才知道重力朝哪、读
+  `group.axis` 才知道消的是行还是列。这种字段的取值域由契约定死，并在
+  **构造时校验**（`RuleContext` / `ClearGroup` 的 `__post_init__`）——域外的值
+  当场被拒，规则集写错轴不会一路飘到渲染层。
+- **内核只透传的字段 → 规则集定义**：`tSpin` / `classKey` 内核不认识，只原样
+  带进事件，取值域由规则集说了算（换规则集就换词汇，钉死会把变体挡在门外）。
+  这两个字段登记在 `RULE_SET_DEFINED_FIELDS` 里——**取值归属必须表态**，
+  不表态的字段不许悄悄长出来。
+
+**取值域常量不进基线**（架构 §4.4 末条），所以词汇表的变更由**契约层测试**
+拦（转录表逐条相等），不是基线。要让基线也看见取值域，得把取值域写进类型串
+（字面量枚举形态）——那是**取值域统一收口**（`PROGRESS.md` 待办）的活，
+不在本阶段。
 """
 
 from __future__ import annotations
@@ -74,13 +92,39 @@ from .types import BOARD_VIEW, COORD_CELLS, VECTOR2
 #:
 #: 这是**契约层**的词汇：重力方向是变体维度（变体 A「重力可旋转」换的就是
 #: 它），规则集按它选表，所以取值域由契约钉死，不留给规则集自定义。
+#: **内核要解读这个字段**（重力朝哪），所以它在 `RuleContext` 构造时校验。
 AXIS_VALUES: tuple[str, ...] = ("down", "left", "right", "up")
 
 #: 消行轴（`ClearGroup.axis` 的取值域）：这组被消的是**行**还是**列**。
 #:
 #: 重力向下时消行（`"row"`），重力横向时消列（`"column"`）——横向重力是变体
 #: 维度，"轴"这一维在数据上表达不出来，M4 的变体 A 就没法落地。
+#: **内核也要解读这个字段**（消的是行还是列），所以同样在构造时校验。
 CLEAR_AXIS_VALUES: tuple[str, ...] = ("row", "column")
+
+#: 取值域**由规则集定义**（契约层不钉死）的字段：`(结构名, 字段名)` → 说明。
+#:
+#: **取值归属必须表态**：规则侧结构里每个 `str` 字段，要么在
+#: `RuleContext` / `ClearGroup` 那样有契约层取值域并**构造即校验**，要么像这里
+#: 一样被点名豁免。新加一个 `str` 字段却既不表态也不校验，测试会红。
+#:
+#: 这两个字段的共同点：**内核只透传、不解读**——内核不认识 T-Spin 与计分类别，
+#: 只把它们原样带进事件 `piece:locked.tSpin` / `board:lines-cleared.classKey`。
+#: 换规则集就换词汇，契约层钉死会把变体挡在门外。
+RULE_SET_DEFINED_FIELDS: Mapping[tuple[str, str], str] = MappingProxyType(
+    {
+        (
+            "PlacementClass",
+            "tSpin",
+        ): "T-Spin 标记：FR-4.7 要求含 Mini 区分；架构 §7.3.1 说 T-Spin '三分' + Mini"
+        "（建议取值 none / mini / single / double / triple，具体由 M1 的标准规则定稿）",
+        (
+            "PlacementClass",
+            "classKey",
+        ): "计分类别键：计分表的键（建议取值 single / double / triple / tetris 等，"
+        "具体由 M1 的标准规则定稿）",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +144,13 @@ class RuleContext:
     - `frame`：逻辑帧号（宿主逻辑帧，暂停期照走）。
     - `level`：当前等级。
     - `piecesPlaced`：已放置方块数。
-    - `axis`：重力方向，取值域 `AXIS_VALUES`（`down` / `left` / `right` / `up`）。
-    - `stepMs`：当前重力间隔（毫秒）；规则集按它算"落一格要几帧"。
+    - `axis`：重力方向，取值域 `AXIS_VALUES`（`down` / `left` / `right` / `up`），
+      **构造时校验**。
+    - `stepMs`：步进时长（毫秒）。**语义待定**——架构 §7.3.1 只给了字段名与
+      类型（`stepMs: int`），没说它是谁算、给谁用：事件侧的
+      `progress:level-changed.gravityInterval` 是**逻辑帧数**，`gravity_interval(ctx)`
+      也返回逻辑帧数，毫秒这条线在契约里没有第二个落点。**实现期（M1 / S13）
+      按 major 变更流程定**，不要在实现期临时发明一个含义。
 
     字段顺序即声明顺序（进基线，不得重排）。
     """
@@ -112,6 +161,15 @@ class RuleContext:
     axis: str
     stepMs: int
 
+    def __post_init__(self) -> None:
+        """校验契约层钉死的取值域：重力方向。
+
+        **内核要解读这个字段**（重力朝哪），所以取值域由契约钉死，域外的值
+        当场被拒——否则规则集写错轴，会一路飘到渲染层才暴露。
+        """
+        if self.axis not in AXIS_VALUES:
+            raise ValueError(f"axis 必须是 {AXIS_VALUES} 之一，收到 {self.axis!r}")
+
 
 @dataclass(frozen=True)
 class PlacementClass:
@@ -120,12 +178,14 @@ class PlacementClass:
     字段：
 
     - `tSpin`：T-Spin 标记。**取值域由规则集定义**（FR-4.7 要求含 Mini 区分，
-      标准玩法是 `none` / `mini` / `single` / `double` / `triple`——"三分"就是
-      `single` / `double` / `triple`）。契约只声明类型，不钉死词汇：换规则集就
-      换词汇，钉死会把变体挡在门外。
+      架构 §7.3.1 说 T-Spin "三分" + Mini）——登记在 `RULE_SET_DEFINED_FIELDS`。
+      契约只声明类型，不钉死词汇：换规则集就换词汇，钉死会把变体挡在门外。
     - `classKey`：计分类别键，与事件 `board:lines-cleared.classKey` **同名同义**
-      （标准玩法如 `single` / `double` / `triple` / `tetris`）。**取值域同样由
-      规则集定义**——它是计分表的键。
+      （它是计分表的键）。**取值域同样由规则集定义**——登记在
+      `RULE_SET_DEFINED_FIELDS`。
+
+    这两个字段的共同点：**内核只透传、不解读**——内核不认识 T-Spin 与计分类别，
+    只把它们原样带进事件，所以词汇表归规则集，不归契约层。
 
     `classKey` 与 `tSpin` 放在一起，是因为它们是**同一次消行的同一份分类**：
     事件 `board:lines-cleared` 的这两个字段同源，计分模块也按 `classKey` 查表。
@@ -141,12 +201,12 @@ class ClearGroup:
 
     字段：
 
-    - `axis`：消行轴，取值域 `CLEAR_AXIS_VALUES`（`row` / `column`）。
-      **与 `RuleContext.axis` 不是一回事**——那里是重力方向，这里是"这组被消的
-      是行还是列"（标准玩法：重力 `down` ↔ 消行 `row`）。
+    - `axis`：消行轴，取值域 `CLEAR_AXIS_VALUES`（`row` / `column`），
+      **构造时校验**。**与 `RuleContext.axis` 不是一回事**——那里是重力方向，
+      这里是"这组被消的是行还是列"（标准玩法：重力 `down` ↔ 消行 `row`）。
     - `index`：行号（`axis` 为 `row`）或列号（`axis` 为 `column`）。
-    - `cells`：该行 / 列的**全部**格子坐标清单（不是只列非空的——整条线一起
-      消失，塌落动画要的是整条线的几何）。
+    - `cells`：该行 / 列的**全部**格子坐标清单（整条线一起消失，格子清单给的是
+      这条线的几何，不是其中有方块的那些）。
     - `classification`：本次消行对应的放置分类。`scan_clears` 单独调用时不知道
       放置上下文（它的参数里没有 `PlacementInfo`），所以是 `None`；内核拿到
       `classify_placement` 的结果后把它挂上来，再交给 `score_clear`
@@ -160,6 +220,15 @@ class ClearGroup:
     index: int
     cells: tuple[tuple[int, int], ...]
     classification: PlacementClass | None = None
+
+    def __post_init__(self) -> None:
+        """校验契约层钉死的取值域：消行轴。
+
+        **内核要解读这个字段**（消的是行还是列），所以取值域由契约钉死，
+        域外的值当场被拒——规则集吐出一个内核读不懂的轴，比报错更难查。
+        """
+        if self.axis not in CLEAR_AXIS_VALUES:
+            raise ValueError(f"axis 必须是 {CLEAR_AXIS_VALUES} 之一，收到 {self.axis!r}")
 
 
 @dataclass(frozen=True)
@@ -355,6 +424,7 @@ RULE_SIGNATURE_NAMES: tuple[str, ...] = tuple(name for name, _ in _RULE_SIGNATUR
 __all__ = [
     "AXIS_VALUES",
     "CLEAR_AXIS_VALUES",
+    "RULE_SET_DEFINED_FIELDS",
     "RULE_SIGNATURES",
     "RULE_SIGNATURE_NAMES",
     "ClearGroup",

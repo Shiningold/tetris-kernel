@@ -39,6 +39,7 @@ from .placement import PlacementInfo
 from .rules import (
     AXIS_VALUES,
     CLEAR_AXIS_VALUES,
+    RULE_SET_DEFINED_FIELDS,
     RULE_SIGNATURE_NAMES,
     RULE_SIGNATURES,
     ClearGroup,
@@ -102,6 +103,7 @@ __all__ = [
     "REJECT_REASONS",
     "REJECT_REASON_CATEGORIES",
     "REJECT_REASON_CATEGORY_LABELS",
+    "RULE_SET_DEFINED_FIELDS",
     "RULE_SIGNATURES",
     "RULE_SIGNATURE_NAMES",
     "RUNTIME_ONLY_STATE",

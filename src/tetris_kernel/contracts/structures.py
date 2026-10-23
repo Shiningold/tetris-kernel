@@ -40,12 +40,26 @@ def _member_types(cls: type) -> Mapping[str, str]:
     类型表达式取自 dataclass 的字段注解（`from __future__ import annotations`
     下它就是源码里的字符串，跨进程稳定）——**注解即声明**，这里不重述一遍。
 
+    **注解不是字符串就当场报错**：没有 future import 的模块里，`field.type`
+    是运行时类型对象，`str()` 出来是 `"<class 'int'>"` 这种带模块前缀的写法
+    ——既不是形态 9 的标识符，也不是合法类型串，而它会被基线哈希进去。
+    这个假设必须**受检**，不能靠"每个模块都记得写 future import"。
+
     参数标注用 `type` 而不是 `type[DataclassInstance]`：后者只存在于类型存根
     （typeshed），运行时 `dataclasses` 模块里没有它，import 会在导入期就炸。
     """
     if not dataclasses.is_dataclass(cls):
         raise TypeError(f"{cls!r} 不是 dataclass，推不出成员表")
-    return MappingProxyType({field.name: str(field.type) for field in dataclasses.fields(cls)})
+    members: dict[str, str] = {}
+    for field in dataclasses.fields(cls):
+        if not isinstance(field.type, str):
+            raise TypeError(
+                f"{cls.__name__}.{field.name} 的注解不是字符串（是 {field.type!r}）："
+                "该模块缺 `from __future__ import annotations`，"
+                "成员表会产出非法类型串"
+            )
+        members[field.name] = field.type
+    return MappingProxyType(members)
 
 
 def _table_types(table: Mapping[str, FieldSpec]) -> Mapping[str, str]:
