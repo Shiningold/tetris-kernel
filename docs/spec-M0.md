@@ -311,7 +311,7 @@ tools/
 
 **不进快照的状态**（只活在运行时）：事件序号、轮次计数、命令数计数、同因拒绝合并表、订阅注册表、随机源实例本体。
 
-> 上表的**机器可读版**已落 `contracts/snapshot.py`：对应表为 `KERNEL_STATE_TO_SNAPSHOT`，"不进快照的状态"六项为 `RUNTIME_ONLY_STATE`（S4 落地，有断言守"覆盖全部 21 个快照字段"；实现期随 S8 复核）。
+> 上表的**机器可读版**已落 `contracts/snapshot.py`（S4，审查修订后）：对应表为 `KERNEL_STATE_TO_SNAPSHOT`——`KernelStateEntry(kernel_field, snapshot_path, derived)` 列表，**一行一字段**，两侧都是点分路径（`board.width` / `active.pieceType`），`derived` 标出"快照侧是算出来的"那三条（结构指纹、扩展摘要、随机源的可序列化状态）；"不进快照的状态"六项为 `RUNTIME_ONLY_STATE`（**英文标识符 → 中文说明**，与快照字段、内核状态字段同一套命名体系，守卫才真能触发）；形态 9 的结构名 ↔ 成员表登记在 `NAMED_STRUCTS`。断言守着的是**两个方向**：快照叶子字段恰好一个来源，且内核侧字段路径不许压行、不许写散文——实现期随 S8 复核。
 
 ### 7.2 命令通道
 
