@@ -87,9 +87,13 @@ class TupleType:
 
     `variadic` = 形态 5（`tuple[T, ...]`）；`recursive` = 形态 8（`tuple[...]`）。
     形态 6 / 7 是形态 4 的嵌套与元素含联合，不另设节点。
+
+    元素类型写 `TypeNode`（**递归引用**），不是 `object`——写 `object` 会让
+    渲染函数收到 `object`，类型检查形同虚设。`TypeNode` 在本文件下方定义，
+    这里靠 `from __future__ import annotations` 的字符串注解前向引用。
     """
 
-    elements: tuple[object, ...] = ()
+    elements: tuple[TypeNode, ...] = ()
     variadic: bool = False
     recursive: bool = False
 
@@ -98,14 +102,14 @@ class TupleType:
 class SequenceType:
     """形态 10：只读序列 `Sequence[T]`。"""
 
-    element: object
+    element: TypeNode
 
 
 @dataclass(frozen=True)
 class UnionType:
     """形态 2 / 3：联合。**成员顺序照原样保留**（顺序进基线哈希）。"""
 
-    members: tuple[object, ...]
+    members: tuple[TypeNode, ...]
 
 
 #: 语法树节点的并集。

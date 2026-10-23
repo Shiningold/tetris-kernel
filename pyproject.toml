@@ -51,7 +51,12 @@ select = ["E", "F", "I", "UP", "B"]
 "tests/**" = ["B011"]
 
 [tool.pyright]
-include = ["src"]
+# 受类型检查的目录：**只有这一处是权威**（命令用 `pyright` 不带路径参数，
+# 走这份 include）。
+# `tools/` 自 S6 审查后纳入——它已经是常驻质量门的一部分（五个脚本 + 两个
+# 共享模块），而 IDE 的 basedpyright 会扫整个工作区：门若不覆盖，就等于
+# **类型不精确只靠编辑器兜着**，CI 看不见（S6 报告 L7 的缺口，2026-10-23 补）。
+include = ["src", "tools"]
 pythonVersion = "3.12"
 # 默认 standard；内核与总线走 strict（见 strict 列表）
 # 注意：pyright 1.1.414 的配置已无 "overrides" 键——写 [[tool.pyright.overrides]]

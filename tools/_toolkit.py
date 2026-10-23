@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,9 +55,14 @@ def configure_output() -> None:
     这里只放宽编码错误的处理，不改编码本身（改了会在别的机器上花屏）。
     """
     for stream in (sys.stdout, sys.stderr):
+        # `sys.stdout` 的类型是 `TextIO`，而 `reconfigure` 只在 `TextIOWrapper`
+        # 上——**用 isinstance 收窄**，而不是 `# type: ignore` 把这一行变成
+        # "永不检查的地方"。
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
         try:
             stream.reconfigure(errors="replace")
-        except (AttributeError, OSError, ValueError):
+        except (OSError, ValueError):
             pass
 
 
