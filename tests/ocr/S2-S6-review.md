@@ -1,316 +1,251 @@
 # S2–S6 汇总代码审查报告 · 契约声明面与基线工具链
 
-> 审查范围：`05bd643..f059c67`（S2 事件契约 → S6 基线脚本，含全部修订提交）
+> **轮次**：第 2 轮（**复审** · 修订后重审）· 首轮结论见 §3，修订后的复核见 §1–§2
+> 审查范围：`05bd643..888b16d`（S2 事件契约 → S6 基线脚本，含全部修订提交）
 > 审查方式：`open-code-review-delegate`（OCR 只做文件选择与规则解析，判断由宿主 Agent 完成）
-> 审查基线：`f059c67`（HEAD）
+> 审查基线：`888b16d`（HEAD）
 > 审查日期：2026-10-23
 
 ---
 
-## 1. 结论摘要
+## 1. 复审结论（第 2 轮）
 
-**S2–S6 五个阶段的代码整体是可靠的：契约声明面与需求文档逐条相等，基线工具链的每个守卫都实测能触发，此前五轮审查提出的 45 项发现已有 42 项落实。本轮未发现高危（critical/high）问题。**
+**修订已全部核实到位。本轮未发现任何新问题。**
 
-| 维度 | 结论 |
+| 项 | 结论 |
 | --- | --- |
-| **契约声明 vs 需求文档** | 事件 44 条（含产出者）、命令 16 条（含参数）、拒绝原因 12 值 + 5 分类、快照 26 字段（含 `board` 5 子字段）——**逐条相等**，唯一差异是需求原文的 `JsonScalar` 记号（已在 S4 记录并单独钉住） |
-| **此前 45 项发现** | **已落实 42 · 半落实 1（S3-L3）· 未落实 2（S2-L5 按计划挂账 · S4-L5 作者主动推迟）** |
-| **S6 十项发现** | **10/10 已由 `e69a561` 修掉**，本轮逐条回归验证通过 |
-| **本轮新发现** | **6 项低优先级**（4 处跨阶段文档残留 + 1 处共用常量缺失 + 1 处测试断言缺口），无中危 |
-| **质量门** | pytest 156 passed · ruff check 全过 · ruff format 45 files · pyright 0 错 · lint-imports 4 kept |
+| **首轮 6 项新发现（N1–N6）** | **6/6 已落实**，逐条附代码证据（§2.1） |
+| **S6 报告 L7（`tools/` 不在 pyright 覆盖内）** | **已落实，且比报告建议更严**：不只是改返回类型，而是把 `tools/` **整目录纳入 pyright**，并顺手修掉 IDE 报出的 **4 处真实类型不精确**（`88e96db`） |
+| **S6 报告十项 + 前四轮 35 项** | 维持原判，**本轮回归验证无退化**（§2.2） |
+| **此前 51 项发现（45 + 6）** | **已落实 48 · 半落实 1（S3-L3）· 主动推迟 2（S2-L5 / S4-L5）** |
+| **需求文档 ↔ 机器声明** | **重跑仍逐条相等**（§3.2）——`NEXT_QUEUE` 重构没有引入任何偏差 |
+| **契约基线** | **条目数仍 355**，`next` 四处的哈希与修订前**逐字节相同**（§2.3） |
+| **质量门** | pytest **157 passed** · ruff check 全过 · ruff format **46 files** · **pyright（覆盖 `src/` + `tools/`）0 错** · lint-imports 4 kept |
+| **本轮新发现** | **0 项** |
 
-**核心判断：契约面可以进入 S7。** 唯一需要在 S17 之前处理的是 S4-L5（取值域统一收口），它已经挂在 `PROGRESS.md` 的待办里，且与 S3-L3 是同一件事——**建议合并成一次收口**（见 §7.2）。
-
----
-
-## 2. 审查范围与方法
-
-### 2.1 OCR delegate 选出的范围
-
-```
-ocr delegate preview --format json --from 05bd643 --to f059c67
-→ mode=range · merge_base=05bd643 · total_files=28 · reviewable_count=16 · excluded_count=12
-   total_insertions=7240 · total_deletions=72
-```
-
-| # | 路径 | 状态 | +/− | 规则组 |
-| --- | --- | --- | --- | --- |
-| 1 | `src/tetris_kernel/contracts/__init__.py` | modified | +125 | `system` |
-| 2 | `src/tetris_kernel/contracts/commands.py` | added | +438 | `system` |
-| 3 | `src/tetris_kernel/contracts/events.py` | added | +672 | `system` |
-| 4 | `src/tetris_kernel/contracts/placement.py` | added | +43 | `system` |
-| 5 | `src/tetris_kernel/contracts/rules.py` | added | +437 | `system` |
-| 6 | `src/tetris_kernel/contracts/snapshot.py` | added | +294 | `system` |
-| 7 | `src/tetris_kernel/contracts/structures.py` | added | +93 | `system` |
-| 8 | `src/tetris_kernel/contracts/types.py` | added | +142 | `system` |
-| 9 | `tests/baseline/.gitkeep` | added | 0 | `default` |
-| 10 | `tools/_toolkit.py` | added | +105 | `system` |
-| 11 | `tools/check_event_registry.py` | added | +185 | `system` |
-| 12 | `tools/check_frozen_baseline.py` | added | +167 | `system` |
-| 13 | `tools/check_kernel_purity.py` | added | +427 | `system` |
-| 14 | `tools/contract_baseline.py` | added | +429 | `system` |
-| 15 | `tools/contract_grammar.py` | added | +293 | `system` |
-| 16 | `tools/measure_frame_cost.py` | added | +247 | `system` |
-
-**被排除的 12 个文件**：11 个 `.md`（`unsupported_ext`：需求 / 架构 / spec / plan / 契约清单 / PROGRESS / ai_docs + 五份旧审查报告）· 1 个 `tests/test_contracts_declarations.py`（`default_path`）。
-
-**排除文件的处置**：旧报告 `.md` 逐份读过（作为复核依据）；**`tests/test_contracts_declarations.py`（1798 行）虽被 `default_path` 排除，仍逐行审查并计入覆盖率**——机检担保几乎全在它身上，排除它等于没审。
-
-### 2.2 上下文基准
-
-`docs/需求与边界.md` §8.1 / §8.2 / §8.3 · `docs/项目架构.md` §4.1 / §4.4 / §5.3 / §7.3.1 / §7.6 / §8 · `docs/spec-M0.md` §6.5 / §7.1 / §7.5 · `docs/契约v1清单.md` · `docs/plan-M0.md` S2–S6 · `PROGRESS.md` · `ai_docs/261003.md`。
-
-### 2.3 方法
-
-- diff 走 `git --no-pager show` 直读，**未导出临时 diff 文件**。
-- 35 项旧发现（S2–S5）→ 派两个独立复核 Agent（S2+S3、S4+S5）逐条裁定并附 `文件:行号` 证据；**S6 的 10 项由本 Agent 另做一轮独立回归验证**（不采信提交说明自陈）。
-- 新增**需求文档 ↔ 机器声明**的机器比对（§6）——此前五轮审查都只做到「代码 ↔ 转录表」，**没有断言过「转录表 ↔ 需求文档」**，这是本轮补上的一层。
-- 探针临时目录 `.tmp_ocr_s26/` 已 `rm --` 走回收站删除；工作区当前干净。
+**总体判断：S2–S6 契约面可以进入 S7。** 唯一还开着的是 S4-L5 + S3-L3（取值域统一收口），两项都已挂在 `PROGRESS.md` 的待办里，作者明确要「只扩展文法一次、在同一次收口里做完」——这个决定是对的，本轮复审没有发现需要提前的理由。
 
 ---
 
-## 3. 此前 45 项发现的落实复核
+## 2. 复审明细
 
-### 3.1 总览
+### 2.1 首轮 6 项新发现的落实复核
 
-| 来源 | 条数 | 已落实 | 半落实 | 未落实 |
-| --- | --- | --- | --- | --- |
-| S2 报告（事件契约声明） | 12 | 11 | 0 | 1（S2-L5，按计划挂账） |
-| S3 报告（命令契约声明） | 8 | 7 | 1（S3-L3） | 0 |
-| S4 报告（快照契约声明） | 9 | 8 | 0 | 1（S4-L5，明确推迟） |
-| S5 报告（规则签名声明） | 6 | 6 | 0 | 0 |
-| S6 报告（基线工具链） | 10 | 10 | 0 | 0 |
-| **合计** | **45** | **42** | **1** | **2** |
-
-> 计数口径：S2 报告自述「1 高 + 5 中 + 5 低 = 11 项」，实际条目 12 项（S2-M3 被算作一条）；S3 报告 M1 的「11 处」实为 9 处。**报告自身的计数有两处不准**——不影响结论，但复核时容易被带偏，记在这里备查。
-
-### 3.2 仍未解决 / 半落实的两项
-
-| 来源 | 编号 | 状态 | 说明 |
+| 编号 | 发现 | 状态 | 当前证据 |
 | --- | --- | --- | --- |
-| **S4-L5** | 快照 `phase` / `hold` / `next` / `rule` 取值域无机器绑定；契约内生命周期两套写法（命令侧英文 `not_started` / `paused` / `game_over` vs 快照侧中文散文「待开始 / 运行 / 暂停 / 结束」） | **未落实（作者主动推迟）** | `snapshot.py:169` 仍是 `_field("phase","str","生命周期状态：待开始 / 运行 / 暂停 / 结束")`；`commands.py:121-123` 仍是英文三值。**基线只哈希 `str`，消费方推不出该写哪一套。** 已挂 `PROGRESS.md:31`「取值域统一收口」 |
-| **S3-L3** | 事件侧 `commandType` 的取值域（= 16 个命令名）没有机器绑定 | **半落实** | `commands.py:418-423` 已有 `COMMAND_TYPE_FIELDS` 表 + `tests:821-838` 断言「承载命令名的字段都在表里、类型是 `str`」，但**没有任何断言把事件侧取值域与 `COMMAND_TYPES` 绑定**。作者理由：类型语言无字面量枚举形态，运行时值域校验归 S9/S11（`ai_docs/261003.md:185`） |
+| **N1** | `commands.py` 仍写「封闭文法只有 8 形」 | **已落实** | `commands.py:413` → 「封闭文法现有 **10 形**，仍没有"枚举"这一形） |
+| **N2** | `snapshot.py` 指向全仓不存在的 `rngSource` | **已落实** | `snapshot.py:268` → 「见 `KERNEL_STATE_TO_SNAPSHOT` 里 **`rngInstance`** 那条」 |
+| **N3** | 测试 docstring 说叶子由 `NAMED_STRUCTS` 展开，实现却用快照自己的成员表 | **已落实** | `tests:1120` → 「叶子集合由**快照模块自己的** `BOARD_FIELDS` / `ACTIVE_FIELDS` 展开算出」，并补了一句说明**为什么不用** `NAMED_STRUCTS`（注册表命中范围更宽，耦合一扩就变形） |
+| **N4** | `types.py` 说形态 10 的串「只有三条」却只列两条 | **已落实** | `types.py:73-74` → 「**串只有两条**（`types.BOARD_VIEW` 与 `Sequence[ClearGroup]`），**引用处三处**：`scan_clears` / `classify_placement` 的 `board` 参数与 `score_clear` 的 `groups`」 |
+| **N5** | `tuple[str, ...]` 字面量 4 处没有共用常量 | **已落实** | 新增 `types.py:99` `NEXT_QUEUE = "tuple[str, ...]"`；四处引用点全部改为常量（`events.py` 三处 · `snapshot.py` 一处）；**并补了断言钉住**：`tests:1030`（快照 `next` == `NEXT_QUEUE`）+ `tests:1035-1044`（三个事件的 `next` 负载 == `NEXT_QUEUE`） |
+| **N6** | 测试缺「转录表 == 注册表」的集合断言 | **已落实** | `tests:402` → `assert set(EXPECTED_PAYLOAD) == set(EVENT_TYPES)`（挂在 `test_event_registry_matches_requirement_table` 里，docstring 写明了「删一个键就少守一处」这个退化形状） |
 
-**这两项是同一件事的两半**（取值域怎么绑到类型上），建议在同一次收口里做掉——`PROGRESS.md:31` 已经这么要求了（「只扩展文法一次」）。
+**复核方式**：逐条读当前代码（不只是读提交说明），并实跑验证 N5 / N6 的断言确实生效——`NEXT_QUEUE` 四处引用点全部返回常量（`all 4 match constant: True`）。
 
-### 3.3 S6 十项的独立回归验证（`e69a561` 修订后）
+### 2.2 S6 报告 L7 的落实：比建议更严
 
-我对着**修订后的代码**重跑了全部相关探针，全部按预期：
+首轮 S6 报告 L7 写的是「`tools/` 不在 pyright 覆盖范围内……建议届时纳入」。作者的处置**比建议更严**，值得单独记：
+
+**① 把门补上**（`pyproject.toml:59`）：
+
+```toml
+include = ["src", "tools"]
+```
+
+命令从 `pyright src/tetris_kernel` 改为**不带路径的 `pyright`**——**受检目录只有 `include` 一处权威，不抄两份名单**（与 S6 报告里「键就是唯一权威」的同一条纪律）。
+
+**② 把类型写对，不是加 `# type: ignore`**：
+
+| 位置 | 原写法 | 现写法 |
+| --- | --- | --- |
+| `tools/_toolkit.py:61` | `stream.reconfigure(...)` + `except (AttributeError, OSError, ValueError)` | `if not isinstance(stream, io.TextIOWrapper): continue` → 异常收窄到 `(OSError, ValueError)`（不是 `TextIOWrapper` 就没有这个方法，`AttributeError` 不可能再发生） |
+| `tools/contract_grammar.py:96,105,112` | `elements: tuple[object, ...]` · `element: object` · `members: tuple[object, ...]` | `tuple[TypeNode, ...]` · `TypeNode` · `tuple[TypeNode, ...]`——**递归引用**，靠 `from __future__ import annotations` 前向引用；**不用 `Any`**（`Any` 是放弃检查，比 `object` 更糟） |
+
+**③ 门自己能不能触发？我实测了**（这是最要紧的一步——「门说自己守着、实际上没守」是本仓吃过亏的坑）：
+
+| 探针 | 结果 |
+| --- | --- |
+| 干净树跑 `pyright`（无路径） | exit 0 · **0 errors, 0 warnings, 0 informations** ✅ |
+| **往 `tools/_toolkit.py` 注入一处类型错误**（`def _probe_type_error() -> int: return 'not an int'`） | **exit 1** · `tools\_toolkit.py:115:12 - error: Type "Literal['not an int']" is not assignable to return type "int"` ✅ **门确实抓得住 `tools/`** |
+| 还原后再跑 | exit 0 ✅ |
+
+**④ 文档同步到位**：`AGENTS.md` · `README.md` · `docs/项目架构.md`（§1.2 命令行 + §8 质量门表）· `docs/spec-M0.md` · `docs/plan-M0.md` 的命令块全部改成 `pyright`。`PROGRESS.md` 把「`tools/` 尚未纳入 pyright 覆盖」从待办改成**已办**，并在卡点里记下教训：**「类型不精确只靠编辑器兜着，等于没有门」**——这 4 处错误 IDE 里看得见、项目自己的门看不见，从 S6 活到今天才被点出来。
+
+### 2.3 回归验证：修订没有让任何守卫退化
+
+**S6 十项 + 我加的回归项，全部重跑**（临时改动 → 实跑 → 还原）：
 
 | 编号 | 破坏方式 | 期望 | 实测 |
 | --- | --- | --- | --- |
-| M1 | `import os, numpy` | 红 | **红**（exit 1）✅ |
-| M2 | `--path src/typo_dir`（两个脚本） | 退出码 2 | **exit 2** ✅ |
-| M3 | 新增第 9 条签名 | 红 | **红**：`count/ruleSignature` 哈希变化 ✅ |
-| L1 | 字面量 `'nt'` | 放行 | **绿**（exit 0）；`'linux'` 仍红 ✅ |
-| L2 | `"note:todo"` / `"brand:new-namespace"` | 只警告 | **警告，exit 0** ✅；`"kernel:probe-unregistered"` → **红** ✅ |
-| L4 | 事件负载字段名与结构性键同键 | 退出码 2 拒绝进基线 | **exit 2**：「基线键重复：event/kernel:ready/producer」✅ |
-| L7 | `_load_runner` 返回类型 | 用协议替代 `object` | `measure_frame_cost.py:66-73` 已改为 `FrameRunner` Protocol ✅ |
-| D7 加严 | 六种墙钟写法（`time.time()` / `t.time()` / `time()` / `datetime.datetime.now()` / `datetime.now()` / `r.random()`） | 全红 | **六种全红** ✅（作者比报告建议更严） |
-| 回归 | 改字段类型 / 改名 / 新增快照字段 / 改注释 / 未登记事件 | 红 / 红 / 绿 / 红 / 红 | **全部仍按预期** ✅ |
+| M1 | `import os, numpy` | 红 | **exit 1** ✅ |
+| M1 加严 | `from time import time` → `time()` | 红 | **exit 1** ✅ |
+| M1 加严 | `import datetime` → `datetime.datetime.now()` | 红 | **exit 1** ✅ |
+| M2 | `--path src/typo_dir`（两个脚本） | exit 2 | **exit 2 / exit 2** ✅ |
+| M3 | 新增第 9 条签名 | 红 | **exit 1**（`count/ruleSignature` 哈希变化）✅ |
+| L1 | 字面量 `'nt'` | 放行 | **exit 0** ✅ |
+| L2 | `"kernel:probe-unregistered"` | 红 | **exit 1** ✅ |
+| L2 | `"note:todo"` | 只警告 | **exit 0** ✅ |
 
-**M3 的修复值得单独说一句**：作者没有加「事件数 / 命令数」计数键——架构 §4.4 明确允许新增事件与命令，加了就把正常成长变成 major。**只有冻结面才配计数键**（`tools/contract_baseline.py:220-231`）。实测「新增一条事件类型」仍然是绿的，边界守得住。
+**基线不变**（`NEXT_QUEUE` 重构没动类型串）：
 
----
+```
+条目数: 355
+event/piece:spawned/next   798a5e371cc23b411023b60b3a6a7cb2   tuple[str, ...]
+event/queue:refilled/next  798a5e371cc23b411023b60b3a6a7cb2   tuple[str, ...]
+event/state:changed/next   798a5e371cc23b411023b60b3a6a7cb2   tuple[str, ...]
+snapshot/next               798a5e371cc23b411023b60b3a6a7cb2   tuple[str, ...]
+count/ruleSignature         96e23f7b90ac8163d14936fbab23cb64   8
+count/namedStruct           96e23f7b90ac8163d14936fbab23cb64   8
+```
 
-## 4. 本轮新发现（6 项，全部低优先级）
+四个 `next` 键的哈希**完全相同**（同一个类型串）且与修订前一致——`NEXT_QUEUE` 只是把字面量换成了常量，**声明值一字未动**。
 
-以下 4 项是**跨阶段文档残留**——每个阶段自己看都通顺，但阶段之间演进后没跟上。这类问题只有把五个阶段放在一起看才会露出来。
+### 2.4 两项「主动推迟」的状态确认
 
-### N1 · `commands.py:413`：封闭文法的形态数还是 8，实际已 10
-
-| 字段 | 值 |
-| --- | --- |
-| path | `src/tetris_kernel/contracts/commands.py` |
-| 行号 | 413 |
-| category | documentation |
-| severity | low |
-
-原文：「**事件负载的类型语言里没有字面量枚举形态**（`types.py` 的封闭文法只有 8 形）」。
-
-`types.py` 的文法表现在是 **10 形态**（S4 补形态 9、S5 补形态 10）。这句话是在 S3 写的，之后没跟着改。
-
-**影响**：不改代码，但**它是 S3-L3 的理由**（"类型语言里没有枚举形态，所以只能这样声明"）。理由本身仍然成立（10 形里也确实没有字面量枚举），但引用一个过期的数字会让人以为文法没演进过。
-
-### N2 · `snapshot.py:268`：指向的条目名不存在
-
-| 字段 | 值 |
-| --- | --- |
-| path | `src/tetris_kernel/contracts/snapshot.py` |
-| 行号 | 268 |
-| category | documentation |
-| severity | low |
-
-原文：「……见 `KERNEL_STATE_TO_SNAPSHOT` 里 `rngSource` 那条」。
-
-那张表里的实际条目是 `KernelStateEntry("rngInstance", "rngState", derived=True)`（`snapshot.py:261`）——**内核侧字段名是 `rngInstance`，不是 `rngSource`**。`rngSource` 这个名字在整个仓库里都不存在。
-
-### N3 · `tests/test_contracts_declarations.py:1097`：docstring 与实现说的不是一回事
-
-| 字段 | 值 |
-| --- | --- |
-| path | `tests/test_contracts_declarations.py` |
-| 行号 | 1097 |
-| category | documentation |
-| severity | low |
-
-原文：「叶子集合由 `NAMED_STRUCTS` 展开成员表算出」。
-
-实现（`_snapshot_leaf_paths`，`tests:956-974`）用的是**快照模块自己的** `BOARD_FIELDS` / `ACTIVE_FIELDS`——这是 S5 报告 L3 的修订（"拿注册表里有没有这个名字当是不是快照子结构的判据太宽"）。修订时改了 helper 的 docstring，**漏了调用方的 docstring**，于是同一个文件里两处说法打架。
-
-**这条正好说明「文档残留」的成因**：修订只覆盖了出问题的那一处，没有回头看还有谁引用了它。
-
-### N4 · `types.py:73-74`：形态 10 的串数与列举对不上
-
-| 字段 | 值 |
-| --- | --- |
-| path | `src/tetris_kernel/contracts/types.py` |
-| 行号 | 73–74 |
-| category | documentation |
-| severity | low |
-
-原文：「仓内形态 10 的串只有**三条**：`types.BOARD_VIEW` 与 `score_clear` 的 `groups: Sequence[ClearGroup]`」。
-
-列出来的是**两条串**（`Sequence[Sequence[int]]` 与 `Sequence[ClearGroup]`），引用处是**三处**（`rules.py:349` / `362` / `376`）。「串」按类型串算就是 2 条。应为「两串三处」。
-
-### N5 · `tuple[str, ...]` 字面量 4 处，没有共用常量
-
-| 字段 | 值 |
-| --- | --- |
-| path | `src/tetris_kernel/contracts/events.py` · `src/tetris_kernel/contracts/snapshot.py` |
-| 行号 | `events.py:334` · `events.py:522` · `events.py:587` · `snapshot.py:183` |
-| category | maintainability |
-| severity | low |
-
-架构 §4.4 末条：「**引用处一律用常量，不复制字面量**——复制字面量的后果是常量改了、声明没跟着改，两处静默分叉，基线却显示全绿。」
-
-`types.py` 为 `CELLS` / `COORD_CELLS` / `BOARD_CELLS` / `INT_TUPLE` / `VECTOR2` / `SCALAR_MAP` / `BOARD_VIEW` 都定义了共用常量，**唯独预览队列的 `tuple[str, ...]` 没有**——于是它在四个地方各写一遍（`piece:spawned.next` · `queue:refilled.next` · `state:changed.next` · 快照 `next`）。
-
-**当前四处取值相同，基线一致，所以不是缺陷**；但它是这条纪律的一个缺口：预览队列要是从 5 个变成别的形状，四处要各改一遍。补一个 `types.NEXT_QUEUE` 即可。
-
-### N6 · 测试缺一条「转录表 == 注册表」的集合断言
-
-| 字段 | 值 |
-| --- | --- |
-| path | `tests/test_contracts_declarations.py` |
-| 行号 | 431–436（`test_event_payload_fields_match_expectation`） |
-| category | test |
-| severity | low |
-
-`EXPECTED_PAYLOAD`（44 个事件）与 `EXPECTED_EVENTS`（44 个事件）是两张**各自独立**的表，但**没有任何断言说这两张表的键集合相等**。
-
-后果：从 `EXPECTED_PAYLOAD` 里删掉一个事件的键 → 该事件的 `@pytest.mark.parametrize` 不再生成用例 → **该事件静默失去字段级牙齿**（事件本身仍被 `test_event_registry_size` / `test_event_registry_matches_requirement_table` 守住，所以不是红灯，只是少了一层守护）。这类「删一个键就少守一处」的退化，正是契约面最怕的形状。
-
-**建议**：加一条 `assert set(EXPECTED_PAYLOAD) == set(EVENT_TYPES) == set(EXPECTED_EVENTS)`。
-
----
-
-## 5. 质量门
-
-在 HEAD（`f059c67`）实跑，全部通过：
-
-| 命令 | 结果 |
-| --- | --- |
-| `python -m pytest -q` | **156 passed**（0.57s） |
-| `python -m ruff check .` | **All checks passed!** |
-| `python -m ruff format --check .` | **45 files already formatted** |
-| `python -m pyright src/tetris_kernel` | **0 errors, 0 warnings, 0 informations** |
-| `lint-imports` | **Contracts: 4 kept, 0 broken**（exit 0） |
-
-> `ruff format` 的 45 = src 21 + tools 7 + tests 6 + docs 6 + ai_docs 2 + 根目录 3（该命令也统计 `.md`）。S6 报告写作时是 44，多出来的那 1 个就是 `tests/ocr/S6-review.md` 入库。
-
-五个脚本的默认行为（均符合各自 docstring）：
-
-| 脚本 | 退出码 | 输出 |
+| 来源 | 项 | 现状 |
 | --- | --- | --- |
-| `check_kernel_purity.py` | 0 | 扫了 2 个目录：违规 0 条 · 警告 0 条 |
-| `check_event_registry.py` | 0 | 注册表里有 44 条事件类型 · 检查通过 |
-| `check_frozen_baseline.py` | 0 | 冻结区基线尚未生成（按计划 M0 收尾 / S17 生成） |
-| `contract_baseline.py` | 0 | 契约基线尚未生成（按计划 S17 冻结契约 v1 时生成） |
-| `measure_frame_cost.py` | **2** | 内核闭环尚未就绪（`tetris_kernel.host.headless` 不存在） |
+| **S4-L5** | 快照 `phase` / `hold` / `next` / `rule` 取值域无机器绑定 + 契约内生命周期两套写法 | **仍推迟**。`PROGRESS.md` 待办里挂着，理由是「要动就得给文法加『字面量枚举』形态，**只扩展一次**」。**复审同意这个决定**：文法扩展牵动基线口径，越早改越便宜，但**必须在 S17 生成基线之前**，不能拖到基线冻结之后 |
+| **S3-L3** | 事件侧 `commandType` 的取值域（= 16 个命令名）无机器绑定 | **仍推迟**，与 S4-L5 合并成同一次收口。`commands.py:413` 的理由句已随 N1 改成「10 形，仍没有"枚举"这一形」——**理由依然成立** |
+| **S2-L5** | 契约清单第 14 项（未知事件 / 未知元数据键容错）只有散文 | 随 **S11** 补，`PROGRESS.md` 已挂 |
 
 ---
 
-## 6. 需求文档 ↔ 机器声明：逐条机器比对（本轮新增）
+## 3. 首轮结论与历史发现状态（供追溯）
 
-此前五轮审查做到的都是「**代码 ↔ 测试里的转录表**」——**没有任何断言把转录表与需求文档绑在一起**。需求文档改了而转录表没改，测试照样全绿。本轮补上这一层：直接解析 `docs/需求与边界.md` 的 §8.1 / §8.2 / §8.3 三张表，与 `contracts/` 的声明逐条比对。
+首轮（基线 `f059c67`）结论：**无高危/严重问题**；6 项低优先级新发现；此前 45 项发现已落实 42 · 半落实 1 · 未落实 2。**本轮复审未推翻首轮的任何判断**。
+
+### 3.1 全部 51 项发现的当前状态
+
+| 来源 | 条数 | 已落实 | 半落实 | 主动推迟 / 挂账 |
+| --- | --- | --- | --- | --- |
+| S2 报告（事件契约声明） | 12 | 11 | 0 | 1（S2-L5，随 S11） |
+| S3 报告（命令契约声明） | 8 | 7 | 1（S3-L3） | 0 |
+| S4 报告（快照契约声明） | 9 | 8 | 0 | 1（S4-L5，取值域收口） |
+| S5 报告（规则签名声明） | 6 | 6 | 0 | 0 |
+| S6 报告（基线工具链） | 10 | 10 | 0 | 0 |
+| 首轮汇总报告（本文件） | 6 | 6 | 0 | 0 |
+| **合计** | **51** | **48** | **1** | **2** |
+
+> 计数口径备注：S2 报告自述「1 高 + 5 中 + 5 低 = 11 项」实为 12 项；S3 报告 M1 的「11 处」实为 9 处。**报告自身的计数有两处不准**，不影响任何裁定。
+
+### 3.2 契约声明面与需求文档的逐条比对（重跑仍全等）
 
 | 需求文档 | 文档条数 | 代码条数 | 差异 |
 | --- | --- | --- | --- |
 | §8.1 事件目录（事件名 + 命名空间） | 44 | 44 | **无** |
-| §8.1 产出者列（中文 → 代号） | 44 | 44 | **无**（逐条相等，含 `kernel:system:*` → host、`kernel:error` → bus 这两处反直觉映射） |
+| §8.1 产出者列（中文 → 代号） | 44 | 44 | **无** |
 | §8.2 命令目录（命令名） | 16 | 16 | **无** |
-| §8.2 命令参数规格（参数名 + 类型） | 3 条有参命令 | 3 | **无**（`setLevel.level` / `injectGarbage.rows+holes` / `writeCells.cells`） |
+| §8.2 命令参数规格（参数名 + 类型） | 3 条有参命令 | 3 | **无** |
 | §8.2 拒绝原因枚举 | 12 | 12 | **无** |
-| §8.2 拒绝原因分类（5 类） | 5 类 | 5 类 | **无**（逐类成员顺序也相等） |
-| §8.3 快照顶层字段 + `board` 子字段 | 26 | 26 | **仅 `extensions` 一条**：文档写 `tuple[tuple[str, JsonScalar], ...]`，代码写展开值 `tuple[tuple[str, int \| float \| str \| bool \| None], ...]` |
+| §8.2 拒绝原因分类（5 类，含成员顺序） | 5 类 | 5 类 | **无** |
+| §8.3 快照顶层字段 + `board` 子字段 | 26 | 26 | **仅 `extensions` 一条**：文档写 `JsonScalar` 记号，代码写展开值 |
 
-**`extensions` 那条不是缺陷**——`JsonScalar` 是架构 §5.4 定义的**记号**，封闭文法里没有「记号」形态，S4 报告已把它记为「转录已非需求字面」并在 `tests:874-878` 写了例外说明、用 `test_snapshot_types_reference_shared_constants` 单独钉住展开值与 `types.SCALAR_MAP` 的相等性。
+**`extensions` 那条不是缺陷**——`JsonScalar` 是架构 §5.4 定义的记号，封闭文法里没有「记号」形态；S4 报告已记为「转录已非需求字面」，`tests:874-878` 写了例外说明，并由 `test_snapshot_types_reference_shared_constants` 单独钉住展开值与 `types.SCALAR_MAP` 的相等性。
 
-**结论：契约声明面与需求文档逐条相符，没有隐藏偏差。** 这是本轮最有分量的一条正面结论——它把「声明 == 需求」这件事从人工核对变成了机器核对。
+**这一层此前五轮都没做到**——五轮做的都是「代码 ↔ 测试里的转录表」，**没有任何断言把转录表与需求文档绑在一起**。首轮汇总补上，本轮重跑确认仍然全等。
 
 ---
 
-## 7. 覆盖率
+## 4. 质量门（HEAD `888b16d`）
+
+| 命令 | 结果 |
+| --- | --- |
+| `python -m pytest -q` | **157 passed**（0.55s）——比首轮 +1，是 N5 新增的 `test_next_queue_payload_fields_reference_shared_constant` |
+| `python -m ruff check .` | **All checks passed!** |
+| `python -m ruff format --check .` | **46 files already formatted** |
+| `python -m pyright`（**不带路径**，走 `include = ["src", "tools"]`） | **0 errors, 0 warnings, 0 informations** |
+| `lint-imports` | **Contracts: 4 kept, 0 broken**（exit 0） |
+
+> `ruff format` 的 46 = 29 个 `.py`（src 21 · tools 7 · tests 1）+ 17 份 `.md`（tests/ocr 6 · docs 6 · ai_docs 2 · 根目录 3）——该命令也统计 `.md`。首轮报告写作时是 45，多出来的 1 个是本报告入库。
+
+五个脚本的默认行为（均符合各自 docstring）：`check_kernel_purity` 0 · `check_event_registry` 0 · `check_frozen_baseline` 0（基线未生成）· `contract_baseline` 0（基线未生成）· `measure_frame_cost` **2**（内核闭环未就绪，S14 后可用）。
+
+---
+
+## 5. 覆盖率
 
 | 项 | 数 |
 | --- | --- |
-| OCR 预览文件总数 | 28 |
-| 可审文件（`reviewable_files`） | **16** |
-| 已审查 | **16** |
+| OCR 预览文件总数 | 32 |
+| 可审文件（`reviewable_files`） | **17**（含本轮新增的 `pyproject.toml`） |
+| 已审查 | **17** |
 | 跳过 | **0** |
-| 额外审查（OCR `default_path` 排除） | **1**（`tests/test_contracts_declarations.py`，1798 行） |
-| **覆盖率** | **17/17 = 100%**（代码 16/16，含测试 17/17） |
+| 额外审查（OCR `default_path` 排除） | **1**（`tests/test_contracts_declarations.py`，1825 行） |
+| **覆盖率** | **18/18 = 100%** |
 
 **排除文件处置**：
 
 | 文件 | 排除原因 | 处置 |
 | --- | --- | --- |
-| `docs/需求与边界.md` · `docs/项目架构.md` · `docs/spec-M0.md` · `docs/plan-M0.md` · `docs/契约v1清单.md` · `PROGRESS.md` · `ai_docs/261003.md` | `unsupported_ext` | 作为审查**基准**逐节读取（§2.2）；本报告的每条结论都指向具体章节行号 |
-| `tests/ocr/S2-review.md` … `S6-review.md` | `unsupported_ext` | 逐份读完，并作为 45 项复核的清单 |
+| `docs/需求与边界.md` · `docs/项目架构.md` · `docs/spec-M0.md` · `docs/plan-M0.md` · `docs/契约v1清单.md` · `PROGRESS.md` · `ai_docs/261003.md` · `AGENTS.md` · `README.md` | `unsupported_ext` | 作为审查**基准**逐节读取；本报告每条结论都指向具体章节行号 |
+| `tests/ocr/S2-review.md` … `S6-review.md` · 本文件 | `unsupported_ext` | 逐份读完，作为 51 项复核的清单 |
 | `tests/test_contracts_declarations.py` | `default_path` | **逐行审查并计入覆盖率**——机检担保几乎全在它身上 |
 
 ---
 
-## 8. 残余风险（非缺陷，供作者决定）
+## 6. 残余风险（非缺陷，供作者决定）
 
-以下三点是**设计上的取舍或已知边界**，代码与文档都写明了，不单列为发现：
+三点是**设计上的取舍或已知边界**，代码与文档都写明了：
 
-1. **新命名空间下私造事件类型不会被拦**。事件登记检查分两档：已登记命名空间下红、未登记命名空间下只警告。代价是「注册表是唯一权威」这条 ADR-020 在**新命名空间**上只靠警告维系。docstring 写明了这个取舍（`check_event_registry.py:21-31`）。**如果将来变体要引入自己的事件命名空间，这条要重新想清楚。**
-2. **局部变量遮蔽仍会误判**。纯净度检查靠导入绑定表还原调用形状，**局部变量遮蔽模块名**（`os = compute_os()` 后写 `os.name`）仍会被判成平台属性访问。作者在修订说明里认了这条边界。内核代码量小，暂可接受。
-3. **`tools/` 不在 pyright 覆盖范围内**（`pyproject.toml:54` `include = ["src"]`）。S6 L7 把 `_load_runner()` 的返回类型从 `object` 改成了 `FrameRunner` 协议（比报告建议做得更好），但**整个 `tools/` 目录仍然没有类型检查**。S17 之后 `tools/` 会成为常驻质量门的一部分，届时建议纳入。
-
----
-
-## 9. 给下一阶段的建议
-
-### 9.1 S7（随机源与时间源）
-
-- `kernel/rng.py` 必须落在 `RANDOM_SOURCE_MODULE = "kernel/rng.py"` 这个路径上——豁免是**按路径后缀匹配**的（`check_kernel_purity.py:376`），改了模块名要同步改常量。
-- 六种墙钟写法现在全被抓住，`random.Random(seed)` 只在 rng 模块放行——**S7 写 `getstate()` / `setstate()` 不受拦截**（它们不是墙钟函数）。
-- **实测提醒**：`random` 模块级的 `random.seed()` / `random.random()` 一律红（`canonical.startswith("random.")`），随机源模块只能用实例方法。
-
-### 9.2 S17（冻结基线）之前
-
-1. **先做取值域统一收口**（S4-L5 + S3-L3 合并做，`PROGRESS.md:31` 已要求「只扩展文法一次」）：取值域常量归 `contracts/types.py` · 命令与快照共用同一套生命周期标识符 · 要让基线看见取值域就得给文法加**字面量枚举形态**（一次扩展，扩展完基线的哈希口径要重新定）。
-2. 顺手补 N5（`types.NEXT_QUEUE` 常量）与 N6（集合断言）——两处都是小改，趁基线还没生成做代价最低。
-3. **基线生成时条目数是 355**（353 条声明 + 2 条计数键），`docs/契约v1清单.md` 第 16 项在生成那次提交里勾，提交 message 写明「契约 v1 冻结」。
+1. **新命名空间下私造事件类型不会被拦**。事件登记检查分两档：已登记命名空间下红、未登记命名空间下只警告。代价是「注册表是唯一权威」这条 ADR-020 在**新命名空间**上只靠警告维系（`check_event_registry.py:21-31` 写明了这个取舍）。**变体若要引入自己的事件命名空间，这条要重新想清楚。**
+2. **局部变量遮蔽仍会误判**。纯净度检查靠导入绑定表还原调用形状，**局部变量遮蔽模块名**（`os = compute_os()` 后写 `os.name`）仍会被判成平台属性访问。作者在修订说明里认了这条边界。
+3. **`tests/` 仍不在 pyright 覆盖内**（`include = ["src", "tools"]`）。`tests/` 有 1825 行测试代码没有类型检查——**首轮之前这是全仓无类型检查，现在是「除 tests 外全覆盖」**。测试代码的类型精度要求低于产品代码，但若将来 `tests/` 里出现复杂的泛型夹具，这个缺口会重新显形。
 
 ---
 
-## 10. 未验证 / 不作评价的部分
+## 7. 给下一阶段的建议
+
+### 7.1 S7（随机源与时间源）
+
+- `kernel/rng.py` 必须落在 `RANDOM_SOURCE_MODULE = "kernel/rng.py"` 这个路径上——豁免是**按路径后缀匹配**的（`check_kernel_purity.py:376`），改模块名要同步改常量。
+- 六种墙钟写法现在全被抓住；`random.Random(seed)` 只在 rng 模块放行；`getstate()` / `setstate()` 不受拦截（不是墙钟函数）。
+- **`random` 模块级的 `random.seed()` / `random.random()` 一律红**（`canonical.startswith("random.")`）——随机源模块只能用实例方法。
+
+### 7.2 S17（冻结基线）之前
+
+1. **做取值域统一收口**（S4-L5 + S3-L3 合并，`PROGRESS.md` 已要求「只扩展文法一次」）：取值域常量归 `contracts/types.py` · 命令与快照共用同一套生命周期标识符 · 要让基线看见取值域就得给文法加**字面量枚举形态**（一次扩展；**必须在生成基线之前**，扩展完基线的哈希口径要重新定）。
+2. 清单第 14 项随 **S11** 补（未知事件 / 未知元数据键容错的可机读声明）。
+3. 生成基线时**条目数是 355**（353 条声明 + 2 条计数键），`docs/契约v1清单.md` 第 16 项在生成那次提交里勾，提交 message 写明「契约 v1 冻结」。
+
+---
+
+## 8. 未验证 / 不作评价的部分
 
 - **基线文件本身尚未生成**（按计划 S17 生成）→ 本报告所有「进基线 / 不进基线」的判断都是**口径推导 + 临时基线实测**，没有真实基线文件的哈希可比。
-- **需求 / 架构 / spec 的逐条对齐**：§6 的机器比对覆盖了 §8.1 / §8.2 / §8.3 三张表（事件 / 命令 / 拒绝原因 / 快照），**架构 §7.3.1 的签名表是人工核对的**（S5 轮逐条核过，本轮复核未发现漂移）。
-- **未复跑 S5 提交说明自陈的另外 6 组反向验证**，也未复跑 S4/S3/S2 提交说明里的反向验证原文——本轮只做了 35 项发现的落实裁定与 S6 的独立回归。
-- **两个复核 Agent 的裁定我抽验了关键项**（S4-L5、S3-L3、S2-M3、L1 等均已亲自核对代码），其余条目采信其逐条附证；两 Agent 均只读、未改动工作区。
-- **`tests/ocr/` 五份旧报告自身的计数有两处不准**（S2 自述 11 实为 12；S3-M1 的「11 处」实为 9 处）——不影响任何裁定，但报告本身不是完全可靠的清单。
+- **架构 §7.3.1 的签名表是人工核对的**（S5 轮逐条核过，本轮复核未发现漂移）；§8.1 / §8.2 / §8.3 的三张需求表是**机器比对**的。
+- **未复跑各阶段提交说明里的反向验证原文**——本轮做的是「发现落实裁定 + 独立回归」，不是重跑历史记录。
+- **两个复核 Agent 的裁定**（首轮派出的 S2+S3 / S4+S5 复核）本轮未重跑，但涉及的代码文件（`events.py` / `commands.py` / `snapshot.py` / `rules.py` / `structures.py` / `types.py`）本轮**逐个 diff 读过**，改动只涉及 N1–N6 的六处，无回归。
 - **本轮未审查 `ai_docs/` 与 `PROGRESS.md` 的内容质量**（只作为基准读取），它们不属于代码面。
+- **历史验证记录里的旧数字**（`plan-M0.md` 里的「353 条」「44 files」、`ai_docs` 里的「156 passed」）**保持原样是刻意的**——那是「当时跑了什么」的记录，不是当前该跑什么的指令。作者这条判断是对的，复审确认没有把它误当成当前状态。
 
 ---
 
 ## 附：本次审查的自我约束
 
-- 只报**有把握的真缺陷**；N1–N6 全部是低优先级，风格类不单列。
-- 每条发现都带 path、行号、category、severity，并附**当前代码形态**或**可复现的实测**。
-- 结论不夸大：契约面与需求文档逐条相等、45 项历史发现已落实 42 项，这些是**实测出来的**；仍未解决的两项也已标明是作者主动推迟，不是遗漏。
+- 只报**有把握的真缺陷**；**本轮 0 项新发现**——修订到位就是到位，不硬凑。
+- 每条历史发现的裁定都附**当前代码形态**或**可复现的实测**。
+- 结论不夸大：契约面与需求文档逐条相等、51 项历史发现已落实 48 项、**新的 pyright 门实测能触发**——这些都是**实测出来的**；仍未解决的两项已标明是作者主动推迟，不是遗漏。
+
+---
+
+## 9. 作者复核与订正（2026-10-23 20:20）
+
+这一节由**作者**（不是审查方）补记：收到本报告后逐条独立复核了一遍，**结论是报告可信**——报告给的文件行号、计数、哈希、退出码，全部实测复现：
+
+| 报告的声明 | 作者的独立复核 | 结果 |
+| --- | --- | --- |
+| N1–N6 的证据行号 | `commands.py:413` · `snapshot.py:268` · `types.py:73-74` · `types.py:99` · `tests:402` / `1030` / `1035-1044` / `1120` 逐个打开核对 | **全部属实** |
+| §3.1 的 51 项计数口径 | 逐份报告数标题：S2 = H1+M1–M6+L1–L5 = 12 · S3 = 8 · S4 = 9 · S5 = 6 · S6 = 10 · 本轮 6 | **全部属实**（含"S2 自述 11 实为 12""S3-M1 的 11 处实为 9 处"两处订正） |
+| §2.3 的基线不变 | `contract_baseline.py --print-entries` 实跑 | **355 条**，四处 `next` 哈希仍是 `798a5e37…`，两条计数键仍是 `96e23f7b…` |
+| §2.3 的 8 组回归探针 | 逐组实跑（M1 / M1a / M1b / M2 / M3 / L1 / L2） | **全部按报告所述触发**：M1 `import os, numpy` → exit 1 · `from time import time` → exit 1 · `datetime.datetime.now()` → exit 1 · M2 两个脚本 → exit 2 · M3 新增第 9 条签名 → exit 1（`count/ruleSignature` 哈希变化，新增键放行）· L1 字面量 `"nt"` → exit 0 · L2 `kernel:probe-unregistered` → exit 1、`note:todo` → exit 0 |
+| §3.2 的需求 ↔ 机器声明 | 自己写临时脚本重跑比对（用完即删） | **逐条相等**：事件 44（含顺序、命名空间、产出者）· 命令 16（含 3 条有参命令的参数名与类型）· 拒绝原因 12 + 5 类（含成员顺序）· 快照 21 + 5 = 26；唯一差异仍是需求原文的 `JsonScalar` 记号 |
+| §4 的五道门与五个脚本 | 全量实跑 | pytest **157 passed** · ruff check 全过 · ruff format 46 files · pyright 0 错 · lint-imports 4 kept；脚本退出码 0/0/0/0/**2** 全对 |
+
+**订正报告自身两处笔误**（不影响任何裁定）：
+
+1. **§1 的交叉引用指错了节**：原文「需求文档 ↔ 机器声明 …（§4）」，但 §4 是「质量门」，这份比对表在 **§3.2**。已改。
+2. **§4 脚注的 46 文件拆分算错了**：「src 21 + tools 7 + tests 7 + docs 7 + ai_docs 2 + 根目录 3」加起来是 **47**。实际是 **29 个 `.py`**（src 21 · tools 7 · tests 1）+ **17 份 `.md`**（tests/ocr 6 · docs 6 · ai_docs 2 · 根目录 3）= 46。已改。
+
+**顺带牵出一处仓库里的旧账**：报告 §3.1 说 S2 审查是 **12 项**，而 `PROGRESS.md` 仍写「14 项发现」——`ai_docs/261003.md` 早在 14:54 就订正过这一处（S3 报告 L5 点名的"日志说改了、文档没改"），**`PROGRESS.md` 漏了**。已改。**教训照旧：改完 A 要回头搜还有谁引用 A**，这次漏的是 `PROGRESS.md`，下次可能是别的。
+
+**本轮没有新增代码改动**——报告的结论是「修订已全部到位」，作者复核后同意这个判断。
