@@ -1,0 +1,23 @@
+{
+  "files": {
+    "kernel/__init__.py": "1a06c083a3ed5c689e11cccef35290cc",
+    "kernel/commands.py": "5374985c6fbd0752fc7496992caec106",
+    "kernel/core.py": "092bd37bda599198651ec5fcc0012997",
+    "kernel/drafts.py": "dba1bc77c075212d6d939b7e45946718",
+    "kernel/fingerprint.py": "fdb5035c42b06111fe0f8ed421d80ee0",
+    "kernel/frame.py": "00fc7096637ae524a581da029ebf850f",
+    "kernel/lifecycle.py": "1ebcc1b144cda69923a57ad4120b427f",
+    "kernel/quota.py": "1064689401a7293410e65f02ce1a9514",
+    "kernel/rng.py": "68311f21e04bd3a31e35b32a9dc96e34",
+    "kernel/snapshot.py": "99201798ed11c53b5db8846e9873ba44",
+    "rules/__init__.py": "fc59602029de1c4ad28e8e9980eba942",
+    "rules/interface.py": "c177b1cf50aacaf8b514b1feec93ec14",
+    "rules/standard.py": "37e3eecc74825745b178d2b87b7f3879",
+    "rules/tables.py": "cf15da1c49935280e9c70dc254e9d30d"
+  },
+  "meta": {
+    "generatedBy": "tools/check_frozen_baseline.py",
+    "hashAlgorithm": "blake2b-16",
+    "scope": "kernel/ + rules/"
+  }
+}
