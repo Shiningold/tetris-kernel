@@ -3,19 +3,85 @@
 只接受命令、只发出事件；对外接口只有 execute / advance_frame / snapshot。
 不 import 总线、零第三方依赖、禁读墙钟（架构 §7.1、§5.3）。
 
-批次 A 落地后本包的导出面是两块：随机源与指纹（S7）· 快照与只读视图（S8）。
-`execute` / `advance_frame` 随 S9 / S12 补上——**不提前实现别的阶段的事**。
+批次 A / B 落地后本包的导出面分五块：随机源与指纹（S7）· 快照与只读视图
+（S8）· 命令通道与生命周期（S9）· 配额与合并（S10）· 帧模型（S12）。
 
 导出面由**集成者**统一收口（plan-M0.md §1.4.2）：包级 `__init__.py` 不归
 写手，多个写手各写一行就是几份会漂的名单。
 """
 
+from .commands import (
+    Args,
+    ArgsValue,
+    Command,
+    is_known_command,
+    validate_args,
+)
+from .core import (
+    DEFAULT_BOARD_HEIGHT,
+    DEFAULT_BOARD_WIDTH,
+    DEFAULT_HIDDEN_ROWS,
+    GRAVITY_AXIS,
+    LEVEL_MAX,
+    LEVEL_MIN,
+    PREVIEW_SIZE,
+    ActivePiece,
+    Kernel,
+    KernelInvariantError,
+    KernelState,
+)
+from .drafts import (
+    METADATA_CAUSE,
+    METADATA_MERGED_COUNT,
+    METADATA_SOURCE,
+    EventDraft,
+    JsonValue,
+    Metadata,
+    Payload,
+    make_draft,
+    payload_get,
+)
 from .fingerprint import (
     DOMAIN_PREFIX,
     HASH_ALGORITHM,
     HASH_SIZE,
     blake2b_hex,
     tlv_digest,
+)
+from .frame import (
+    FRAME_STEPS,
+    FrameContext,
+    FrameStepper,
+    StepOutcome,
+    advance_frame,
+)
+from .lifecycle import (
+    PHASE_GAME_OVER,
+    PHASE_NOT_STARTED,
+    PHASE_PAUSED,
+    PHASE_RUNNING,
+    PHASES,
+    REJECT_ILLEGAL_TRANSITION,
+    TRANSITION_CREATE,
+    TRANSITION_END,
+    TRANSITION_PAUSE,
+    TRANSITION_RESET,
+    TRANSITION_RESUME,
+    TRANSITION_START,
+    TRANSITIONS,
+    Lifecycle,
+)
+from .quota import (
+    DEFAULT_LIMITS,
+    DEFAULT_MAX_COMMANDS,
+    DEFAULT_MAX_ROUNDS,
+    QUOTA_COMMAND_COUNT,
+    QUOTA_ROUNDS,
+    QUOTA_WRITE_CELLS,
+    FrameQuota,
+    QuotaLimits,
+    RejectCoalescer,
+    RejectGroup,
 )
 from .rng import (
     RNG_NEXT_EVENT,
@@ -38,17 +104,67 @@ from .snapshot import (
 )
 
 __all__ = [
+    "DEFAULT_BOARD_HEIGHT",
+    "DEFAULT_BOARD_WIDTH",
+    "DEFAULT_HIDDEN_ROWS",
+    "DEFAULT_LIMITS",
+    "DEFAULT_MAX_COMMANDS",
+    "DEFAULT_MAX_ROUNDS",
     "DOMAIN_PREFIX",
+    "FRAME_STEPS",
+    "GRAVITY_AXIS",
     "HASH_ALGORITHM",
     "HASH_SIZE",
+    "LEVEL_MAX",
+    "LEVEL_MIN",
+    "METADATA_CAUSE",
+    "METADATA_MERGED_COUNT",
+    "METADATA_SOURCE",
+    "PHASES",
+    "PHASE_GAME_OVER",
+    "PHASE_NOT_STARTED",
+    "PHASE_PAUSED",
+    "PHASE_RUNNING",
+    "PREVIEW_SIZE",
+    "QUOTA_COMMAND_COUNT",
+    "QUOTA_ROUNDS",
+    "QUOTA_WRITE_CELLS",
+    "REJECT_ILLEGAL_TRANSITION",
     "RNG_NEXT_EVENT",
+    "TRANSITIONS",
+    "TRANSITION_CREATE",
+    "TRANSITION_END",
+    "TRANSITION_PAUSE",
+    "TRANSITION_RESET",
+    "TRANSITION_RESUME",
+    "TRANSITION_START",
     "Active",
+    "ActivePiece",
+    "Args",
+    "ArgsValue",
     "Board",
+    "Command",
+    "EventDraft",
     "ExtensionEntry",
+    "FrameContext",
+    "FrameQuota",
+    "FrameStepper",
+    "JsonValue",
+    "Kernel",
+    "KernelInvariantError",
     "KernelRng",
+    "KernelState",
+    "Lifecycle",
+    "Metadata",
+    "Payload",
+    "QuotaLimits",
+    "RejectCoalescer",
+    "RejectGroup",
     "RngNextDraft",
     "RngNextPayload",
     "Snapshot",
+    "StepOutcome",
+    "advance_frame",
     "blake2b_hex",
     "build_board",
     "build_extensions",
@@ -56,6 +172,10 @@ __all__ = [
     "compute_extension_fingerprint",
     "compute_structure_fingerprint",
     "freeze_cells",
+    "is_known_command",
+    "make_draft",
+    "payload_get",
     "tlv_digest",
+    "validate_args",
     "with_rng_state",
 ]

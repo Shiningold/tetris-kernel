@@ -48,6 +48,16 @@
 - **`start` / `pause` / `resume` / `reset` 是生命周期命令本身**，它们的状态问题
   走 `illegal_transition`（状态类），不是门禁三值。
 
+## `no_active_piece` 是**防御性保留**
+
+六条移动 / 旋转命令（`moveLeft` / `moveRight` / `softDrop` / `hardDrop` /
+`rotateCW` / `rotateCCW` / `rotate180`）声明了 `no_active_piece`，**但正常执行
+路径走不到它**——内核保证「命令执行时 `running` 态必然持有活动方块」
+（架构 §6.8 的活动方块不变量）。它是**防御性保留**：契约把这一类情形也兜住，
+免得消费方遇到没声明的原因时踩空。
+
+**`hold` 没有声明它**，而且这不是疏漏——见 `hold` 那条的说明。
+
 ## 旋转失败不在拒绝原因里
 
 旋转无合法落点时命令**仍被接受**，另发受阻事件（ADR-043）——拒绝通道只留给
@@ -102,6 +112,12 @@ class CommandSpec:
 
     `reject_reasons` 是**该命令可能被拒绝的全部原因**，不只是需求 §8.2
     那一列写着的——跨切的配额与参数原因也算在内（见模块 docstring）。
+
+    **实现发出的原因必须落在这张表里**（架构 §6.8）：表外的值即便在 12 值
+    枚举之内也是越界——消费方按"命令 × 原因"配对，没声明的配对不到。
+
+    **`no_active_piece` 是防御性保留**：正常执行路径走不到它（架构 §6.8 的
+    活动方块不变量），它只是把这一类情形也兜住。
     """
 
     name: str
@@ -324,13 +340,14 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
         "hold",
         _cmd(
             "hold",
-            "暂存当前方块并取出暂存槽里的方块。**本块已用过暂存时拒绝**。"
-            "需求 §8.2 给 hold 列的可拒绝情形只有这一条，因此这里不额外列 "
-            "`no_active_piece`——但**两侧口径的缺口要挂在明处**：事件侧 "
-            "`piece:held.taken` 已经是 `str | None`（v1 承认暂存槽可以是空的），"
-            "命令侧却没说「running 态没有活动方块时 hold 怎么办」。"
-            "该窗口是否存在要等实现期确认，届时按 major 变更流程定，"
-            "不要在实现期临时加一个拒绝原因。",
+            "暂存当前方块并取出暂存槽里的方块。**本块已用过暂存时拒绝**"
+            "（并发一条 `piece:hold-denied`）。"
+            "需求 §8.2 给 hold 列的可拒绝情形只有这一条，因此这里**不列 "
+            "`no_active_piece`**——实现期确认的结论是："
+            "**「running 态没有活动方块」不是一个可拒绝情形，而是内核不变量破坏**"
+            "（架构 §6.8：命令执行时 `running` 态必然持有活动方块）。"
+            "真到了那个状态，契约没有可发的拒绝事件，内核以 "
+            "`KernelInvariantError` 终止，**不硬造一条没声明的拒绝原因**。",
             lifecycle_gated=True,
             reject_reasons=("quota_exceeded", "invalid_argument", "hold_already_used"),
         ),
