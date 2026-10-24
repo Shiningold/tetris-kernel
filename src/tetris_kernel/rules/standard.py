@@ -27,6 +27,16 @@ M0 只保证**接口定稿 + 最小实现**（架构 §7.3 · spec-M0.md §7.5�
 ——`classify_placement` 要靠它数出"这次消几行"（T-Spin 档位与计分类别键都
 依赖这个数）。
 
+## 计分口径（连击 / 背面连击 / 消行数）
+
+- **连击**（`combo`）：连续消行的次数；**落空清零**。落空由**内核每次锁定后
+  都调用 `score_clear`（含空组）**表达——空组即落空，**内核不自己改 `combo`**。
+- **背面连击**（`b2b`）：这一位表示「当前处于背面连击链中」——本次消行是难消
+  （四消 / T-Spin）就入链，普通消行或落空断链。**B2B 倍率**（M1）的条件是
+  「本次难消 ∧ 上一手也难消」，`prev.b2b` 正是"上一手在链中"的答案。
+- **消行数**（`linesDelta`）：**组数就是消掉的线数**——重力向下时线是行，横向
+  重力时线是列；`lines` 记的始终是"消掉了几条线"，与重力轴无关。
+
 ## T-Spin 分类怎么到达计分
 
 `classify_placement` 的结果挂在 `ClearGroup.classification` 上，
@@ -88,19 +98,28 @@ def _cell_at(board: Sequence[Sequence[int]], x: int, y: int) -> int:
 
 
 def _board_width(board: Sequence[Sequence[int]]) -> int:
-    """棋盘宽度：取各行长度的最小值（对不齐的棋盘按最窄的一行算）。"""
+    """棋盘宽度：取各行长度的最小值（对不齐的棋盘按最窄的一行算）。
+
+    **行路径与列路径用同一个宽度**——同一份"不整齐"的棋盘，按行判和按列判
+    必须得出同一个答案（两条路径口径不一致本身就是隐患）。
+    """
     if not board:
         return 0
     return min(len(row) for row in board)
 
 
 def _full_indices(board: Sequence[Sequence[int]], clear_axis: str) -> tuple[int, ...]:
-    """已满的行 / 列的索引（升序）。"""
+    """已满的行 / 列的索引（升序）。
+
+    **行与列同一宽度口径**（`_board_width`）：行按「本行前 `width` 格全非空」
+    判满，列按「各行该列全非空」判满。对不齐的棋盘按最窄的一行算，两条路径
+    得出同一个答案。
+    """
+    width = _board_width(board)
     if clear_axis == "row":
         return tuple(
-            index for index, row in enumerate(board) if row and all(cell != 0 for cell in row)
+            index for index, row in enumerate(board) if all(cell != 0 for cell in row[:width])
         )
-    width = _board_width(board)
     height = len(board)
     return tuple(
         index
@@ -185,12 +204,17 @@ def scan_clears(board: Sequence[Sequence[int]], ctx: RuleContext) -> tuple[Clear
 
     **分类是 `None`**：本函数不知道放置上下文（签名里没有 `PlacementInfo`），
     分类由内核拿到 `classify_placement` 的结果后挂上来（内核只搬运）。
+
+    **一条线 = 棋盘宽度那么长**：行路径的组是「整行」，列路径的组是「整列」，
+    两者的格子清单都按**同一个宽度口径**（`_board_width`）取——对不齐的棋盘
+    按最窄的一行算，不按行自身的长度算。
     """
     clear_axis = CLEAR_AXIS_BY_GRAVITY[ctx.axis]
+    width = _board_width(board)
     groups: list[ClearGroup] = []
     for index in _full_indices(board, clear_axis):
         if clear_axis == "row":
-            cells = tuple((x, index) for x in range(len(board[index])))
+            cells = tuple((x, index) for x in range(width))
         else:
             cells = tuple((index, y) for y in range(len(board)))
         groups.append(ClearGroup(axis=clear_axis, index=index, cells=cells))
@@ -232,12 +256,45 @@ def score_clear(
     时以分类为准（规则集自己的判断优先）。`classKey == "none"` 不算数——
     那表示"没有类别"，不是"零分"。
 
-    连击：本次消行后 `combo + 1`，奖励按**消行前**的连击数给。
-    B2B：难消（四消 / T-Spin）且上一次也是难消链，才保持 `b2b` 为真；
-    普通消行会把 `b2b` 置回假。等级不在这里动——升级归内核。
+    ## 连击（`combo`）
+
+    **连续消行的次数**：本次消行 `combo + 1`，奖励按**消行前**的连击数给。
+    **没消行的放置（落空）把连击清零**——放了一块没消行的方块，下一块消行
+    不该接着拿连击奖励。
+
+    **落空由内核每次锁定后都调用本函数（含空组）来表达**：空组 = 落空 =
+    连击断。**内核不自己改 `combo`**——计分口径归规则集。
+
+    ## 背面连击（`b2b`）
+
+    这一位表示「**当前处于背面连击链中**」：链在**本次消行是难消**（四消 /
+    T-Spin）时进入，普通消行或落空时断开。
+
+    **B2B 倍率**（M1）的条件是「本次难消 ∧ 上一手也难消」——`prev.b2b`
+    正是"上一手在链中"的答案（M0 的计分表里没有 B2B 倍率，见 `tables.py`）。
+
+    **这一位不是"链长 ≥ 2"**，它表示"链中"；链长由规则集在计分时用
+    「本次难消 ∧ `prev.b2b`」当场判。
+
+    ## 消行数（`linesDelta`）
+
+    **组数就是消掉的线数**——重力向下时线是行，横向重力时线是列。`lines`
+    记的始终是"消掉了几条线"，与重力轴无关（横向重力的口径见
+    `docs/plan-M0.md` S13 段）。
     """
     if not groups:
-        return ScoreDelta(scoreDelta=0, linesDelta=0, state=prev)
+        # 落空：连击与背面连击链都断在这里（内核每次锁定后都调本函数）。
+        return ScoreDelta(
+            scoreDelta=0,
+            linesDelta=0,
+            state=ScoreState(
+                score=prev.score,
+                lines=prev.lines,
+                combo=0,
+                b2b=False,
+                level=prev.level,
+            ),
+        )
     cleared = len(groups)
     classification = _first_classification(groups)
     spin = classification is not None and classification.tSpin != "none"
@@ -247,7 +304,9 @@ def score_clear(
         score=prev.score + score_delta,
         lines=prev.lines + cleared,
         combo=prev.combo + 1,
-        b2b=class_key in DIFFICULT_CLASS_KEYS and prev.b2b,
+        # 本次是难消就在链中，普通消行断链——**不与 `prev.b2b` 相与**：
+        # 那样链永远起不来（从 `False` 起步的 AND 恒为 `False`）。
+        b2b=class_key in DIFFICULT_CLASS_KEYS,
         level=prev.level,
     )
     return ScoreDelta(scoreDelta=score_delta, linesDelta=cleared, state=state)

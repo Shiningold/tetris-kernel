@@ -240,7 +240,11 @@ def test_score_clear_combo_bonus() -> None:
 
 
 def test_score_clear_b2b_flag() -> None:
-    """B2B：难消（四消 / T-Spin）且上一手也是难消链才保持为真；普通消行置回假。"""
+    """背面连击：本次是难消就入链，普通消行断链。
+
+    **`False → True` 那一跳必须守住**：旧写法把 `b2b` 与 `prev.b2b` 相与，
+    从 `False` 起步的 AND 恒为 `False`——链永远起不来，FR-4.6 静默失效。
+    """
     difficult = (
         ClearGroup(
             axis="row",
@@ -250,16 +254,87 @@ def test_score_clear_b2b_flag() -> None:
         ),
     )
     ordinary = (ClearGroup(axis="row", index=0, cells=((0, 0),)),)
-    prev = ScoreState(score=0, lines=0, combo=0, b2b=True, level=1)
-    assert standard.score_clear(difficult, CTX_DOWN, prev).state.b2b is True
-    assert standard.score_clear(ordinary, CTX_DOWN, prev).state.b2b is False
-    # 难消链的第一次：上一手不是难消 → b2b 不成立。
     cold = ScoreState(score=0, lines=0, combo=0, b2b=False, level=1)
-    assert standard.score_clear(difficult, CTX_DOWN, cold).state.b2b is False
+
+    # 起链那一跳：上一手不在链中，本次是难消 → 进链。
+    entered = standard.score_clear(difficult, CTX_DOWN, cold).state
+    assert entered.b2b is True
+
+    # 链中再来一次难消 → 仍在链中。
+    assert standard.score_clear(difficult, CTX_DOWN, entered).state.b2b is True
+
+    # 普通消行 → 断链。
+    assert standard.score_clear(ordinary, CTX_DOWN, entered).state.b2b is False
+
+
+def test_score_clear_breaks_combo_when_nothing_cleared() -> None:
+    """落空（没消行）把**连击与背面连击链**都断掉。
+
+    标准玩法里"没消行"就该中断连击——旧写法空组早返回原状态，连击跨着落空
+    继续累加，奖励按**已经断了的**连击数发。
+    """
+    prev = ScoreState(score=500, lines=3, combo=2, b2b=True, level=1)
+    delta = standard.score_clear((), CTX_DOWN, prev)
+
+    assert delta.scoreDelta == 0
+    assert delta.linesDelta == 0
+    assert delta.state.combo == 0
+    assert delta.state.b2b is False
+    # 分数、行数、等级不动。
+    assert delta.state.score == 500
+    assert delta.state.lines == 3
+    assert delta.state.level == 1
+
+
+def test_combo_bonus_is_not_paid_after_a_broken_combo() -> None:
+    """落空之后的那一次消行**不拿连击奖励**。"""
+    groups = standard.scan_clears(TSPIN_BOARD, CTX_DOWN)
+
+    first = standard.score_clear(groups, CTX_DOWN, SCORE_ZERO)
+    assert first.scoreDelta == tables.SCORE_TABLE["single"]
+
+    broken = standard.score_clear((), CTX_DOWN, first.state)
+    again = standard.score_clear(groups, CTX_DOWN, broken.state)
+
+    assert again.scoreDelta == tables.SCORE_TABLE["single"]
+    assert again.state.combo == 1
+
+
+def test_lines_delta_counts_cleared_lines_under_lateral_gravity() -> None:
+    """横向重力下消的是**列**，但 `lines` 记的仍是**消掉的线数**。
+
+    组数 = 消掉的线数：重力向下时线是行，横向重力时线是列——`linesDelta` 与
+    重力轴无关（口径写进 `docs/plan-M0.md` 的 S13 段）。
+    """
+    groups = standard.scan_clears(COLUMN_BOARD, _ctx("left"))
+    delta = standard.score_clear(groups, _ctx("left"), SCORE_ZERO)
+
+    assert len(groups) == 1
+    # 消掉的是 1 条线（3 格），不是 3 行。
+    assert delta.linesDelta == 1
+    assert delta.state.lines == 1
+
+
+def test_ragged_board_uses_one_width_for_both_axes() -> None:
+    """对不齐的棋盘：行路径与列路径**用同一个宽度口径**。
+
+    宽度取各行的最小值（2 格），两条路径都按它判满——同一个"不整齐"的棋盘，
+    按行判和按列判必须得出同一个答案。
+    """
+    ragged: list[list[int]] = [[1, 1, 1], [1, 1]]
+
+    row_groups = standard.scan_clears(ragged, CTX_DOWN)
+    column_groups = standard.scan_clears(ragged, _ctx("left"))
+
+    assert len(row_groups) == 2
+    assert len(column_groups) == 2
+    # 每条线的格子清单都按 2 格宽给（不是第一行自己的 3 格）。
+    assert row_groups[0].cells == ((0, 0), (1, 0))
+    assert column_groups[0].cells == ((0, 0), (0, 1))
 
 
 def test_score_clear_without_groups_is_noop() -> None:
-    """没有消行组 → 不加分、不动状态。"""
+    """没有消行组 → 不加分、不加行（连击与链在另一条用例里断）。"""
     delta = standard.score_clear((), CTX_DOWN, SCORE_ZERO)
     assert delta.scoreDelta == 0
     assert delta.linesDelta == 0
@@ -381,12 +456,32 @@ def test_standard_rule_set_holds_no_mutable_state() -> None:
 
 
 def test_tables_are_read_only() -> None:
-    """规则表是只读常量——规则集不该在运行期被改写。"""
+    """规则表是只读常量——规则集不该在运行期被改写。
+
+    **内层也要只读**：外层是 `MappingProxyType`、内层是普通 `dict` 时，
+    拿到表引用的代码照样能在运行期改掉形状表（`SHAPE_TABLE` 与
+    `KICK_TABLE` 必须是同一口径）。
+    """
     assert isinstance(tables.SHAPE_TABLE, MappingProxyType)
     assert isinstance(tables.KICK_TABLE, MappingProxyType)
     assert isinstance(tables.SCORE_TABLE, MappingProxyType)
     with pytest.raises(TypeError):
         operator.setitem(tables.SHAPE_TABLE, "down", {})
+
+    # 形状表的内层两层：「方块 → 朝向」与「朝向 → 格子」都不可改写。
+    for piece_table in tables.SHAPE_TABLE["down"].values():
+        assert isinstance(piece_table, MappingProxyType)
+        for cells in piece_table.values():
+            assert isinstance(cells, tuple)
+    with pytest.raises(TypeError):
+        tables.SHAPE_TABLE["down"]["I"][0] = ((0, 0),)
+    with pytest.raises(TypeError):
+        tables.SHAPE_TABLE["down"]["I"] = {0: ((0, 0),)}
+
+    # 踢墙表的内层同样只读。
+    assert isinstance(tables.KICK_TABLE["down"], MappingProxyType)
+    with pytest.raises(TypeError):
+        tables.KICK_TABLE["down"][(0, 1)] = ((1, 1),)
 
 
 def test_tables_carry_axis_dimension() -> None:

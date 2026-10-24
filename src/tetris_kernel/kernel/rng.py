@@ -19,6 +19,9 @@
 
 导出时若 `gauss_next` 不是 `None` 就**报错**：不报错等于静默丢状态。
 
+**种子状态恢复后作废**：`seed` 只表示"建实例时的种子"，恢复出来的这一局
+不是它播出来的——留着会让人拿它去"复现"，复现出的是另一局（可审计）。
+
 ## 每次取值产出 `rng:next` 草稿
 
 负载 = 随机值 + 序号 + **状态指纹短哈希**，**不含完整 MT 状态**（ADR-060：
@@ -41,6 +44,7 @@ import random
 import struct
 from dataclasses import dataclass
 
+from ..contracts.events import EVENT_TYPES
 from .fingerprint import tlv_digest
 
 #: `rng:next` 事件类型名——**必须与 `contracts/events.py` 的注册表一致**
@@ -50,6 +54,33 @@ RNG_NEXT_EVENT = "rng:next"
 #: 状态指纹的域分隔键（与状态本身的键一起进 TLV）。
 _FINGERPRINT_VERSION_KEY = "version"
 _FINGERPRINT_STATE_KEY = "state"
+
+#: MT 状态值的取值范围：32 位无符号整数（CPython 的随机状态容器就是这个
+#: 宽度）。越界值交给 `random.setstate` 会抛 `OverflowError`——与本模块其它
+#: 校验的 `ValueError` 不一致，调用方按 `except ValueError` 兜底会漏掉它。
+_MT_STATE_LIMIT = 2**32
+
+
+def _assert_event_registered() -> None:
+    """事件类型名必须与契约注册表一致（**导入期自检**）。
+
+    `contracts/events.py` 是事件类型名的唯一权威（架构 §4.4 末条：引用处
+    一律用常量，不复制字面量）。契约层没有单事件常量可引用，所以内核侧留
+    一份名字——**但导入期就把它与注册表对齐**：契约那边改名，内核当场拒绝
+    加载，而不是静默发出一串没人认的事件。
+
+    （注册表本身在 `contracts/`，**绝不进 `kernel/`**——这里只是读它。）
+    """
+    spec = EVENT_TYPES.get(RNG_NEXT_EVENT)
+    if spec is None:
+        raise TypeError(f"事件类型 {RNG_NEXT_EVENT!r} 不在契约注册表里")
+    if spec.namespace != "rng":
+        raise TypeError(
+            f"事件类型 {RNG_NEXT_EVENT!r} 的命名空间是 {spec.namespace!r}，应当是 'rng'"
+        )
+
+
+_assert_event_registered()
 
 
 @dataclass(frozen=True)
@@ -103,7 +134,7 @@ class KernelRng:
         后缀 `kernel/rng.py` 匹配豁免；别处的 `random.Random()` 就是未注入
         的随机源，红。
         """
-        self._seed = seed
+        self._seed: int | None = seed
         self._rng = random.Random(seed)
         self._draws = 0
         self._drafts: list[RngNextDraft] = []
@@ -113,8 +144,13 @@ class KernelRng:
     # ------------------------------------------------------------------
 
     @property
-    def seed(self) -> int:
-        """种子。"""
+    def seed(self) -> int | None:
+        """**建实例时**的种子；状态恢复后是 `None`。
+
+        恢复出来的这一局不是这个种子播出来的——留着构造种子会让人拿它去
+        "复现"，复现出的是**另一局**。这个类的卖点是「可播种、可复现、
+        **可审计**」，一个会骗人的 `seed` 与可审计直接冲突。
+        """
         return self._seed
 
     @property
@@ -191,8 +227,12 @@ class KernelRng:
         return self._rng.getstate()
 
     def setstate(self, state: tuple[int, tuple[int, ...], float | None]) -> None:
-        """复原 MT 原始状态（与 `random.Random.setstate()` 同形）。"""
+        """复原 MT 原始状态（与 `random.Random.setstate()` 同形）。
+
+        **种子随即作废**——状态已经不是这个种子播出来的了（见 `seed`）。
+        """
         self._rng.setstate(state)
+        self._seed = None
 
     def export(self) -> tuple[int, ...]:
         """导出扁平化状态 `(version, *state)`（626 个 int）——**直接填快照的 `rngState`**。
@@ -214,6 +254,12 @@ class KernelRng:
         变过（3.9 前是列表、之后是元组，版本号也不同），混用会**静默重放出
         不同结果**——ADR-011 记 `rngStateVersion` 与 `pythonVersion` 就是为了
         挡住这件事。版本对不上当场报错，不让它溜过去。
+
+        **状态值先自己校验**（32 位无符号整数）：越界值交给 CPython 会抛
+        `OverflowError`，与本模块其它校验的 `ValueError` 不一致——调用方按
+        `except ValueError` 兜底会漏掉这一类。
+
+        **种子随即作废**——恢复出来的这一局不是这个种子播出来的（见 `seed`）。
         """
         version, current_state, _gauss_next = self._rng.getstate()
         expected = 1 + len(current_state)
@@ -225,7 +271,14 @@ class KernelRng:
                 f"随机源状态版本不匹配：导入的是 {imported_version}，当前是 {version}"
                 "（状态容器格式随 Python 版本变过，混用会静默重放出不同结果 —— ADR-011）"
             )
+        for index, value in enumerate(state[1:]):
+            if not 0 <= value < _MT_STATE_LIMIT:
+                raise ValueError(
+                    f"随机源状态第 {index + 1} 个值越界：{value} 不在 "
+                    f"[0, {_MT_STATE_LIMIT}) 内（MT 状态是 32 位无符号整数）"
+                )
         self._rng.setstate((imported_version, tuple(state[1:]), None))
+        self._seed = None
 
     # ------------------------------------------------------------------
     # 草稿

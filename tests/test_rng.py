@@ -6,7 +6,8 @@
 2. `getstate()` → `setstate()` 后序列接得上（ADR-011）。
 3. 状态指纹**跨进程稳定**（子进程算同一状态的指纹并比对相等）——专防
    `hash()` 随机化。
-4. 内核纯净度：本次交付的两个模块过 `tools/check_kernel_purity.py` 的检查。
+4. 内核纯净度：本次交付的两个模块**与整个冻结区**过
+   `tools/check_kernel_purity.py` 的检查。
 5. `rng:next` 负载**不含** 625 元素的状态数组（负载长度是常数级）。
 6. 扁平化状态**无损往返**：`export()` → `import_state()` 后序列接得上；
    `gauss_next` 非 `None` 时导出**报错**。
@@ -208,10 +209,9 @@ def test_tlv_digest_distinguishes_key_boundaries() -> None:
 
 
 def test_delivered_kernel_modules_pass_purity_check() -> None:
-    """`kernel/rng.py` 与 `kernel/fingerprint.py` 过纯净度检查。
+    """`kernel/rng.py` 与 `kernel/fingerprint.py` 过纯净度检查（单元级回归）。
 
-    **只查这两个文件**——冻结区里还有别的写手正在写的文件，全目录扫描会把
-    他们的半成品算到我头上。
+    **覆盖面由另一条用例负责**（整个冻结区）——这条只盯本次交付的两个文件。
     """
     findings = []
     for path in (RNG_MODULE, FINGERPRINT_MODULE):
@@ -221,11 +221,59 @@ def test_delivered_kernel_modules_pass_purity_check() -> None:
     assert blocking == [], [f"{f.path}:{f.line} {f.message}" for f in blocking]
 
 
+def test_frozen_region_passes_purity_check() -> None:
+    """**整个冻结区**过纯净度检查（`kernel/` + `rules/`）。
+
+    真门禁 `tools/check_kernel_purity.py` 扫的就是这两个目录——单元级用例与
+    它同范围，免得两条守卫一个严一个松却看不出差别（早期版本这里只扫两个
+    文件，理由是"还有别的写手在写"，批次合入后那个理由已过期）。
+    """
+    findings, missing = _purity.check_paths(list(_toolkit.FROZEN_DIRS))
+    assert missing == []
+    blocking = [finding for finding in findings if finding.blocking]
+    assert blocking == [], [f"{f.path}:{f.line} {f.message}" for f in blocking]
+
+
+def _forbidden_primitive_names(tree: ast.AST) -> set[str]:
+    """文件里用到的、ADR-010 否决的取数方式名（**两种写法都认**）。
+
+    - `self._rng.shuffle()` → **属性名** `shuffle`；
+    - `from random import shuffle` → **导入名** `shuffle`。
+
+    只收属性节点的话，`from random import shuffle` 之后的 `shuffle(items)`
+    是**名字节点**，一条都收不到——这条守卫会比真门禁弱，而看不出差别。
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.ImportFrom) and node.module == "random":
+            names.update(alias.name for alias in node.names)
+    return names
+
+
 def test_rng_module_uses_only_the_two_primitives() -> None:
     """ADR-010：`shuffle` / `sample` / `choice` / `randrange` 一个都不许用。"""
     tree = ast.parse(RNG_MODULE.read_text(encoding="utf-8"))
-    used = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    used = _forbidden_primitive_names(tree)
     assert used & FORBIDDEN_PRIMITIVES == set()
+
+
+def test_forbidden_primitive_guard_can_actually_fail() -> None:
+    """守卫要能触发——`from random import shuffle` 这种写法必须被认出来。"""
+    tree = ast.parse("from random import shuffle\n\nshuffle(items)\n")
+    assert "shuffle" in _forbidden_primitive_names(tree)
+
+
+def test_purity_script_catches_imported_random_primitive(tmp_path: Path) -> None:
+    """真门禁也认得 `from random import shuffle`（还原导入绑定后的标准形状）。"""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from random import shuffle\n\nitems = [1, 2, 3]\nshuffle(items)\n",
+        encoding="utf-8",
+    )
+    findings = _purity.check_file(sample, allow_random=False)
+    assert [finding.message for finding in findings if finding.blocking]
 
 
 def test_random_instance_is_only_created_in_rng_module() -> None:
@@ -397,6 +445,44 @@ def test_import_state_uses_the_imported_version() -> None:
     assert target.export() == flat
 
 
+def test_import_state_rejects_out_of_range_values() -> None:
+    """越界的状态值 → `ValueError`（不是 CPython 的 `OverflowError`）。
+
+    本模块的其它校验都抛 `ValueError`，调用方按 `except ValueError` 兜底
+    才兜得住——异常照样抛出，但类型不一致就是会漏。
+    """
+    rng = KernelRng(1)
+    flat = rng.export()
+
+    with pytest.raises(ValueError, match="越界"):
+        rng.import_state((flat[0], 2**40, *flat[2:]))
+    with pytest.raises(ValueError, match="越界"):
+        rng.import_state((flat[0], -1, *flat[2:]))
+
+
+def test_seed_is_dropped_after_state_restore() -> None:
+    """状态恢复后 `seed` 是 `None`——那一局不是这个种子播出来的。
+
+    留着构造种子会让人拿它去"复现"，复现出的是**另一局**（这个类的卖点是
+    可播种、可复现、**可审计**）。
+    """
+    source = KernelRng(1234)
+    flat = source.export()
+
+    target = KernelRng(1234)
+    assert target.seed == 1234
+
+    target.import_state(flat)
+    assert target.seed is None
+
+
+def test_seed_is_dropped_after_raw_setstate() -> None:
+    """`setstate` 换掉整个状态，种子同样作废。"""
+    rng = KernelRng(1234)
+    rng.setstate(rng.getstate())
+    assert rng.seed is None
+
+
 # ---------------------------------------------------------------------------
 # 时钟源（宿主层）：真实 / 虚拟同一接口
 # ---------------------------------------------------------------------------
@@ -421,7 +507,10 @@ def test_real_and_virtual_clocks_share_one_interface() -> None:
     real = RealClock(step_ms=20)
     assert real.step_ms() == 20
     assert real.now_ms() >= 0
-    assert real.now_ms() <= real.now_ms()
+    # 单调不减：**拿上一次的值比**——同一个表达式调用两次比较是恒真的，
+    # 什么也没守。
+    now = real.now_ms()
+    assert real.now_ms() >= now
 
 
 def test_clock_rejects_invalid_step_and_frames() -> None:

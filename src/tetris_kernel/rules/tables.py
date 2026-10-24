@@ -55,12 +55,28 @@ ROTATION_COUNT: int = len(ROTATIONS)
 # 形状表
 # ---------------------------------------------------------------------------
 
+
+def _freeze_shape_table(
+    pieces: Mapping[str, Mapping[int, tuple[tuple[int, int], ...]]],
+) -> Mapping[str, Mapping[int, tuple[tuple[int, int], ...]]]:
+    """形状表的**两层内层**也包成只读映射（与 `KICK_TABLE` 同一口径）。
+
+    **只冻外层等于没冻**：外层是 `MappingProxyType`、内层是普通 `dict` 时，
+    任何拿到 `SHAPE_TABLE` 引用的代码都能在运行期改掉形状表——架构 §7.3.1
+    纪律 1「规则集不可变、无状态」被绕过，而回放校验用的是**快照指纹**，
+    改表不会让任何门禁变红。
+    """
+    return MappingProxyType(
+        {piece: MappingProxyType(dict(orientations)) for piece, orientations in pieces.items()}
+    )
+
+
 #: 标准朝向（`down` 轴）的形状表：方块类型 → 朝向 → 占位格子。
 #:
 #: 坐标是**方块自身的基准坐标**（x 右正、y 下正），不是棋盘绝对坐标——
 #: 棋盘位置由内核给的落点决定。I / O 用 4×4 / 2×2 盒，其余用 3×3 盒
 #: （SRS 的基准坐标，标准旋转系统 FR-4.2）。
-_SHAPE_DOWN: Mapping[str, Mapping[int, tuple[tuple[int, int], ...]]] = MappingProxyType(
+_SHAPE_DOWN: Mapping[str, Mapping[int, tuple[tuple[int, int], ...]]] = _freeze_shape_table(
     {
         "I": {
             0: ((0, 1), (1, 1), (2, 1), (3, 1)),
