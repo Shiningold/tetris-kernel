@@ -438,24 +438,33 @@ S18 收尾（PROGRESS / ai_docs / README）
 - **目标**：内核随机源可播种、可复现、可审计；内核不读墙钟。
 - **任务**
   - [ ] `kernel/rng.py`：可播种随机源，**只用 `random()` 与 `getrandbits()` 两个原语**（ADR-010）
-  - [ ] 7-bag 洗牌自己实现 Fisher-Yates（不用 `shuffle` / `sample` / `choice`）
+  - [ ] 7-bag 洗牌自己实现 Fisher-Yates（不用 `shuffle` / `sample` / `choice` / `randrange`）
   - [ ] `getstate()` / `setstate()` 往返可复现（ADR-011）
   - [ ] 每次取值产出 `rng:next` 草稿（随机值 + 序号 + **状态指纹短哈希**，**不含完整 MT 状态**，ADR-060）
   - [ ] 状态指纹用 `blake2b` + TLV，**不用内置 `hash()`**（受 `PYTHONHASHSEED` 影响）
   - [ ] 时间源可注入（真实 / 虚拟），内核侧只认逻辑帧
-- **涉及文件**：`src/tetris_kernel/kernel/rng.py` · `src/tetris_kernel/kernel/__init__.py`
+- **涉及文件**：`src/tetris_kernel/kernel/rng.py` · `src/tetris_kernel/kernel/fingerprint.py` · `src/tetris_kernel/host/clock.py` · `src/tetris_kernel/kernel/__init__.py`
+- **开工前定下的三处口径**（2026-10-24 核实；S7 按此实现）
+  1. **`rngState` 用扁平化编码**：`getstate()` 实际返回三元组 `(version:int, state:tuple[int, ...]（625 个）, gauss_next:None | float)`，**塞不进**快照契约声明的 `tuple[int, ...]`。但**只用 `random()` 与 `getrandbits()` 两个原语时 `gauss_next` 恒为 `None`**（已实测），所以状态进出用**扁平化的 `(version, *state)`**（626 个 int），与契约天然吻合——**契约一个字不用改，不撞基线**。导出时若 `gauss_next` 不是 `None` 就**报错**（不报错就等于静默丢状态），导入时复原成 `(version, tuple(state[1:]), None)`。
+  2. **时间源落 `host/clock.py`，不进 `kernel/`**：架构 §5.3 明说"内核侧只认逻辑帧"、**宿主的帧循环时钟必须可注入**，而纯净度脚本**禁止 `kernel/` 与 `rules/` 出现 `time.monotonic()`**——真实时钟放不进内核。**真实 / 虚拟是同一接口的两种实现，拆到两层就是两处维护同一对签名**，所以两者一起放 `host/`。`kernel/` 里**不放时钟接口**（内核不用它，放进去是没人用的抽象）。
+  3. **指纹工具落 `kernel/fingerprint.py`**：`tools/_toolkit.py` 的 `blake2b_hex` 引不到（`tools/` 不随包发布，`src/` 也不该引脚本层），TLV + blake2b 的实现在内核侧另起一份，**算法与摘要长度与工具层保持一致**（blake2b / 16 字节 / hex）。S7 的状态指纹与 S8 的 `structureFingerprint` / `extensionFingerprint` 共用它。
+  - 另定两条：7-bag 的 Fisher-Yates 用 `getrandbits()` + **拒绝采样**取下标（`randrange` 是第三种取法，同样不用）；**状态指纹取"该次取值之后"的状态**（草稿与状态同一时刻，`seq` 与指纹一一对应）。
+  - **载荷 dataclass 留在 kernel 内部**——`EventDraft` 的正式形态归 S9 / S11，S7 不提前实现。
 - **验证方案**
   1. 测试：同种子两次取 1000 个值，序列**完全相同**；不同种子序列不同。
   2. 测试：`getstate()` → `setstate()` 后序列接得上（存档恢复路径的前置）。
   3. 测试：状态指纹**跨进程稳定**（起一个子进程算同一状态的指纹，比对相等）——这一条专门防 `hash()` 随机化。
   4. 机检：`tools/check_kernel_purity.py` 绿——`kernel/` 内无模块级 `random.*`、无未注入的 `random.Random()`。
   5. 机检：`rng:next` 负载**不含** 625 元素的状态数组（断言负载长度是常数级）。
-- **完成判据**：五条验证全过。
+  6. 测试：**扁平化状态能无损还原**——`export()` → `import()` 往返后序列接得上，且 `gauss_next` 非 `None` 时导出**报错**（这条是开工前新加的：守卫要能触发）。
+- **完成判据**：六条验证全过。
 - **提交**：`新功能：新增可播种随机源与 rng 事件产出`
 - **常见坑**
   - **用 `random.shuffle`** → 它在 CPython 版本间变过，升级 Python 会让全部旧录像集体作废（ADR-010）。
   - **内核随机源被外部取用** → FR-5.3：内核随机源**只服务内核**，AI 等外部系统必须自建实例并显式播种。
   - **`rng:next` 负载带完整 MT 状态** → 一局几百方块就是几 MB 常驻负载（ADR-060）。
+  - **把 `getstate()` 的三元组直接塞进 `rngState`** → 类型对不上（契约是 `tuple[int, ...]`），要么撞基线要么静默丢状态——**扁平化**（口径 1）。
+  - **把真实时钟写进 `kernel/`** → 纯净度脚本直接报红（架构 §5.3 禁读墙钟）；时钟落 `host/clock.py`（口径 2）。
 
 ---
 
