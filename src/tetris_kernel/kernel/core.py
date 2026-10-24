@@ -39,7 +39,7 @@ command:received  →  command:accepted  /  command:rejected
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from ..contracts.commands import COMMANDS, CommandSpec
@@ -48,7 +48,14 @@ from ..contracts.rules import RuleContext, ScoreState
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from .commands import Command, validate_args
-from .drafts import METADATA_CAUSE, METADATA_SOURCE, EventDraft, Payload, make_draft
+from .drafts import (
+    METADATA_CAUSE,
+    METADATA_MERGED_COUNT,
+    METADATA_SOURCE,
+    EventDraft,
+    Payload,
+    make_draft,
+)
 from .lifecycle import (
     PHASE_GAME_OVER,
     PHASE_NOT_STARTED,
@@ -60,6 +67,16 @@ from .lifecycle import (
     TRANSITION_RESUME,
     TRANSITION_START,
     Lifecycle,
+)
+from .quota import (
+    DEFAULT_LIMITS,
+    QUOTA_COMMAND_COUNT,
+    QUOTA_ROUNDS,
+    QUOTA_WRITE_CELLS,
+    FrameQuota,
+    QuotaLimits,
+    RejectCoalescer,
+    RejectGroup,
 )
 from .rng import KernelRng
 from .snapshot import (
@@ -116,6 +133,9 @@ REJECT_OUT_OF_BOUNDS = "out_of_bounds"
 REJECT_NO_ACTIVE_PIECE = "no_active_piece"
 REJECT_HOLD_ALREADY_USED = "hold_already_used"
 REJECT_ILLEGAL_TRANSITION = "illegal_transition"
+REJECT_QUOTA_EXCEEDED = "quota_exceeded"
+REJECT_NOT_AUTHORIZED = "not_authorized"
+REJECT_WRITE_CONDITION_FAILED = "write_condition_failed"
 
 #: `tick` 命令名（帧推进的开关）。
 COMMAND_TICK = "tick"
@@ -184,6 +204,11 @@ class _Outcome:
     accepted: bool
     reason: str = ""
     events: tuple[RawEvent, ...] = ()
+    quota_event: RawEvent | None = None
+
+
+#: 宿主给的发布回调：把一批草稿交给总线分发（**内核不 import 总线**）。
+PublishFn = Callable[[tuple[EventDraft, ...]], None]
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +235,7 @@ class Kernel:
         hidden_rows: int = DEFAULT_HIDDEN_ROWS,
         step_ms: int = 16,
         mode: str = "live",
+        limits: QuotaLimits = DEFAULT_LIMITS,
     ) -> None:
         """构造内核（**创建**迁移：初始状态是"待开始"）。
 
@@ -217,7 +243,9 @@ class Kernel:
         - `piece_types`：方块类型清单——**由调用方给**：方块名是规则层的词汇，
           内核不抄一份名单（抄了就是两处会悄悄分叉的副本）；
         - `rule_set`：规则集（8 条接口，FR-4.9 可整体替换）；
-        - `mode`：运行模式（只随 `kernel:ready` 透传，**内核不按它分支**）。
+        - `mode`：运行模式（只随 `kernel:ready` 透传，**内核不按它分支**）；
+        - `limits`：配额上限（**必须是构造参数**——回放宿主注入大得多的上限，
+          否则回放超限会丢命令，违反 B-6）。
         """
         if len(piece_types) < 2:
             raise ValueError(f"方块类型至少要有两种，收到 {len(piece_types)} 种")
@@ -244,6 +272,15 @@ class Kernel:
         self._frame = 0
         self._seq = 0
         self._queue: list[Command] = []
+        self._quota = FrameQuota(limits)
+        # 单帧写入格子上限的默认值 = 棋盘面积（需求 §8.2 的"默认不超过棋盘面积"）。
+        self._quota.with_write_cells_limit(
+            limits.max_write_cells
+            if limits.max_write_cells is not None
+            else board_width * board_height
+        )
+        self._coalescer = RejectCoalescer()
+        self._in_round = False
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -335,6 +372,115 @@ class Kernel:
         """
         self._queue.append(command)
 
+    def run_rounds(self, publish: PublishFn) -> int:
+        """轮次循环（ADR-039 · G0-4 · 架构 §6.4）。
+
+        每一轮：取队执行（**超限判定在这里之前**）→ 把草稿交给 `publish`
+        分发 → 分发期间新派发的命令进队列 → **下一轮**执行。
+
+        `publish` 是宿主给的回调（内核**不 import 总线**）。分发期间订阅者调
+        `submit` 派发的命令**不在本轮生效**——这是 G0-4 的结构性保证。
+
+        返回实际跑了几轮。
+        """
+        rounds = 0
+        while self._queue:
+            if self._quota.remaining_rounds <= 0:
+                # 轮次超限：丢弃剩余命令（**不跨帧顺延**）。
+                drafts = self._drop_remaining(QUOTA_ROUNDS)
+                if drafts:
+                    publish(tuple(drafts))
+                break
+            batch, drafts = self._take_batch()
+            self._in_round = True
+            try:
+                for command in batch:
+                    drafts.extend(self.execute(command))
+            finally:
+                self._in_round = False
+            drafts.extend(self.flush_rejects())
+            self._quota.take_round()
+            rounds += 1
+            publish(tuple(drafts))
+        return rounds
+
+    def _take_batch(self) -> tuple[list[Command], list[EventDraft]]:
+        """取队执行（**命令数配额在这里裁决**）。
+
+        超限的剩余命令被丢弃并补发 `command:rejected`（`quota_exceeded`），
+        **逐条计入合并计数**（不刷屏）。
+
+        **帧首的 tick 先出队**：它出队即开新帧（帧号 +1、帧内序号归零、两个
+        配额计数器清零——ADR-022 / ADR-040），所以本帧的命令额度从零开始算。
+        `tick` 自身不计入命令数。
+        """
+        batch: list[Command] = []
+        drafts: list[EventDraft] = []
+        if self._queue and self._queue[0].type == COMMAND_TICK:
+            batch.append(self._queue.pop(0))
+            # 提前清零：本帧的额度从零算（tick 执行时还会再清一次，那次是幂等的）。
+            self._quota.start_frame()
+        remaining = self._quota.remaining_commands
+        batch.extend(self._queue[:remaining])
+        dropped = self._queue[remaining:]
+        self._queue.clear()
+        if dropped:
+            drafts.extend(
+                self._drop_commands(
+                    dropped,
+                    quota=QUOTA_COMMAND_COUNT,
+                    limit=self._quota.limits.max_commands,
+                    actual=self._quota.commands + len(batch) + len(dropped),
+                )
+            )
+        return batch, drafts
+
+    def _drop_remaining(self, quota: str) -> list[EventDraft]:
+        """丢弃队列里剩下的全部命令（轮次超限时用）。"""
+        dropped = list(self._queue)
+        self._queue.clear()
+        if not dropped:
+            return []
+        drafts = self._drop_commands(
+            dropped,
+            quota=quota,
+            limit=self._quota.limits.max_rounds,
+            actual=self._quota.rounds + 1,
+        )
+        # 这一轮到此为止：把被丢弃命令的拒绝事件**冲刷出来**（不能只记不发）。
+        drafts.extend(self.flush_rejects())
+        return drafts
+
+    def _drop_commands(
+        self,
+        commands: list[Command],
+        *,
+        quota: str,
+        limit: int,
+        actual: int,
+    ) -> list[EventDraft]:
+        """丢弃一批命令：逐条记入合并计数 + 发一条配额超限事件。
+
+        **两类配额超限统一发 `kernel:quota-exceeded`**（靠负载里的配额名区分），
+        `kernel:error` **只留给订阅者异常**（架构 §6.4）。
+        """
+        for command in commands:
+            self._coalescer.record(
+                phase=self._state.phase,
+                command_type=command.type,
+                reason=REJECT_QUOTA_EXCEEDED,
+                frame=self._frame,
+                source=command.source,
+                args=command.args,
+            )
+        event = make_draft(
+            "kernel:quota-exceeded",
+            (("quota", quota), ("limit", limit), ("actual", actual)),
+            self._frame,
+            ((METADATA_CAUSE, None),),
+        )
+        return [event]
+
     def execute(self, command: Command) -> tuple[EventDraft, ...]:
         """执行一条命令（**出队执行**这一步）。
 
@@ -346,6 +492,11 @@ class Kernel:
             # `received` 在这之后才发，所以一条命令不会带两个帧号。
             self._frame += 1
             self._seq = 0
+            # 两个配额计数器**每帧开始清零**（不是按单轮，ADR-040）。
+            self._quota.start_frame()
+        else:
+            # `tick` 自身不计入命令数（那是**配额计数器**；帧内序号是另一套）。
+            self._quota.take_command()
 
         spec = COMMANDS.get(command.type)
         if spec is None:
@@ -362,13 +513,19 @@ class Kernel:
 
         outcome = self._dispatch(command)
         if not outcome.accepted:
-            return self._reject(command, outcome.reason)
+            drafts = list(self._reject(command, outcome.reason))
+            if outcome.quota_event is not None:
+                drafts.insert(0, self._draft_from_raw(outcome.quota_event, command.source))
+            return tuple(drafts)
 
+        # 接受之前先冲刷待定的合并组：被拒的那组在**时间上更早**。
+        flushed = self._group_drafts(self._coalescer.flush())
         seq = self._seq
         self._seq += 1
         cause = (self._frame, seq)
         metadata = ((METADATA_SOURCE, command.source), (METADATA_CAUSE, cause))
         return (
+            *flushed,
             self._received_draft(command),
             make_draft(
                 "command:accepted",
@@ -384,6 +541,16 @@ class Kernel:
                 make_draft(event_type, payload, self._frame, metadata)
                 for event_type, payload in outcome.events
             ),
+        )
+
+    def _draft_from_raw(self, raw: RawEvent, source: str) -> EventDraft:
+        """把内部事件（类型 + 负载）变成草稿（元数据补 `source` / `cause`）。"""
+        event_type, payload = raw
+        return make_draft(
+            event_type,
+            payload,
+            self._frame,
+            ((METADATA_SOURCE, source), (METADATA_CAUSE, None)),
         )
 
     # ------------------------------------------------------------------
@@ -420,22 +587,71 @@ class Kernel:
         )
 
     def _reject(self, command: Command, reason: str) -> tuple[EventDraft, ...]:
-        """拒绝一条命令：**不改任何状态**，只发事件。"""
-        metadata = ((METADATA_SOURCE, command.source), (METADATA_CAUSE, None))
-        return (
-            self._received_draft(command),
-            make_draft(
-                "command:rejected",
-                (
-                    ("commandType", command.type),
-                    ("reason", reason),
-                    ("args", command.args),
-                    ("mergedCount", 1),
-                ),
-                self._frame,
-                metadata,
-            ),
+        """拒绝一条命令：**不改任何状态**，只发事件。
+
+        **同因拒绝合并**（ADR-038）：连续同因的拒绝合并成**一条**事件，计数
+        一致（`received` 的计数放在元数据里——契约的 `received` 负载没有这个
+        字段）。合并窗口 = **一批命令**：轮次循环里是一轮，单独调用
+        `execute` 时是这一条命令（调用结束即冲刷，调用方拿到的永远是完整的
+        拒绝事件）。
+        """
+        flushed = self._coalescer.record(
+            phase=self._state.phase,
+            command_type=command.type,
+            reason=reason,
+            frame=self._frame,
+            source=command.source,
+            args=command.args,
         )
+        drafts = list(self._group_drafts(flushed))
+        if not self._in_round:
+            drafts.extend(self._group_drafts(self._coalescer.flush()))
+        return tuple(drafts)
+
+    def _group_drafts(self, groups: tuple[RejectGroup, ...]) -> list[EventDraft]:
+        """把合并组变成事件草稿（**成对**：`received` + `rejected`，计数一致）。"""
+        drafts: list[EventDraft] = []
+        for group in groups:
+            received_metadata = (
+                (METADATA_SOURCE, group.source),
+                (METADATA_CAUSE, None),
+                (METADATA_MERGED_COUNT, group.count),
+            )
+            rejected_metadata = ((METADATA_SOURCE, group.source), (METADATA_CAUSE, None))
+            drafts.append(
+                make_draft(
+                    "command:received",
+                    (
+                        ("commandType", group.commandType),
+                        ("source", group.source),
+                        ("args", group.args),
+                    ),
+                    group.frame,
+                    received_metadata,
+                )
+            )
+            drafts.append(
+                make_draft(
+                    "command:rejected",
+                    (
+                        ("commandType", group.commandType),
+                        ("reason", group.reason),
+                        ("args", group.args),
+                        ("mergedCount", group.count),
+                    ),
+                    group.frame,
+                    rejected_metadata,
+                )
+            )
+        return drafts
+
+    def flush_rejects(self) -> tuple[EventDraft, ...]:
+        """冲刷待定的同因拒绝合并组（**宿主的轮次循环结束时调一次**）。
+
+        内核自己的 `run_rounds` 会在每轮结束时冲刷；宿主自己管队列时调它，
+        否则合并组会一直攒着（事件不是不发，是**晚点发**）。
+        """
+        return tuple(self._group_drafts(self._coalescer.flush()))
 
     # ------------------------------------------------------------------
     # 内部：命令分发
@@ -853,16 +1069,32 @@ class Kernel:
                 return _Outcome(False, REJECT_OUT_OF_BOUNDS)
             cells.append((x, y, value))
         cell_tuple = tuple(cells)
+        # 单帧写入格子总数上限：超限**整批拒绝**并发配额超限事件（需求 §8.2）。
+        limit = self._quota.limits.max_write_cells
+        if limit is not None and self._quota.write_cells + len(cell_tuple) > limit:
+            return _Outcome(
+                False,
+                REJECT_QUOTA_EXCEEDED,
+                quota_event=(
+                    "kernel:quota-exceeded",
+                    (
+                        ("quota", QUOTA_WRITE_CELLS),
+                        ("limit", limit),
+                        ("actual", self._quota.write_cells + len(cell_tuple)),
+                    ),
+                ),
+            )
         if not self._write_allowed(cell_tuple):
-            return _Outcome(False, "not_authorized")
+            return _Outcome(False, REJECT_NOT_AUTHORIZED)
         if self._write_condition_failed(cell_tuple):
-            return _Outcome(False, "write_condition_failed")
+            return _Outcome(False, REJECT_WRITE_CONDITION_FAILED)
 
         board = self._state.board
         changes: list[tuple[int, int, int]] = []
         for x, y, value in cell_tuple:
             board[y][x] = value
             changes.append((x, y, value))
+        self._quota.take_write_cells(len(cell_tuple))
         self._touch()
         return _Outcome(
             True,
