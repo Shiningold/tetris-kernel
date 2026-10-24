@@ -10,6 +10,11 @@
    **不发生**；
 5. **帧内序号**——同帧内连续接受 3 条命令 → 序号 0/1/2；**被拒的那条不占号**。
 
+外加四条**行为语义**的守卫（审查回合 B13 / B16 / B2）：门禁三值的**原因取值**
+钉死；**参数类与状态类**拒绝同样不改任何状态；**实现发出的拒绝原因必须在契约
+声明之内**；半帧（内核不变量被破坏）时 `hold` 抛异常、而六条移动 / 旋转命令
+照常拒绝。
+
 **自给自足**：不依赖 `tests/conftest.py`（批次 B 的测试必须自给自足——那属于
 批次 C 的 C2）。
 """
@@ -18,9 +23,9 @@ from __future__ import annotations
 
 import pytest
 
-from tetris_kernel.contracts.commands import COMMAND_TYPES
+from tetris_kernel.contracts.commands import COMMAND_TYPES, COMMANDS
 from tetris_kernel.kernel.commands import Args, Command
-from tetris_kernel.kernel.core import Kernel
+from tetris_kernel.kernel.core import Kernel, KernelInvariantError
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.rules.tables import PIECE_TYPES
 
@@ -116,6 +121,13 @@ def test_every_command_in_every_phase_is_accepted_or_rejected(
         f"{phase} / {command_type}：必须恰好一条 accepted 或 rejected，实际 {types}"
     )
     assert "command:received" in types, f"{phase} / {command_type}：缺少 command:received"
+    if "command:rejected" in types:
+        # **实现发出的原因必须在契约声明之内**（架构 §6.8）——这一环原先没人
+        # 守：契约 ↔ 转录表有守卫，**实现 ↔ 契约**却没有。
+        reason = _payload(drafts, "command:rejected")["reason"]
+        assert reason in COMMANDS[command_type].reject_reasons, (
+            f"{phase} / {command_type}：发出了契约未声明的拒绝原因 {reason!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +264,123 @@ def test_frame_sequence_resets_on_tick() -> None:
     # tick 的 `received` 与 `accepted` **带同一个帧号**——一条命令不能有两个帧号。
     assert _payload(second, "command:received")["commandType"] == "tick"
     assert all(draft.frame == 2 for draft in second), "同一轮里出现了两个帧号"
+
+
+# ---------------------------------------------------------------------------
+# 门禁三值的**原因取值**（审查回合 B16）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_reason"),
+    [("not_started", "not_started"), ("paused", "paused"), ("game_over", "game_over")],
+)
+def test_gate_rejection_uses_the_matching_reason(phase: str, expected_reason: str) -> None:
+    """门禁三值的**原因取值**钉死——`paused` 与 `game_over` 互换即红。
+
+    矩阵用例只断言"被拒了"，不查原因是什么：两个值互换，套件照样全绿。
+    """
+    kernel = _kernel_in_phase(phase)
+    drafts = kernel.execute(Command("moveLeft", source="test"))
+
+    reason = _payload(drafts, "command:rejected")["reason"]
+    assert reason == expected_reason, f"{phase} 态的门禁原因不对：{reason}"
+
+
+# ---------------------------------------------------------------------------
+# 参数类 / 状态类拒绝：不改任何状态（审查回合 B13）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command_type", "args", "expected_reason"),
+    [
+        ("setLevel", (("level", 999),), "level_out_of_range"),
+        ("setLevel", (("level", True),), "invalid_argument"),
+        ("writeCells", (("cells", ((0, 5, 1), (1, 5))),), "invalid_argument"),
+        ("writeCells", (("cells", ((99, 5, 1),)),), "out_of_bounds"),
+        ("injectGarbage", (("rows", 999), ("holes", ())), "invalid_argument"),
+        ("injectGarbage", (("rows", 1), ("holes", (999,))), "invalid_argument"),
+    ],
+)
+def test_parameter_rejection_changes_no_state(
+    command_type: str, args: Args, expected_reason: str
+) -> None:
+    """**参数类**拒绝：不改任何状态，原因落在契约声明之内。
+
+    原先矩阵里的可拒组合**全是门禁 / 非法迁移**——参数类与状态类拒绝的
+    状态不变性**零覆盖**：参数校验那段代码整段被变异掉，套件照样全绿。
+    """
+    kernel = _kernel_in_phase("running")
+    before = kernel.snapshot()
+
+    drafts = kernel.execute(Command(command_type, args=args, source="test"))
+
+    reason = _payload(drafts, "command:rejected")["reason"]
+    assert reason == expected_reason, f"{command_type} 的拒绝原因不对：{reason}"
+    assert reason in COMMANDS[command_type].reject_reasons, "发出了契约未声明的原因"
+    after = kernel.snapshot()
+    assert after.version == before.version, "拒绝改了版本号"
+    assert after.board.cells == before.board.cells, "拒绝改了棋盘"
+    assert after.score == before.score, "拒绝改了分数"
+    assert after.level == before.level, "拒绝改了等级"
+    assert after.active == before.active, "拒绝改了活动方块"
+
+
+def test_state_rejection_changes_no_state() -> None:
+    """**状态类**拒绝（`hold_already_used`）：同样不改任何状态。"""
+    kernel = _kernel_in_phase("running")
+    kernel.execute(Command("hold", source="test"))
+    before = kernel.snapshot()
+
+    drafts = kernel.execute(Command("hold", source="test"))
+
+    assert _payload(drafts, "command:rejected")["reason"] == "hold_already_used"
+    after = kernel.snapshot()
+    assert after.version == before.version, "拒绝改了版本号"
+    assert after.board.cells == before.board.cells, "拒绝改了棋盘"
+    assert after.active == before.active, "拒绝改了活动方块"
+    assert after.hold == before.hold, "拒绝改了暂存槽"
+    assert after.holdUsed == before.holdUsed, "拒绝改了暂存额度"
+
+
+# ---------------------------------------------------------------------------
+# 活动方块不变量（审查回合 B2 · 架构 §6.8）
+# ---------------------------------------------------------------------------
+
+
+def _kernel_with_a_broken_frame() -> Kernel:
+    """造一个**半帧**内核：锁定步已执行、出生步还没执行。
+
+    这就是宿主提前 `break` 掉帧推进序列的后果（架构 §6.2 要求完整消费）——
+    `running` 态却没有活动方块。
+    """
+    kernel = _kernel_in_phase("running")
+    kernel.execute(Command("hardDrop", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    steps = kernel.advance_frame()
+    next(steps)  # 重力
+    next(steps)  # 锁定 → 活动方块被清空，出生步还没跑
+    assert kernel.snapshot().active is None, "这一步之后不该有活动方块"
+    return kernel
+
+
+def test_hold_in_a_broken_frame_raises_the_invariant_error() -> None:
+    """半帧下 `hold` → **内核不变量破坏** → 抛异常，不硬造拒绝事件。
+
+    契约没给 `hold` 声明 `no_active_piece`，所以这个状态**没有可发的拒绝
+    事件**（架构 §6.8）。实现侧由 `_reject` 的守卫当场拦下。
+    """
+    kernel = _kernel_with_a_broken_frame()
+
+    with pytest.raises(KernelInvariantError):
+        kernel.execute(Command("hold", source="test"))
+
+
+def test_move_in_a_broken_frame_is_rejected_with_the_declared_reason() -> None:
+    """半帧下六条移动 / 旋转命令**照常拒绝**——`no_active_piece` 是防御性保留。"""
+    kernel = _kernel_with_a_broken_frame()
+
+    drafts = kernel.execute(Command("moveLeft", source="test"))
+
+    assert _payload(drafts, "command:rejected")["reason"] == "no_active_piece"

@@ -11,6 +11,9 @@
 5. 轮次超限 → 同样走 `kernel:quota-exceeded`，**配额名区分开**；
 6. `kernel:error` 在本阶段**不被使用**（只有订阅者抛错才发）。
 
+外加两条（审查回合 B14）：**合并键的三个分量**（phase / 命令类型 / 拒绝原因）
+各自钉死；**单帧写入格子配额**（`writeCellsPerFrame`）有用例。
+
 **自给自足**：不依赖 `tests/conftest.py`。
 """
 
@@ -22,7 +25,9 @@ from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.quota import (
     QUOTA_COMMAND_COUNT,
     QUOTA_ROUNDS,
+    QUOTA_WRITE_CELLS,
     QuotaLimits,
+    RejectCoalescer,
 )
 from tetris_kernel.rules.tables import PIECE_TYPES
 
@@ -148,6 +153,104 @@ def test_phase_change_resets_the_merge_count() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 合并键的三个分量（审查回合 B14）
+# ---------------------------------------------------------------------------
+
+
+def _record(
+    coalescer: RejectCoalescer, phase: str, command_type: str, reason: str
+) -> tuple[object, ...]:
+    """记一次拒绝，返回**因键变化而冲刷出来的旧组**。"""
+    return coalescer.record(
+        phase=phase,
+        command_type=command_type,
+        reason=reason,
+        frame=1,
+        source="test",
+        args=(),
+    )
+
+
+def test_merge_key_includes_the_phase() -> None:
+    """合并键 = (phase, 命令类型, 拒绝原因)：**phase 变了就是另一组**。
+
+    从内核这一层看不出来——phase 变化必然伴随一条被接受的命令，而被接受的
+    命令会先把合并组冲刷掉。所以这条在**合并器这一层**断言。
+    """
+    coalescer = RejectCoalescer()
+    flushed = _record(coalescer, "running", "moveLeft", "not_started")
+    flushed += _record(coalescer, "paused", "moveLeft", "not_started")
+    groups = flushed + coalescer.flush()
+
+    assert len(groups) == 2, "phase 是合并键的一部分，不该合并成一组"
+    assert {group.phase for group in groups} == {"running", "paused"}
+
+
+def test_merge_key_includes_the_reason() -> None:
+    """**拒绝原因变了就是另一组**——原因不同就是两回事，不该合并。"""
+    coalescer = RejectCoalescer()
+    flushed = _record(coalescer, "running", "writeCells", "invalid_argument")
+    flushed += _record(coalescer, "running", "writeCells", "out_of_bounds")
+    groups = flushed + coalescer.flush()
+
+    assert len(groups) == 2, "reason 是合并键的一部分，不该合并成一组"
+    assert {group.reason for group in groups} == {"invalid_argument", "out_of_bounds"}
+
+
+def test_different_rejection_reasons_are_not_merged() -> None:
+    """同一条命令的**不同拒绝原因**不合并（内核这一层的表现）。"""
+    kernel = _running_kernel()
+    kernel.submit(Command("writeCells", args=(("cells", ((0, 5),)),), source="test"))
+    kernel.submit(Command("writeCells", args=(("cells", ((99, 5, 1),)),), source="test"))
+
+    published = _publish_all(kernel)
+
+    rejected = [draft for draft in published if draft.eventType == "command:rejected"]
+    assert len(rejected) == 2, "不同原因不该合并成一条"
+    reasons = {dict(draft.payload)["reason"] for draft in rejected}
+    assert reasons == {"invalid_argument", "out_of_bounds"}
+
+
+# ---------------------------------------------------------------------------
+# 单帧写入格子配额（审查回合 B14）
+# ---------------------------------------------------------------------------
+
+
+def test_write_cells_quota_rejects_the_whole_batch() -> None:
+    """单帧写入格子数超限 → **整批拒绝** + `kernel:quota-exceeded`（配额名区分开）。"""
+    kernel = _running_kernel(QuotaLimits(max_commands=100, max_rounds=8, max_write_cells=2))
+    kernel.execute(Command("tick", source="test"))
+
+    drafts = kernel.execute(
+        Command("writeCells", args=(("cells", ((0, 5, 1), (1, 5, 1), (2, 5, 1))),), source="test")
+    )
+
+    assert _payload(drafts, "command:rejected")["reason"] == "quota_exceeded"
+    quota = _payload(drafts, "kernel:quota-exceeded")
+    assert quota["quota"] == QUOTA_WRITE_CELLS, "配额名不对"
+    assert quota["limit"] == 2
+    assert quota["actual"] == 3
+
+
+def test_write_cells_quota_counts_per_frame() -> None:
+    """写入配额**按帧累计**——下一帧清零（ADR-040）。
+
+    第二帧写 2 格（正好等于上限）：计数清零了才放得过——没清零就是 2 + 2。
+    """
+    kernel = _running_kernel(QuotaLimits(max_commands=100, max_rounds=8, max_write_cells=2))
+    kernel.execute(Command("tick", source="test"))
+    kernel.execute(Command("writeCells", args=(("cells", ((0, 5, 1), (1, 5, 1))),), source="test"))
+
+    kernel.execute(Command("tick", source="test"))
+    drafts = kernel.execute(
+        Command("writeCells", args=(("cells", ((0, 6, 1), (1, 6, 1))),), source="test")
+    )
+
+    assert "kernel:quota-exceeded" not in _types(drafts), "写入配额没有按帧清零"
+    assert "command:rejected" not in _types(drafts), "新一帧的写入被上一帧的用量挡住了"
+
+
+# ---------------------------------------------------------------------------
 # 验证 4：命令数配额
 # ---------------------------------------------------------------------------
 
@@ -179,6 +282,24 @@ def test_command_count_quota_drops_the_rest_and_resets_next_frame() -> None:
 
     assert "kernel:quota-exceeded" not in _types(next_frame), "计数没有清零"
     assert _types(next_frame).count("command:accepted") == 3, "下一帧的命令不该被丢"
+
+
+def test_quota_actual_does_not_count_the_tick() -> None:
+    """`actual` 是本帧真实的**非 tick 命令数**——tick 不计入（架构 §6.4）。
+
+    tick 在队首时批次里含着它，直接按 `len(batch)` 算就**恒差 1**。
+    """
+    kernel = _running_kernel(QuotaLimits(max_commands=3, max_rounds=8))
+    kernel.submit(Command("tick", source="test"))
+    for _ in range(4):
+        kernel.submit(Command("moveLeft", source="test"))
+
+    published = _publish_all(kernel)
+
+    quota = _payload(published, "kernel:quota-exceeded")
+    assert quota["quota"] == QUOTA_COMMAND_COUNT
+    assert quota["limit"] == 3
+    assert quota["actual"] == 4, "tick 被算进命令数了"
 
 
 # ---------------------------------------------------------------------------

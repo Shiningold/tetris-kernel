@@ -643,8 +643,8 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 - **任务**
   - [x] `kernel/commands.py`：命令数据结构（类型 + `args` + `source`）
   - [x] `kernel/core.py`：生命周期状态机——四态（待开始 / 运行 / 暂停 / 结束）+ 六种迁移（创建 / 开始 / 暂停 / 继续 / 结束 / 重置），每次迁移发对应事件，**非法迁移被拒绝并发事件**
-  - [x] **统一 phase guard 前置**：除 `start/pause/resume/reset` 外，`phase != running` 一律拒绝，原因取 `not_started` / `paused` / `game_over`
-  - [x] 三段生命周期：`command:received`（**出队执行前**发）→ `command:accepted` / `command:rejected`
+  - [x] **统一 phase guard 前置**：除 `start/pause/resume/reset` 与 **`setLevel`**（它不改棋盘内容也不改活动方块位置）外，`phase != running` 一律拒绝，原因取 `not_started` / `paused` / `game_over`；**门禁归属由契约的 `lifecycle_gated` 决定，不手写名单**
+  - [x] 三段生命周期：`command:received`（**帧号在出队时锁定**；**被拒命令**的 `received` 与 `rejected` 成对延后到合并窗口关闭时发，见 S10）→ `command:accepted` / `command:rejected`
   - [x] 三种事件**都带不可变 `args`**
   - [x] 帧内序号：只对**被接受**的命令编号，每帧归零，被拒的不占号；**tick 也占号**
 - **涉及文件**：`src/tetris_kernel/kernel/commands.py` · `src/tetris_kernel/kernel/core.py` · `src/tetris_kernel/kernel/lifecycle.py` · `tests/test_command_channel.py`
@@ -661,6 +661,8 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   - **门禁归属从契约推导**（`CommandSpec.lifecycle_gated`），**不手写名单**——手写会与契约分叉。
   - **`kernel/drafts.py` 落 `EventDraft` 的正式形态**（签名见 §1.4.4 的「事件草稿」一行）：`make_draft` 在构造期校验事件类型**已登记**、负载字段名与顺序**与契约逐条相等**。
   - **参数校验**照抄契约声明（参数名 / 顺序 / 类型），多余或类型不符一律 `invalid_argument`；`ArgsValue` 取值域与契约 `ARGS_VALUE` 在**导入期逐字对齐**（禁浮点）。
+  - **活动方块不变量（架构 §6.8）**：「命令执行时 `running` 态必然持有活动方块」。据此定下两件事——① `hold` **不声明** `no_active_piece`（那个状态对 `hold` 是内核不变量破坏，不是可拒绝情形），真到了就抛 `KernelInvariantError`，**不硬造一条没声明的拒绝原因**；② 其余六条移动 / 旋转命令的 `no_active_piece` 是**防御性保留**（正常执行走不到）。**实现侧由 `_reject` 守卫把关**：拒绝原因必须在契约声明之内，越界即抛异常——**「实现 ↔ 契约」这一环从此由运行期守卫守着，不再只靠测试**。
+  - **`injectGarbage` 的行数 / 空洞列越界 → `invalid_argument`**（跨切规则「参数不合规格统一用 `invalid_argument`」）；`out_of_bounds` 只声明给 `writeCells`。
 - **常见坑**
   - **`received` 在入队时发** → 入队时本帧帧号尚未确定，会让帧号差一帧，回放对齐整体错位（架构 §6.3）。
   - **phase 判定散落在各命令里** → 必须前置一道 guard，不散落。
@@ -758,7 +760,8 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 - **完成判据**：六条验证全过。→ **达成**（`87c57a0`；10 passed）
 - **提交**：`新功能：新增帧推进五步与同帧多轮执行语义`（`87c57a0`）
 - **实现补记**（一处口径 + 一处 M0 边界）
-  - **`next` 队列放的是"当前一袋剩下的全部方块"（≤7），不是契约文档里的 5 个**：少放两个的话"这袋还剩哪几个"只活在内核私有字段里，**存档恢复后取片序列会分叉**（FR-10.2）。类型没变（`tuple[str, ...]`），**基线不受影响**；渲染时取**前 5 个**当预览。**这与契约 docstring 的「预览队列（5 个）」有出入，请外部审查重点核这一条**。
+  - **`next` 队列放的是"当前一袋剩下的全部方块"（≤7），不是契约文档里的 5 个**：少放两个的话"这袋还剩哪几个"只活在内核私有字段里，**存档恢复后取片序列会分叉**（FR-10.2）。类型没变（`tuple[str, ...]`），**基线不受影响**；渲染时取**前 5 个**当预览。**措辞已收口**（2026-10-24 审查回合）：需求 §8.3 与契约 `next` 字段 docstring 都改成「当前这一袋剩下的全部方块（≤7）；**渲染层取前 5 个当预览**」——**只改描述，类型与基线不变**。
+  - **出生时机不止帧推进**：`_spawn_piece` 被**三条路径**调用——帧推进的出生步（第五步）· `start` 的出生步 · `hold` 暂存后换新方块（后两处必须立刻给出一块方块）。所以 `piece:spawned` / `queue:refilled` / `rng:next` **会出现在命令事件流里**，不只在帧推进里。**S14 装配层别假设"出生事件只在帧里出现"**。
   - **M0 最小实现**：无锁定延迟（落即锁，`lockTimer` 恒为 0）· 出生列固定 · `writeCells` 默认放行（授权粒度是 C 级需求，M1 再做；`not_authorized` 在 M0 不会触发，`write_condition_failed` 会）· 标准踢墙表仍是恒等偏移（批次 A 的 M1 边界）。
 - **常见坑**
   - **整批返回草稿** → 所有事件共享"执行后的最终态"，`piece:locked` 的订阅者读到的是已消行、已塌落、已出生的棋盘（ADR-023）。
@@ -812,6 +815,7 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   - [ ] `host/loop.py`：帧循环（时钟源**可注入**）、命令轮次循环 + 帧推进五步、帧末拉一次快照
   - [ ] `host/cli.py`：`argparse` 子命令骨架 `play / sim / replay / inspect`（M0 只要求 `sim` 能跑无头批量，其余占位）
   - [ ] 无头模式：不挂任何渲染与输入模块即可运行
+  - [ ] **帧末产出 `state:changed`**（**每帧至多一条**，架构 §6.6）：内核在 M0 **不发**这条事件——「帧末」的边界要等宿主的帧循环才存在（帧末 = 命令轮次循环结束**且**帧推进的步骤序列跑完）。**契约已声明它，本阶段明确延后到 S14**，别当成漏做
   - [ ] `python -m tetris_kernel` 入口
 - **涉及文件**：`src/tetris_kernel/host/assembly.py` · `src/tetris_kernel/host/loop.py` · `src/tetris_kernel/host/cli.py` · `src/tetris_kernel/__main__.py` · `tests/test_host_loop.py`
 - **批次 / 写手 / 文件归属**：**批次 C** · 写手 **C1** · 独占文件 `host/assembly.py` · `host/loop.py` · `host/cli.py` · `__main__.py` · 测试 `tests/test_host_loop.py`。消费 B1 的内核操作面与 B2 的总线操作面（§1.4.4 已先验定签名）。包级 `host/__init__.py` 的导出由**集成者**收口。

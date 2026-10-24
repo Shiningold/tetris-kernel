@@ -180,7 +180,13 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
         ),
         "hold": _field("hold", "str | None", "暂存的方块类型"),
         "holdUsed": _field("holdUsed", "bool", "本块是否已用过暂存"),
-        "next": _field("next", NEXT_QUEUE, "预览队列（5 个）"),
+        "next": _field(
+            "next",
+            NEXT_QUEUE,
+            "当前这一袋剩下的全部方块（最多 7 个 = 方块种类数）；"
+            "**渲染层取前 5 个当预览**。放全袋是为了存档恢复后取片序列不分叉"
+            "（FR-10.2）",
+        ),
         "score": _field("score", "int", "当前分数"),
         "lines": _field("lines", "int", "累计消行数"),
         "level": _field("level", "int", "当前等级"),

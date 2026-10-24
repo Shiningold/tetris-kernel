@@ -11,6 +11,10 @@
 7. 未知事件类型 → 静默丢弃并记 trace，**不中断分发**。
 
 外加信封元数据三键、待发布队列、环形历史与"没有 `bus.view()`"的断言。
+
+**两条跨边界的守卫**（审查回合 B12 / B15）：「总线不提供视图」断言的是**机制**
+（单参数回调只被传一个参数、公开面上没有任何视图入口），不是两个属性名；
+「草稿不含序号」守的是**内核真实的 `EventDraft`**，不是测试自造的替身。
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from tetris_kernel.bus.envelope import (
 )
 from tetris_kernel.bus.subscriber import SystemContext, matches
 from tetris_kernel.contracts.events import ENVELOPE_FIELDS, EVENT_TYPES
+from tetris_kernel.kernel.drafts import EventDraft
 
 # ---------------------------------------------------------------------------
 # 夹具与替身
@@ -155,6 +160,26 @@ def test_draft_carries_no_sequence_number() -> None:
     }
 
 
+def test_real_kernel_draft_carries_no_sequence_number() -> None:
+    """**内核真实的** `EventDraft` 只有四个属性，**没有序号**。
+
+    之前的守卫守的是测试自造的 `FakeDraft`——内核哪天给草稿加一个 `seq`
+    字段，`test_bus` 照样全绿。这条守的是**真货**（跨边界断言：草稿是内核
+    与总线之间的契约，两边都得对）。
+    """
+    draft = EventDraft(eventType="piece:locked", payload=(), frame=1)
+
+    assert not hasattr(draft, "seq")
+    assert {field.name for field in fields(draft)} == {
+        "eventType",
+        "payload",
+        "frame",
+        "metadata",
+    }
+    # 总线按 Protocol 消费它——形状对得上。
+    assert isinstance(draft, Draft)
+
+
 def test_draft_protocol_matches_the_kernel_draft_shape() -> None:
     """总线按 Protocol 消费草稿——`FakeDraft` 满足 `Draft` 的四个属性。"""
     draft = FakeDraft(eventType="piece:locked", frame=1)
@@ -238,10 +263,32 @@ def test_equal_priority_keeps_registration_order() -> None:
 
 
 def test_single_entry_subscribers_cannot_reach_the_view() -> None:
-    """单参数入口**拿不到视图**——渲染器不许用只读视图通道（ADR-059）。"""
+    """单参数入口**拿不到视图**——渲染器不许用只读视图通道（ADR-059）。
+
+    **机制级断言**（原先只查 `view` / `get_view` 两个属性名——换个名字的
+    视图入口照样能过）：① 总线的公开面上**没有任何**与视图有关的入口；
+    ② 单参数回调**只被传一个参数**（信封），拿不到 `ctx`；③ 信封本身也
+    不带视图。
+    """
     bus = EventBus[dict[str, int]](view_provider=lambda: {"frame": 1})
-    assert not hasattr(bus, "view")
-    assert not hasattr(bus, "get_view")
+
+    public = [name for name in dir(bus) if not name.startswith("_")]
+    assert not [name for name in public if "view" in name.lower()], public
+
+    arities: list[int] = []
+
+    def probe(*args: object) -> None:
+        arities.append(len(args))
+
+    bus.subscribe("*", probe)
+    bus.publish(FakeDraft(eventType="piece:locked"))
+    assert arities == [1], f"单参数入口传了 {arities} 个参数"
+
+    seen: list[Envelope] = []
+    bus.subscribe("piece:locked", seen.append)
+    bus.publish(FakeDraft(eventType="piece:locked"))
+    envelope_members = [name for name in dir(seen[0]) if not name.startswith("_")]
+    assert not [name for name in envelope_members if "view" in name.lower()], envelope_members
 
 
 # ---------------------------------------------------------------------------

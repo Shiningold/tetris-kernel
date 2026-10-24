@@ -31,6 +31,21 @@ command:received  →  command:accepted  /  command:rejected
 的内部附加信息（最后一手是不是旋转、踢墙信息）不进快照——它们是**判定用的
 瞬时事实**，随 `PlacementInfo` 递给规则集。
 
+## 活动方块不变量（架构 §6.8）
+
+**命令执行时（帧推进已被完整消费后），`phase == running` 必然持有活动方块。**
+
+依据：开局必出生一块（`_cmd_start`）· 锁定步之后的出生步必然补一块（帧推进
+五步的第五步）· 结束本局时 `phase` 同时变成 `game_over`。
+
+唯一能破坏它的是宿主提前 `break` 掉帧推进的步骤序列（架构 §6.2 明确要求
+完整消费）——那会留下"锁定已完成、消行未做"的静默半帧。
+
+**不满足时怎么办**：命令**只能用自己声明过的拒绝原因**。六条移动 / 旋转命令
+声明了 `no_active_piece`，所以那条路径照常拒绝；**`hold` 没声明**——契约没
+描述这个状态，就没有可发的拒绝事件，于是 `_reject` 的守卫把它升级成
+`KernelInvariantError`（架构 §6.8）。
+
 ## 纯度
 
 零第三方依赖、禁读墙钟、禁未注入的随机源（架构 §5.3）；**不 import 总线**
@@ -106,7 +121,7 @@ DEFAULT_BOARD_HEIGHT = 22
 #: 顶部隐藏行数（**数量**，不是可见起始行——契约 §8.3 的注）。
 DEFAULT_HIDDEN_ROWS = 2
 
-#: 预览队列的**契约说法**是 5 个（`contracts/snapshot.py` 的 `next` 字段说明）。
+#: **渲染层取前几个当预览**（契约 `next` 字段的说法是"前 5 个"）。
 #:
 #: 但内核放的是**当前这一袋剩下的全部方块**（最多 7 个 = 方块种类数）：少放两个
 #: 的话，"这一袋还剩哪几个"就只活在内核的私有字段里，存档恢复后取片序列会分叉
@@ -155,6 +170,21 @@ COMMAND_RESET = "reset"
 #: 内部事件：`(事件类型, 负载字段)`。**由内核在拿到帧内序号之前产出**，
 #: 元数据（`source` / `cause`）由内核统一补上。
 RawEvent = tuple[str, Payload]
+
+
+class KernelInvariantError(RuntimeError):
+    """内核不变量被破坏（架构 §6.8 · 活动方块不变量）。
+
+    **什么时候抛**：内核要拒绝一条命令，但**契约没有为这条命令声明可用的
+    拒绝原因**——说明内核进入了契约没有描述的状态。典型成因：宿主提前
+    `break` 掉帧推进的步骤序列（架构 §6.2 要求完整消费），留下"锁定已完成、
+    消行未做"的半帧——此时 `running` 态却没有活动方块。
+
+    **为什么不静默拒绝**：拒绝通道只留给「当前状态根本不该发这个命令」
+    （架构 §7.2）。一个契约没描述的状态**没有可发的拒绝事件**——硬造一个
+    就是"实现发出了契约未声明的拒绝原因"，那正是契约要防的事。宁可把异常
+    抛给宿主，也不让消费方收到一条没声明的原因。
+    """
 
 
 def _is_plain_int(value: object) -> bool:
@@ -438,8 +468,10 @@ class Kernel:
         """
         batch: list[Command] = []
         drafts: list[EventDraft] = []
+        tick_in_batch = 0
         if self._queue and self._queue[0].type == COMMAND_TICK:
             batch.append(self._queue.pop(0))
+            tick_in_batch = 1
             # 提前清零：本帧的额度从零算（tick 执行时还会再清一次，那次是幂等的）。
             self._quota.start_frame()
         remaining = self._quota.remaining_commands
@@ -452,7 +484,9 @@ class Kernel:
                     dropped,
                     quota=QUOTA_COMMAND_COUNT,
                     limit=self._quota.limits.max_commands,
-                    actual=self._quota.commands + len(batch) + len(dropped),
+                    # **`actual` 是"本帧真实的非 tick 命令数"**：`tick` 自身不计入
+                    # 命令数（架构 §6.4），所以要从批里减掉它——不减就恒差 1。
+                    actual=self._quota.commands + len(batch) + len(dropped) - tick_in_batch,
                 )
             )
         return batch, drafts
@@ -538,6 +572,10 @@ class Kernel:
             drafts = list(self._reject(command, outcome.reason))
             if outcome.quota_event is not None:
                 drafts.insert(0, self._draft_from_raw(outcome.quota_event, command.source))
+            # **被拒的命令也可以有语义事件**（`piece:hold-denied` 就是）：事件是
+            # "这条命令发生了什么"的宣告，与它被不被接受无关。位置在裁决之后，
+            # 与接受路径的「received → accepted → 语义事件」同构。
+            drafts.extend(self._draft_from_raw(raw, command.source) for raw in outcome.events)
             return tuple(drafts)
 
         # 接受之前先冲刷待定的合并组：被拒的那组在**时间上更早**。
@@ -630,7 +668,11 @@ class Kernel:
         字段）。合并窗口 = **一批命令**：轮次循环里是一轮，单独调用
         `execute` 时是这一条命令（调用结束即冲刷，调用方拿到的永远是完整的
         拒绝事件）。
+
+        **拒绝原因必须在契约声明之内**（架构 §6.8）：守卫见
+        `_assert_reason_declared`。
         """
+        self._assert_reason_declared(command, reason)
         flushed = self._coalescer.record(
             phase=self._state.phase,
             command_type=command.type,
@@ -643,6 +685,29 @@ class Kernel:
         if not self._in_round:
             drafts.extend(self._group_drafts(self._coalescer.flush()))
         return tuple(drafts)
+
+    def _assert_reason_declared(self, command: Command, reason: str) -> None:
+        """**实现发出的拒绝原因必须在契约声明之内**（架构 §6.8）。
+
+        契约的 `CommandSpec.reject_reasons` 是「该命令可能被拒绝的全部原因」
+        ——实现发一个没声明的原因，消费方（回放校验、完备性检查）就会在它上面
+        踩空，而 12 值枚举本身看不出破绽：值合法，**归属**不合法。
+
+        所以这里当场拦下：**契约没描述的状态没有可发的拒绝事件**，抛
+        `KernelInvariantError`，由宿主去查内核为什么进了那个状态。
+
+        **契约之外的命令名不查**——它没有声明可查，`invalid_argument` 已经在
+        全局枚举里。
+        """
+        spec = COMMANDS.get(command.type)
+        if spec is None:
+            return
+        if reason in spec.reject_reasons:
+            return
+        raise KernelInvariantError(
+            f"{command.type} 发出了契约未声明的拒绝原因 {reason!r}；"
+            f"该命令声明的原因是 {list(spec.reject_reasons)}"
+        )
 
     def _group_drafts(self, groups: tuple[RejectGroup, ...]) -> list[EventDraft]:
         """把合并组变成事件草稿（**成对**：`received` + `rejected`，计数一致）。"""
@@ -977,9 +1042,24 @@ class Kernel:
         )
 
     def _cmd_hold(self) -> _Outcome:
-        """暂存当前方块并取出暂存槽里的方块。"""
+        """暂存当前方块并取出暂存槽里的方块。
+
+        **「本块已用过暂存」时发 `piece:hold-denied`**（负载 `reason`）——
+        这是暂存逻辑唯一的拒绝情形，也是契约 §8.1 里 `piece:hold-denied`
+        描述的那件事（"暂存被拒"）。**门禁类与参数类的拒绝不进暂存逻辑**，
+        所以不会发这条事件。
+
+        **running 态没有活动方块 = 内核不变量破坏**（架构 §6.8）：契约没给
+        `hold` 声明 `no_active_piece`，所以这个状态**没有可用的拒绝原因**——
+        `_reject` 的守卫会把它升级成 `KernelInvariantError`，而不是硬造一条
+        没声明的拒绝事件。
+        """
         if self._state.hold_used:
-            return _Outcome(False, REJECT_HOLD_ALREADY_USED)
+            return _Outcome(
+                False,
+                REJECT_HOLD_ALREADY_USED,
+                events=(("piece:hold-denied", (("reason", REJECT_HOLD_ALREADY_USED),)),),
+            )
         active = self._state.active
         if active is None:
             return _Outcome(False, REJECT_NO_ACTIVE_PIECE)
@@ -1059,10 +1139,14 @@ class Kernel:
                 return _Outcome(False, REJECT_INVALID_ARGUMENT)
             holes.append(hole)
         visible_rows = self._height - self._hidden_rows
+        # **参数不合规格统一用 `invalid_argument`**（契约的跨切规则）：行数越界
+        # 与空洞列越界都是"参数不合规格"，不是 `out_of_bounds`——那个原因
+        # 只声明给 `writeCells`（需求 §8.2 给 injectGarbage 列的情形只有
+        # 「未开局」）。
         if rows < 0 or rows > visible_rows:
-            return _Outcome(False, REJECT_OUT_OF_BOUNDS)
+            return _Outcome(False, REJECT_INVALID_ARGUMENT)
         if any(hole < 0 or hole >= self._width for hole in holes):
-            return _Outcome(False, REJECT_OUT_OF_BOUNDS)
+            return _Outcome(False, REJECT_INVALID_ARGUMENT)
         hole_tuple = tuple(holes)
 
         board = self._state.board
@@ -1234,6 +1318,10 @@ class Kernel:
         self._state.active = None
         self._state.grounded = False
         self._state.ghost_delta = (0, 0)
+        # **本块结束 → 暂存额度复位**（FR-4.5「每块一次」）：锁定就是"本块
+        # 结束"，下一块重新获得额度。不复位就变成"每局一次"，暂存功能整局
+        # 只生效一次（快照的 `holdUsed` 也会与契约写的"本块"分叉）。
+        self._state.hold_used = False
         self._touch()
         classification = self._rules.classify_placement(board, placement, self._rule_context())
         cause = "hardDrop" if active.lastCause == "hardDrop" else "ground"
@@ -1404,7 +1492,13 @@ class Kernel:
     # ------------------------------------------------------------------
 
     def _spawn_piece(self) -> list[RawEvent]:
-        """出生一个方块（**出生是帧推进的一步，S12 调它**）。"""
+        """出生一个方块。
+
+        **出生是帧推进的一步（S12 调它）**——但**开局与暂存两条命令路径也直接
+        调它**：这两处必须立刻给出一块方块（开局要有方块可动，暂存后要立刻
+        换上新方块）。所以 `piece:spawned` / `queue:refilled` / `rng:next`
+        **会出现在命令事件流里**，不只在帧推进的出生步里。
+        """
         events: list[RawEvent] = []
         piece_type, queue, refilled = self._take_from_queue()
         if refilled:

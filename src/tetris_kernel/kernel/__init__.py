@@ -27,6 +27,7 @@ from .core import (
     PREVIEW_SIZE,
     ActivePiece,
     Kernel,
+    KernelInvariantError,
     KernelState,
 )
 from .drafts import (
@@ -150,6 +151,7 @@ __all__ = [
     "FrameStepper",
     "JsonValue",
     "Kernel",
+    "KernelInvariantError",
     "KernelRng",
     "KernelState",
     "Lifecycle",

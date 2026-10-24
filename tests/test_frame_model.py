@@ -12,6 +12,10 @@
 5. tick 被接受后 phase 变 `paused` → 本帧**不推进**（推进前复查 phase）；
 6. `reset` 后帧号 = 0、帧内序号 = 0、版本号 = 0。
 
+外加三条**行为语义**的守卫（审查回合 B6 · B1 · B5）：消行步**真的**清掉了那一行、
+塌落步**真的**把上面的行落下来、计分**真的**按规则集加了分；暂存额度**每块
+一次**（锁定后复位）；暂存被拒时发 `piece:hold-denied`。
+
 **自给自足**：不依赖 `tests/conftest.py`。
 """
 
@@ -22,7 +26,7 @@ from typing import cast
 from tetris_kernel.kernel.commands import Args, Command
 from tetris_kernel.kernel.core import Kernel
 from tetris_kernel.kernel.drafts import EventDraft
-from tetris_kernel.rules.tables import PIECE_TYPES
+from tetris_kernel.rules.tables import PIECE_TYPES, SCORE_TABLE
 
 #: 固定种子（测试不依赖随机性）。
 SEED = 20261024
@@ -207,6 +211,112 @@ def test_a_clearless_frame_does_not_change_the_state() -> None:
     assert "score:combo-changed" not in events, events
     assert "score:b2b-changed" not in events, events
     assert "board:lines-cleared" not in events, events
+
+
+# ---------------------------------------------------------------------------
+# 行为语义：五步的**实际副作用**（审查回合 B6）
+# ---------------------------------------------------------------------------
+
+
+def test_a_clear_really_clears_the_row_and_collapses_the_board() -> None:
+    """消行步**真的**清掉了那一行，塌落步**真的**把上面的行落下来。
+
+    **只守"事件在不在"守不住这条**——把 `step_collapse` 改成不塌落、把
+    `step_clear` 改成不清行，事件照发、套件照样全绿。这里断言的是**状态**：
+    被消的那一行真的没了，上面的行真的落下来一格。
+    """
+    kernel = _kernel_ready_to_clear()
+    # 标记格：放在被消行**上面**，塌落后它应该往下掉一格。
+    kernel.execute(Command("writeCells", args=(("cells", ((0, 5, 1),)),), source="test"))
+
+    kernel.execute(Command("tick", source="test"))
+    locked_board: list[list[int]] | None = None
+    for step in kernel.advance_frame():
+        if "piece:locked" in _types(tuple(step)):
+            locked_board = [list(row) for row in kernel.snapshot().board.cells]
+    assert locked_board is not None, "这一帧没有锁定事件"
+
+    bottom = HEIGHT - 1
+    assert all(cell != 0 for cell in locked_board[bottom]), "锁定时那一行应该已经满了"
+
+    after = [list(row) for row in kernel.snapshot().board.cells]
+    # 塌落：被消的那一行消失，上面的行整体落下来一格，顶部补一行空的。
+    assert after == [[0] * WIDTH] + locked_board[:-1], "棋盘没有按预期塌落"
+    # 标记格跟着落了一格。
+    assert after[6][0] == 1, "标记格没有随行下落"
+    assert after[5][0] == 0, "标记格没有离开原来的行"
+    # 那一行真的被清掉了：满行不再存在，且盘上少掉的正好是那一行的 WIDTH 格。
+    assert not any(all(cell != 0 for cell in row) for row in after), "满行还在盘上"
+
+    def filled(board: list[list[int]]) -> int:
+        return sum(1 for row in board for cell in row if cell != 0)
+
+    assert filled(locked_board) - filled(after) == WIDTH, "被消行的格子数不对"
+
+
+def test_scoring_follows_the_rule_set() -> None:
+    """消行后**分数与消行数**按规则集算出的值变化。
+
+    期望值取自规则集自己的计分表（`SCORE_TABLE`），不是拍一个数字——规则集
+    改分值时这条用例跟着改，而不是变成一个永远对的假断言。
+    """
+    kernel = _kernel_ready_to_clear()
+
+    before = kernel.snapshot()
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    after = kernel.snapshot()
+
+    assert after.lines == before.lines + 1, "消行数没跟着涨"
+    assert after.score == before.score + SCORE_TABLE["single"], "分数没按规则集算"
+    assert after.combo == before.combo + 1, "连击没跟着涨"
+
+
+# ---------------------------------------------------------------------------
+# 暂存：每块一次（审查回合 B1）+ 被拒时发事件（B5）
+# ---------------------------------------------------------------------------
+
+
+def test_hold_can_be_used_again_after_the_piece_locks() -> None:
+    """锁定后**能再暂存**——「每块一次」不是「每局一次」（FR-4.5）。
+
+    锁定就是「本块结束」，下一块重新获得暂存额度。
+    """
+    kernel = _running_kernel()
+    kernel.execute(Command("hold", source="test"))
+    assert kernel.snapshot().holdUsed is True, "第一次暂存后额度没被占用"
+
+    kernel.execute(Command("hardDrop", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+
+    assert kernel.snapshot().piecesPlaced == 1, "这一帧没有锁定方块"
+    assert kernel.snapshot().holdUsed is False, "锁定后暂存额度没有复位"
+
+    drafts = kernel.execute(Command("hold", source="test"))
+    assert "command:rejected" not in _types(drafts), "新的一块又被拒了"
+    assert "piece:held" in _types(drafts)
+
+
+def test_hold_denied_is_published_when_hold_is_refused() -> None:
+    """暂存被拒时发 `piece:hold-denied`（负载 `reason`）——契约 §8.1 声明了它。"""
+    kernel = _running_kernel()
+    kernel.execute(Command("hold", source="test"))
+
+    drafts = kernel.execute(Command("hold", source="test"))
+
+    assert "command:rejected" in _types(drafts)
+    assert "piece:hold-denied" in _types(drafts), "暂存被拒却没有发 piece:hold-denied"
+    assert _payload(drafts, "piece:hold-denied")["reason"] == "hold_already_used"
+
+
+def test_hold_denied_is_not_published_when_the_command_never_reaches_the_hold_logic() -> None:
+    """门禁类拒绝**不发** `piece:hold-denied`——那是"暂存被拒"，不是"没开局"。"""
+    kernel = _kernel()
+    drafts = kernel.execute(Command("hold", source="test"))
+
+    assert "command:rejected" in _types(drafts)
+    assert "piece:hold-denied" not in _types(drafts)
 
 
 # ---------------------------------------------------------------------------
