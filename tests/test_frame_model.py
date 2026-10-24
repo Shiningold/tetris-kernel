@@ -216,6 +216,31 @@ def test_a_clearless_frame_does_not_change_the_state() -> None:
     assert "board:lines-cleared" not in events, events
 
 
+def test_combo_survives_a_frame_without_a_lock() -> None:
+    """**没锁定的帧不该断连击**——`score_clear` 只在锁定后调。
+
+    **回归守卫**（2026-10-24 批次 C 审查回合发现）：消行步曾**每帧**都调
+    `score_clear`（含空组），而 plan-M0.md S13 段的第三条约定是「每次**放置
+    锁定后**都要调 `score_clear`（含空组）」——**落空是"一次放置没有消行"，
+    它发生在锁定时**。没锁定的帧里根本没有"落空"这回事，空组一调就等于
+    **每帧都断一次连击**，连击与背面连击链活不过一帧（FR-4.6 静默失效）。
+
+    后果还不止连击：没锁定的帧里若棋盘上有满行（`writeCells` 填的），那行
+    也会被**无端消掉**。
+    """
+    kernel = _kernel_ready_to_clear()
+
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    assert kernel.snapshot().combo == 1, "消行后连击没有起来"
+
+    # 下一帧**没有锁定**（新方块还在空中，够不着地板）→ 不是"落空"。
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+
+    assert kernel.snapshot().combo == 1, "没锁定的帧把连击断了"
+
+
 # ---------------------------------------------------------------------------
 # 行为语义：五步的**实际副作用**（审查回合 B6）
 # ---------------------------------------------------------------------------

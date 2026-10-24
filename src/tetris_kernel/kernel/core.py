@@ -328,6 +328,9 @@ class Kernel:
         self._advance_permitted = False
         self._advance_cause: tuple[int, int] | None = None
         self._advance_source = "host"
+        # 帧级标志：**这一帧锁定过没有**（消行步据此决定要不要调 `score_clear`）。
+        # **运行时状态，不进快照**——它只活在一轮帧推进里。
+        self._locked_in_frame = False
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -1255,6 +1258,8 @@ class Kernel:
             self._advance_permitted = False
             return
         self._advance_permitted = False
+        # 帧级标志归零：每一帧从"没锁定过"开始（锁定的帧由 `step_lock` 置位）。
+        self._locked_in_frame = False
         yield from frame.advance_frame(self)
 
     def _advance_metadata(self) -> tuple[tuple[str, JsonValue], ...]:
@@ -1342,6 +1347,12 @@ class Kernel:
         self._state.active = None
         self._state.grounded = False
         self._state.ghost_delta = (0, 0)
+        # **本帧锁定了**：消行步据此决定要不要调 `score_clear`（plan-M0.md
+        # S13 段的第三条约定：「每次**放置锁定后**都要调 `score_clear`（含空
+        # 组）」）。没有这一条，消行步会在**每一个没锁定的帧**也调一次
+        # `score_clear`——空组即落空，**连击与背面连击链每帧都被断一次**，
+        # FR-4.6 静默失效。
+        self._locked_in_frame = True
         # **本块结束 → 暂存额度复位**（FR-4.5「每块一次」）：锁定就是"本块
         # 结束"，下一块重新获得额度。不复位就变成"每局一次"，暂存功能整局
         # 只生效一次（快照的 `holdUsed` 也会与契约写的"本块"分叉）。
@@ -1390,7 +1401,16 @@ class Kernel:
 
         **状态没变就不落笔**（架构 §6.2：先算完再一次性写入）：落空且本来
         就没有连击 / 链时什么都没变，也就不发事件。
+
+        **只在"本帧锁定过"时才调 `score_clear`**（plan-M0.md S13 段的第三条
+        约定：「每次**放置锁定后**都要调 `score_clear`（含空组）」）。落空是
+        **一次放置没有消行**，它发生在锁定时——没锁定的帧里根本没有"落空"这
+        回事，调一次空组等于**每帧都断一次连击**（FR-4.6 静默失效）。
         """
+        if not self._locked_in_frame:
+            # 本帧没有锁定 → 不是"落空"，**不调 `score_clear`**。
+            return frame.StepOutcome((), context)
+        self._locked_in_frame = False  # 一帧只算一次
         groups = self._rules.scan_clears(self._state.board, self._rule_context())
         classification = context.classification
         attached = tuple(replace(group, classification=classification) for group in groups)
