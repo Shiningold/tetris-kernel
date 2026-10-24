@@ -241,9 +241,9 @@ tools/
 - 元数据三键：`source`（`human/ai/replay/tutorial/network/test`，内核**不得因它分支** · FR-8.5）· `producer`（总线分发时自动填）· `cause`（`(帧号, 帧内序号) | None`）。
 - **未知键静默保留但不解释**（NFR-9）。
 
-### 6.4 快照字段（21 顶层 + `board` 5 子字段）
+### 6.4 快照字段（22 顶层 + `board` 5 子字段）
 
-顶层：`version` · `rule` · `phase` · `frame` · `board` · `active` · `ghostDelta` · `hold` · `holdUsed` · `next` · `score` · `lines` · `level` · `combo` · `b2b` · `piecesPlaced` · `grounded` · `lockTimer` · `extensions` · `extensionFingerprint` · `rngState`。
+顶层：`version` · `rule` · `phase` · `frame` · `board` · `active` · `ghostDelta` · `hold` · `holdUsed` · `next` · `score` · `lines` · `level` · `combo` · `b2b` · `piecesPlaced` · `grounded` · `lockTimer` · `gravityTimer` · `extensions` · `extensionFingerprint` · `rngState`。
 `board` 子字段：`width` · `height` · `hiddenRows` · `cells` · `structureFingerprint`。
 
 - **这张表是"至少包含"，不是"只有这些"**：内核每新增一个状态字段，快照必须同步新增一个字段（契约清单第 15 项）。
@@ -332,6 +332,7 @@ major 变更流程定**。
 | `score` / `lines` / `level` / `combo` / `b2b` | 同名 | 计分与进度 |
 | `piecesPlaced` | `piecesPlaced` | 已放置方块数 |
 | `grounded` / `lockTimer` | `grounded` / `lockTimer` | 落地与锁定计时 |
+| `gravityTimer` | `gravityTimer` | 重力计时剩余帧数：距下一次落格还有几帧（0 = 本帧到期）；间隔取规则集的 `gravity_interval(ctx)`，随方块出生重置 |
 | `extensions` | `extensions` / `extensionFingerprint` | 扩展槽只放标量、key 唯一；内核**不理解内容** |
 | 随机源实例 | `rngState` | `snapshot()` 路径为 `None`，存档路径另填 |
 

@@ -179,6 +179,7 @@ def _game_state(snapshot: Snapshot) -> tuple[object, ...]:
         snapshot.piecesPlaced,
         snapshot.grounded,
         snapshot.lockTimer,
+        snapshot.gravityTimer,
         snapshot.extensions,
     )
 

@@ -889,7 +889,7 @@ def test_no_arg_is_nullable_in_v1() -> None:
 # `test_snapshot_types_reference_shared_constants` 单独钉住。
 # ---------------------------------------------------------------------------
 
-#: 21 个顶层快照字段（字段名 → 类型）。
+#: 22 个顶层快照字段（字段名 → 类型）。
 EXPECTED_SNAPSHOT_FIELDS: dict[str, str] = {
     "version": "int",
     "rule": "str",
@@ -909,6 +909,7 @@ EXPECTED_SNAPSHOT_FIELDS: dict[str, str] = {
     "piecesPlaced": "int",
     "grounded": "bool",
     "lockTimer": "int",
+    "gravityTimer": "int",
     "extensions": "tuple[tuple[str, int | float | str | bool | None], ...]",
     "extensionFingerprint": "str",
     "rngState": "tuple[int, ...] | None",
@@ -986,8 +987,8 @@ def _snapshot_leaf_paths() -> set[str]:
 
 
 def test_snapshot_field_count() -> None:
-    """顶层 21 · `board` 子字段 5 · `Active` 子字段 4（需求 §8.3）。"""
-    assert len(SNAPSHOT_FIELDS) == 21
+    """顶层 22 · `board` 子字段 5 · `Active` 子字段 4（需求 §8.3）。"""
+    assert len(SNAPSHOT_FIELDS) == 22
     assert len(BOARD_FIELDS) == 5
     assert len(ACTIVE_FIELDS) == 4
 

@@ -1,4 +1,4 @@
-"""快照契约声明（契约 v1 · 21 个顶层字段 + `board` 5 子字段）。
+"""快照契约声明（契约 v1 · 22 个顶层字段 + `board` 5 子字段）。
 
 公共叶子——**不 import 任何 `tetris_kernel.*` 模块，也不依赖第三方**；只用
 标准库（架构 §2.3 / §4.1）。本模块只做「声明」，不做「行为」：S8 才在这里的
@@ -6,7 +6,7 @@
 
 ## 声明了什么
 
-- `SNAPSHOT_FIELDS`：21 个顶层字段（字段名 → 类型声明）。**这张表是"至少
+- `SNAPSHOT_FIELDS`：22 个顶层字段（字段名 → 类型声明）。**这张表是"至少
   包含"**（需求 §8.3）：内核每新增一个状态字段，快照必须同步新增一个字段，
   否则 FR-10.2 的存档恢复缺一块（架构 §5.2）——新增字段在这里加一行即可，
   改既有字段的类型 = major 变更。
@@ -195,6 +195,14 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
         "piecesPlaced": _field("piecesPlaced", "int", "已放置方块数"),
         "grounded": _field("grounded", "bool", "是否已落地"),
         "lockTimer": _field("lockTimer", "int", "锁定计时剩余帧数（用于 UI 提示）"),
+        "gravityTimer": _field(
+            "gravityTimer",
+            "int",
+            "重力计时剩余帧数：距下一次落格还有几帧（**0 = 本帧到期**）。"
+            "间隔由规则集的 `gravity_interval(ctx)` 给（标准 1 级 = 60 帧落一格）；"
+            "**随方块出生重置**——新方块先等满一个间隔才落第一格。"
+            "**必须进快照**：它是跨帧的节奏状态，存档恢复后要接着数（FR-10.2）",
+        ),
         "extensions": _field(
             "extensions",
             SCALAR_MAP,
@@ -260,6 +268,7 @@ KERNEL_STATE_TO_SNAPSHOT: tuple[KernelStateEntry, ...] = (
     KernelStateEntry("piecesPlaced", "piecesPlaced"),
     KernelStateEntry("grounded", "grounded"),
     KernelStateEntry("lockTimer", "lockTimer"),
+    KernelStateEntry("gravityTimer", "gravityTimer"),
     KernelStateEntry("extensions", "extensions"),
     KernelStateEntry("extensions", "extensionFingerprint", derived=True),
     # 随机源**实例本体**是运行时状态（见 `RUNTIME_ONLY_STATE`），快照只带走

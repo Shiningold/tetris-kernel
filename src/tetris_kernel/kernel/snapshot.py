@@ -176,7 +176,7 @@ class Active:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """内核状态的**完整只读导出**（契约 `SNAPSHOT_FIELDS` 的 21 个字段）。
+    """内核状态的**完整只读导出**（契约 `SNAPSHOT_FIELDS` 的 22 个字段）。
 
     **字段集合与契约声明完全相等**（不多不少）——内核每新增一个状态字段，
     这里必须同步新增一个字段，否则 FR-10.2 的存档恢复缺一块（架构 §5.2）。
@@ -203,6 +203,7 @@ class Snapshot:
     piecesPlaced: int
     grounded: bool
     lockTimer: int
+    gravityTimer: int
     extensions: tuple[tuple[str, int | float | str | bool | None], ...]
     extensionFingerprint: str
     rngState: tuple[int, ...] | None
@@ -426,6 +427,7 @@ def build_snapshot(
     pieces_placed: int,
     grounded: bool,
     lock_timer: int,
+    gravity_timer: int,
     extensions: tuple[ExtensionEntry, ...],
 ) -> Snapshot:
     """构造只读快照（**`rngState` 恒为 `None`**）。
@@ -461,6 +463,7 @@ def build_snapshot(
         piecesPlaced=pieces_placed,
         grounded=grounded,
         lockTimer=lock_timer,
+        gravityTimer=gravity_timer,
         extensions=normalized,
         extensionFingerprint=compute_extension_fingerprint(normalized),
         rngState=None,

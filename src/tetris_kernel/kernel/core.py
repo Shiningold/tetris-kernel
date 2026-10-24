@@ -236,6 +236,7 @@ class KernelState:
     pieces_placed: int = 0
     grounded: bool = False
     lock_timer: int = 0
+    gravity_timer: int = 0
     extensions: tuple[ExtensionEntry, ...] = ()
 
 
@@ -384,6 +385,7 @@ class Kernel:
             pieces_placed=self._state.pieces_placed,
             grounded=self._state.grounded,
             lock_timer=self._state.lock_timer,
+            gravity_timer=self._state.gravity_timer,
             extensions=self._state.extensions,
         )
 
@@ -1265,22 +1267,44 @@ class Kernel:
     def step_gravity(self, context: frame.FrameContext) -> frame.StepOutcome:
         """第一步：重力。
 
+        **两件事分开**（2026-10-24 契约 v1 增补，兑现规则集的重力间隔）：
+
+        - **落格**由**重力计时**决定：距上次落格满一个间隔（规则集的
+          `gravity_interval(ctx)`，标准 1 级 = 60 帧）才真正下移一格；没到期
+          就**原地不动**（`dx` / `dy` 记 0）；
+        - **触地判定每帧都做**（"再往重力方向走一格会不会撞"）——所以方块
+          贴地的那一帧就被判为 `grounded`，紧随其后的锁定步当场锁定（**落即
+          锁**，M0 不做锁定延迟）。
+
         重力受阻时**位移为 0**（事件照发——五步的节奏是固定的，订阅者据此
         知道"这一帧重力没能推动方块"）。
         """
         active = self._state.active
         if active is None:
             return frame.StepOutcome((), context)
-        dx, dy = self._rules.gravity_vector(self._rule_context())
-        moved = not self._collides(active.pieceType, active.rotation, active.x + dx, active.y + dy)
-        if moved:
-            active.x += dx
-            active.y += dy
-            active.lastCause = "ground"
+        rule_context = self._rule_context()
+        dx, dy = self._rules.gravity_vector(rule_context)
+        interval = max(1, self._rules.gravity_interval(rule_context))
+        timer = self._state.gravity_timer
+        moved = False
+        if timer == 0:
+            # 到期：本帧落一格。
+            moved = not self._collides(
+                active.pieceType, active.rotation, active.x + dx, active.y + dy
+            )
+            if moved:
+                active.x += dx
+                active.y += dy
+                active.lastCause = "ground"
+                # 下一格在**一个间隔之后**落——本次落格已经消耗掉 1 帧。
+                self._state.gravity_timer = interval - 1
         else:
-            # 落到底：方块**待锁定**（锁定是下一步的事）。
-            self._state.grounded = True
+            # 没到期：只走表。间隔变短时（等级下降）把剩余帧数**夹到新间隔**，
+            # 别让节奏停在旧间隔上。
+            self._state.gravity_timer = min(timer - 1, interval - 1)
         self._state.ghost_delta = self._compute_ghost_delta()
+        # 触地判定：**幽灵落点就在脚下**（走 0 格）⟺ 再往重力方向走一格会撞。
+        self._state.grounded = self._state.ghost_delta == (0, 0)
         self._touch()
         drafts = (
             make_draft(
@@ -1522,6 +1546,10 @@ class Kernel:
             pieceType=piece_type, rotation=0, x=SPAWN_X, y=SPAWN_Y, lastCause="ground"
         )
         self._state.grounded = False
+        # **重力计时随出生重置**：新方块先等满一个间隔才落第一格——落格间隔
+        # 是节奏，节奏从这一块开始算，不接着上一块 leftover。计时记的是
+        # 「还有几帧才落格」，所以出生时是 `间隔 − 1`（第 `间隔` 帧落第一格）。
+        self._state.gravity_timer = max(1, self._rules.gravity_interval(self._rule_context())) - 1
         self._state.ghost_delta = self._compute_ghost_delta()
         events.append(
             (
