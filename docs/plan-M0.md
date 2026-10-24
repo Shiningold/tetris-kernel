@@ -225,13 +225,13 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 | S4 | 快照契约声明（21+5）+ `PlacementInfo` | 清单 3/4/10/15 | — | 已完成 | `d294e8b`（审查修订 `0a2117e`） |
 | S5 | 规则签名声明（8）+ `RuleContext` | 清单 9 | — | 已完成 | `5a55302`（审查修订 `8f98ed3`） |
 | S6 | 契约校验与基线脚本 | 清单 11/12/13/16 | — | 已完成 | `03053a9`（审查修订 `e69a561`） |
-| S7 | 随机源与时间源 | — | A | 未开始 | — |
-| S8 | 快照与只读视图 | — | A | 未开始 | — |
+| S7 | 随机源与时间源 | — | A | 已完成 | `a2af287` |
+| S8 | 快照与只读视图 | — | A | 已完成 | `d59b17f` |
 | S9 | 命令通道（门禁 + 三段生命周期） | — | B | 未开始 | — |
 | S10 | 合并防抖与配额 | — | B | 未开始 | — |
 | S11 | 总线 | AC-4 切片 | B | 未开始 | — |
 | S12 | 帧模型 | G0-4 | B | 未开始 | — |
-| S13 | 规则最小标准实现 | — | A | 未开始 | — |
+| S13 | 规则最小标准实现 | — | A | 已完成 | `27313e4` |
 | S14 | 宿主装配与无头闭环 | G0-1 | C | 未开始 | — |
 | S15 | 测试骨架与五道门 | G0-1…G0-5 | C | 未开始 | — |
 | S16 | 开放项 B / C 采集 | — | D | 未开始 | — |
@@ -242,7 +242,7 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 
 | 批次 | 分支 | 写手 | 阶段 | 状态 | 落笔提交 | 审查报告 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A 行为地基 | `feature/batch-a` | A1 / A2 / A3 | S7 / S8 / S13 | 未开始 | — | `tests/ocr/batch-a-review.md` |
+| A 行为地基 | `feature/batch-a` | A1 / A2 / A3 | S7 / S8 / S13 | **已落笔（待审查）** | `a2af287`（S7）· `d59b17f`（S8）· `27313e4`（S13）· `a9355c7`（集成收口） | `tests/ocr/batch-a-review.md`（**待交**） |
 | B 命令与帧 | `feature/batch-b` | B1 / B2 | S9 / S10 / S12 · S11 | 未开始 | — | `tests/ocr/batch-b-review.md` |
 | C 闭环与验收 | `feature/batch-c` | C1 / C2 | S14 / S15 | 未开始 | — | `tests/ocr/batch-c-review.md` |
 | D 采集与冻结 | `feature/batch-d` | D1 / D2 | S16 / S17 | 未开始 | — | `tests/ocr/batch-d-review.md` |
@@ -571,12 +571,12 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 
 - **目标**：内核随机源可播种、可复现、可审计；内核不读墙钟。
 - **任务**
-  - [ ] `kernel/rng.py`：可播种随机源，**只用 `random()` 与 `getrandbits()` 两个原语**（ADR-010）
-  - [ ] 7-bag 洗牌自己实现 Fisher-Yates（不用 `shuffle` / `sample` / `choice` / `randrange`）
-  - [ ] `getstate()` / `setstate()` 往返可复现（ADR-011）
-  - [ ] 每次取值产出 `rng:next` 草稿（随机值 + 序号 + **状态指纹短哈希**，**不含完整 MT 状态**，ADR-060）
-  - [ ] 状态指纹用 `blake2b` + TLV，**不用内置 `hash()`**（受 `PYTHONHASHSEED` 影响）
-  - [ ] 时间源可注入（真实 / 虚拟），内核侧只认逻辑帧
+  - [x] `kernel/rng.py`：可播种随机源，**只用 `random()` 与 `getrandbits()` 两个原语**（ADR-010）
+  - [x] 7-bag 洗牌自己实现 Fisher-Yates（不用 `shuffle` / `sample` / `choice` / `randrange`）
+  - [x] `getstate()` / `setstate()` 往返可复现（ADR-011）
+  - [x] 每次取值产出 `rng:next` 草稿（随机值 + 序号 + **状态指纹短哈希**，**不含完整 MT 状态**，ADR-060）
+  - [x] 状态指纹用 `blake2b` + TLV，**不用内置 `hash()`**（受 `PYTHONHASHSEED` 影响）
+  - [x] 时间源可注入（真实 / 虚拟），内核侧只认逻辑帧
 - **涉及文件**：`src/tetris_kernel/kernel/rng.py` · `src/tetris_kernel/kernel/fingerprint.py` · `src/tetris_kernel/host/clock.py` · `tests/test_rng.py`
 - **批次 / 写手 / 文件归属**：**批次 A** · 写手 **A1** · 独占文件 `kernel/rng.py` · `kernel/fingerprint.py` · `host/clock.py` · 测试 `tests/test_rng.py`。包级 `kernel/__init__.py` 的导出由**集成者**收口。批次内**先交 `kernel/fingerprint.py`**（A2 等它才能自测）。
 - **开工前定下的三处口径**（2026-10-24 核实；S7 按此实现）
@@ -592,8 +592,10 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   4. 机检：`tools/check_kernel_purity.py` 绿——`kernel/` 内无模块级 `random.*`、无未注入的 `random.Random()`。
   5. 机检：`rng:next` 负载**不含** 625 元素的状态数组（断言负载长度是常数级）。
   6. 测试：**扁平化状态能无损还原**——`export()` → `import()` 往返后序列接得上，且 `gauss_next` 非 `None` 时导出**报错**（这条是开工前新加的：守卫要能触发）。
-- **完成判据**：六条验证全过。
-- **提交**：`新功能：新增可播种随机源与 rng 事件产出`
+- **完成判据**：六条验证全过。→ **达成**（`a2af287`；25 passed；跨进程指纹在 `PYTHONHASHSEED=0/12345/999` 三次全等）
+- **提交**：`新功能：新增可播种随机源与 rng 事件产出`（`a2af287`）
+- **集成时补的一处修正**：写手初版的 `import_state` 用**当前实例**的 version 复原，等于把 ADR-011 的版本检测绕过去——状态容器格式随 Python 版本变过，混用会**静默重放出不同结果**。改为用**导入状态自带的** version 复原，版本对不上当场报错，并补两条用例守住。
+- **口径 1 的实现补记**：扁平化导出 `(version, *state)` = 626 个 int；导入复原成 `(imported_version, tuple(state[1:]), None)`。
 - **常见坑**
   - **用 `random.shuffle`** → 它在 CPython 版本间变过，升级 Python 会让全部旧录像集体作废（ADR-010）。
   - **内核随机源被外部取用** → FR-5.3：内核随机源**只服务内核**，AI 等外部系统必须自建实例并显式播种。
@@ -607,12 +609,12 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 
 - **目标**：任何时刻能导出完整只读快照；快照改不动内核。
 - **任务**
-  - [ ] `kernel/snapshot.py`：`Snapshot` / `Board` / `Active` 三个 `frozen=True` dataclass，字段与 S4 声明一一对应
-  - [ ] 内核内部用**可变结构**（`list[list[int]]`），导出时**深拷贝**成 `tuple[tuple[int, ...], ...]`
-  - [ ] `structureFingerprint`（棋盘内容，行优先 TLV + 域分隔前缀）
-  - [ ] `extensionFingerprint`（`extensions` 的规范化摘要，key 排序）
-  - [ ] `rngState` 两条构造路径：`snapshot()` 恒为 `None`；存档路径用 `dataclasses.replace(snapshot, rngState=...)` 填
-  - [ ] 只读视图与快照**是同一个 dataclass**（ADR-056），视图构造**纯读**（不碰随机源、不改状态）
+  - [x] `kernel/snapshot.py`：`Snapshot` / `Board` / `Active` 三个 `frozen=True` dataclass，字段与 S4 声明一一对应
+  - [x] 内核内部用**可变结构**（`list[list[int]]`），导出时**深拷贝**成 `tuple[tuple[int, ...], ...]`
+  - [x] `structureFingerprint`（棋盘内容，行优先 TLV + 域分隔前缀）
+  - [x] `extensionFingerprint`（`extensions` 的规范化摘要，key 排序）
+  - [x] `rngState` 两条构造路径：`snapshot()` 恒为 `None`；存档路径用 `dataclasses.replace(snapshot, rngState=...)` 填
+  - [x] 只读视图与快照**是同一个 dataclass**（ADR-056），视图构造**纯读**（不碰随机源、不改状态）
 - **涉及文件**：`src/tetris_kernel/kernel/snapshot.py` · `tests/test_snapshot.py`
 - **批次 / 写手 / 文件归属**：**批次 A** · 写手 **A2** · 独占文件 `kernel/snapshot.py` · 测试 `tests/test_snapshot.py`。消费 A1 的 `kernel/fingerprint.py`——**签名先验定**（§1.4.4），实现偏离则本阶段测试**红**（这正是要的红）。包级 `kernel/__init__.py` 的导出由**集成者**收口。
 - **验证方案**
@@ -621,8 +623,11 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   3. 测试：`rngState` 在 `snapshot()` 路径为 `None`；走存档路径后为非 `None`。
   4. 测试：`structureFingerprint` 跨进程稳定（同棋盘两次算得同值）。
   5. 测试：`extensions` 的 key 唯一性校验生效（重复 key → 报错）。
-- **完成判据**：五条验证全过。
-- **提交**：`新功能：新增快照导出与结构指纹计算`
+- **完成判据**：五条验证全过。→ **达成**（`d59b17f`；24 passed；结构指纹跨进程稳定 —— 子进程 `PYTHONHASHSEED=0/1/2` 三次全等）
+- **提交**：`新功能：新增快照导出与结构指纹计算`（`d59b17f`）
+- **实现补记**（两处口径落地情况）
+  - **导入期契约自检**：字段名 / 顺序 / 类型串与 `contracts/snapshot.py` 逐条比对，引用契约常量的五个字段（`BOARD_CELLS` / `VECTOR2` / `NEXT_QUEUE` / `SCALAR_MAP` / `INT_TUPLE`）与常量**逐字相等**——契约与实现分叉当场报 `TypeError`，不等基线刷新才暴露。
+  - **域分隔标签写进"值"里，不当固定条目名**：扩展槽的 key 是宿主定的任意字符串，key 恰好叫 `domain` 就会撞键；写进值里则**任何 key 都不会撞**。
 - **常见坑**
   - **只冻结外层** → 快照与内核共享内层列表，渲染器一改就破"只有内核能写状态"（ADR-058）。
   - **在 `frozen=True` 上惰性赋值 `rngState`** → 直接报错。
@@ -749,11 +754,11 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 
 - **目标**：四个可插拔规则 + 两张表能跑，且每个规则函数可脱离事件系统单独测试。
 - **任务**
-  - [ ] `rules/interface.py`：8 条接口的中性类型签名（**只用 `Sequence[Sequence[int]]` / `int` / `str` / `tuple`**，不 import kernel 的 dataclass）
-  - [ ] `rules/standard.py`：最小标准实现——恒等 `wrap_cell`、向下重力向量与最小间隔、整行满即消的最小消行判定、基础计分、基础形状与 4 朝向、**恒等偏移的最小踢墙表**
-  - [ ] `rules/tables.py`：形状表 / 踢墙表落成 **Python 字面量常量**（ADR-032，不落外部数据文件）
-  - [ ] 规则集**不可变、无状态**：一切随时间变化的量通过 `RuleContext` 传入
-  - [ ] 形状表 / 踢墙表**整体由规则集提供，内核不做变换**（ADR-061 / §7.3）
+  - [x] `rules/interface.py`：8 条接口的中性类型签名（**只用 `Sequence[Sequence[int]]` / `int` / `str` / `tuple`**，不 import kernel 的 dataclass）
+  - [x] `rules/standard.py`：最小标准实现——恒等 `wrap_cell`、向下重力向量与最小间隔、整行满即消的最小消行判定、基础计分、基础形状与 4 朝向、**恒等偏移的最小踢墙表**
+  - [x] `rules/tables.py`：形状表 / 踢墙表落成 **Python 字面量常量**（ADR-032，不落外部数据文件）
+  - [x] 规则集**不可变、无状态**：一切随时间变化的量通过 `RuleContext` 传入
+  - [x] 形状表 / 踢墙表**整体由规则集提供，内核不做变换**（ADR-061 / §7.3）
 - **涉及文件**：`src/tetris_kernel/rules/interface.py` · `src/tetris_kernel/rules/standard.py` · `src/tetris_kernel/rules/tables.py` · `tests/test_rules.py`
 - **批次 / 写手 / 文件归属**：**批次 A** · 写手 **A3**（与 A2 并行，**只依赖已冻结的 `contracts/`**，不依赖批次内其他写手）· 独占文件 `rules/interface.py` · `rules/standard.py` · `rules/tables.py` · 测试 `tests/test_rules.py`。包级 `rules/__init__.py` 的导出由**集成者**收口。
 - **验证方案**
@@ -763,8 +768,13 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   4. 测试：`scan_clears` 返回的 `ClearGroup` 含**行索引与格子清单**（不只是数量）。
   5. 机检：`lint-imports` 绿——`rules/` 不 import `kernel`（`rules > contracts` 方向允许）。
   6. 机检：`tools/check_kernel_purity.py` 绿——`rules/` 内无第三方 import、无墙钟读、无模块级 `random.*`。
-- **完成判据**：六条验证全过。
-- **提交**：`新功能：新增规则接口与最小标准规则实现`
+- **完成判据**：六条验证全过。→ **达成**（`27313e4`；34 passed；`lint-imports` 4 kept；纯净度绿）
+- **提交**：`新功能：新增规则接口与最小标准规则实现`（`27313e4`）
+- **实现补记**（三处刻意的边界——**别当成"没做完"**）
+  - **标准踢墙表只做恒等偏移**（表在 16 种朝向上全覆盖）：逐条验证是 **M1 的开门判据**，M0 不做。
+  - **形状表只填 `down` 轴**，其余三轴留空位、调用即报错：横向重力的形状 / 踢墙变换属 M4-A5。`gravity_vector` 与 `scan_clears` 四个轴都实现了。
+  - **T-Spin 只一档**（`none` / `tspin`）：Mini 与三档区分是 M1。`classKey` 由「是否 T-Spin + 消行数」推出，**属规则集定义域，契约层不钉**。
+- **给 S12 / S14 的两条约定**（写在 `rules/standard.py` 的模块 docstring 里）：① `classify_placement` 拿到的棋盘必须**含本次放置、尚未消行**；② `scan_clears` 产出的组 `classification` 恒为 `None`，由内核把 `classify_placement` 的结果挂到组上再交给 `score_clear`——**内核只搬运、不重新判定**。
 - **常见坑**
   - **标准踢墙表在这里一次做完** → 标准踢墙表**逐条验证是 M1 的开门判据**；M0 只保证接口定稿 + 最小实现。
   - **规则接口 import kernel 的 dataclass** → `kernel > rules` 契约第一天就红，然后大概率被加豁免，契约就废了（架构 §7.3）。
