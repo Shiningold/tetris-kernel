@@ -37,6 +37,9 @@ CONTRACT_BASELINE = BASELINE_DIR / "contracts_baseline.json"
 #: 冻结区内容哈希基线文件。
 FROZEN_BASELINE = BASELINE_DIR / "kernel_hashes.json"
 
+#: 每帧事件数基线文件（S16 采集 · 行为基线：内核每帧多发一条事件它就红）。
+FRAME_EVENTS_BASELINE = BASELINE_DIR / "frame_events.json"
+
 #: 契约 v1 冻结清单。
 CONTRACT_CHECKLIST = REPO_ROOT / "docs" / "契约v1清单.md"
 
@@ -80,6 +83,12 @@ def normalize_newlines(text: str) -> str:
 
     **只动换行符**：注释、缩进、空格一律不动——冻结区基线靠它跨平台可比，
     而"改个注释就该被抓到"正是它要的效果（plan-M0.md S6 验证方案第 3 条）。
+
+    **它必须真的承重**：调用方要**按原样读文件**（`newline=""`，不做通用
+    换行翻译），归一化由这里做。`Path.read_text()` 默认走通用换行，CRLF /
+    裸 CR 已经被它吃掉了——那样这层归一化就是死代码，哪天有人改回
+    `newline=""` 之外的读法，跨平台可比性会**静默**失效，而注释还写着
+    "这里归一化了"（批次 D 审查 D10）。
     """
     return text.replace("\r\n", "\n").replace("\r", "\n")
 

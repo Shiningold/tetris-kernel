@@ -16,6 +16,7 @@
     "rules/tables.py": "cf15da1c49935280e9c70dc254e9d30d"
   },
   "meta": {
+    "fileCount": 14,
     "generatedBy": "tools/check_frozen_baseline.py",
     "hashAlgorithm": "blake2b-16",
     "scope": "kernel/ + rules/"

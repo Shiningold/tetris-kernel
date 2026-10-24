@@ -43,6 +43,12 @@ module-root = "src"
 line-length = 100
 target-version = "py312"
 src = ["src", "tests", "tools"]
+# **Markdown 不进格式化**：ruff 会改写 `.md` 里的 Python 代码块，而仓库的
+# `docs/` · `ai_docs/` · `README.md` · `PROGRESS.md` 里有大量手写示例
+# （带中文注释与刻意排版）——跑一次 `ruff format` 就会把它们改掉，产生
+# "格式化提交里混进文档变更"的 diff，与「格式化与逻辑改动分开提交」相悖
+# （批次 D 审查 D9）。排除后 `ruff format --check .` 只数真正的 .py 文件。
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

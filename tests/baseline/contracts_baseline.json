@@ -359,6 +359,7 @@
   },
   "meta": {
     "contractVersion": "v1",
+    "entryCount": 356,
     "generatedBy": "tools/contract_baseline.py",
     "hashAlgorithm": "blake2b-16"
   }
