@@ -164,7 +164,13 @@ ACTIVE_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
 #: "声明面"开一个不打算走基线的旁门（改动它，公开表会跟着变，基线却不报）。
 SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
     {
-        "version": _field("version", "int", "状态版本号，每次变更递增；渲染可据此跳过重复绘制"),
+        "version": _field(
+            "version",
+            "int",
+            "状态版本号，每次变更递增；渲染可据此跳过重复绘制。"
+            "**`reset` 后归零**——`reset` 把整局状态归零（帧号 / 帧内序号 / 版本号"
+            "三件套一起归，见内核的 `reset` 口径），版本号跟着一起归",
+        ),
         "rule": _field("rule", "str", "规则集标识，用于区分标准玩法与变体；录像与存档均须携带"),
         "phase": _field("phase", "str", "生命周期状态：待开始 / 运行 / 暂停 / 结束"),
         "frame": _field("frame", "int", "逻辑帧号（宿主逻辑帧，暂停期照走）"),

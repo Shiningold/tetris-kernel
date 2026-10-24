@@ -29,17 +29,22 @@
 
 from __future__ import annotations
 
+import io
 import json
-from collections.abc import Callable
+import sys
+from collections import Counter
+from collections.abc import Callable, Iterator
+from typing import cast
 
 import pytest
 
-from tetris_kernel.bus.envelope import Draft
+from tetris_kernel.bus.envelope import Draft, Envelope, Metadata, metadata_value
 from tetris_kernel.host.assembly import assemble
 from tetris_kernel.host.cli import main
 from tetris_kernel.host.clock import DEFAULT_STEP_MS, VirtualClock
 from tetris_kernel.host.loop import HeadlessLoop, RunReport
 from tetris_kernel.kernel.commands import Command
+from tetris_kernel.kernel.core import Kernel
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.frame import FrameContext, StepOutcome
 from tetris_kernel.kernel.lifecycle import PHASE_RUNNING, PHASES
@@ -177,6 +182,101 @@ def test_run_frames_advances_exactly_the_requested_number_of_frames() -> None:
     assert assembly.kernel.frame == 200, "帧号与宿主帧数对不上"
 
 
+def test_the_host_forwards_every_draft_one_by_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """宿主把内核产出的草稿**逐条**转交给总线——一条都不能少（C5）。
+
+    plan-M0.md §1.4.4.1 ② 把「宿主负责**逐条**转发」写成宿主的核心职责（内核的
+    `publish` 吃**一批**草稿，总线的 `publish` 吃**一条**）。原来的守卫只查每批的
+    **第一条**——把转发改成"每批只发第一条"全套测试仍然全绿：`piece:locked` 之后
+    的 `board:changed` / `score:changed` 全被静默丢掉，订阅者与回放对齐都会缺事件
+    （需求 S-3 / AC-2 的根基）。
+
+    **两侧对拍**（只数"宿主发了多少"不够——截断之后那个数也自洽）：
+
+    - **内核侧**：内核交给宿主的草稿（命令轮次 + 帧推进五步 + 构造时那两条初始
+      事件）——从 `run_rounds` / `advance_frame` 两个出口数；
+    - **宿主侧**：宿主交给总线的草稿——从 `bus.publish` 数；
+    - **订阅者侧**：真正收到的事件。
+
+    帧末那条 `state:changed` 是**宿主自己**造的，不在内核产出的草稿里，两侧
+    对拍时剔掉它。
+    """
+    assembly = assemble(seed=SEED)
+    kernel = assembly.kernel
+
+    produced: list[str] = []
+    original_run_rounds = kernel.run_rounds
+
+    def counting_run_rounds(publish: Callable[[tuple[EventDraft, ...]], None]) -> int:
+        def counted(drafts: tuple[EventDraft, ...]) -> None:
+            produced.extend(draft.eventType for draft in drafts)
+            publish(drafts)
+
+        return original_run_rounds(counted)
+
+    monkeypatch.setattr(kernel, "run_rounds", counting_run_rounds)
+
+    original_advance_frame = kernel.advance_frame
+
+    def counting_advance_frame() -> Iterator[tuple[EventDraft, ...]]:
+        for batch in original_advance_frame():
+            produced.extend(draft.eventType for draft in batch)
+            yield batch
+
+    monkeypatch.setattr(kernel, "advance_frame", counting_advance_frame)
+
+    forwarded: list[str] = []
+    original_publish = assembly.bus.publish
+
+    def publish(draft: Draft) -> None:
+        forwarded.append(draft.eventType)
+        original_publish(draft)
+
+    monkeypatch.setattr(assembly.bus, "publish", publish)
+
+    received: list[str] = []
+    assembly.bus.subscribe("*", lambda envelope: received.append(envelope.type))
+
+    loop = HeadlessLoop(assembly)
+    produced.extend(draft.eventType for draft in kernel.initial_events())
+    loop.start()
+    for _ in range(60):
+        loop.run_frame()
+
+    kernel_side = [name for name in forwarded if name != "state:changed"]
+
+    assert produced, "内核一条草稿都没产出"
+    assert Counter(kernel_side) == Counter(produced), (
+        f"内核产出 {len(produced)} 条草稿，宿主只转发了 {len(kernel_side)} 条——转发被截断了"
+    )
+    assert len(received) == len(forwarded), "有草稿没送到订阅者"
+    assert len(received) == assembly.bus.last_seq, "总线分配的序号与订阅者收到的条数对不上"
+
+
+def test_run_frame_returns_the_number_of_events_it_published() -> None:
+    """`run_frame()` 的返回值 = **本帧发出的事件数**（C11）。
+
+    plan-M0.md §1.4.4.1 ② 把 `run_frame(self) -> int` 写进**先验定签名**，
+    `host/loop.py` 的 docstring 也明写这个语义——但原来**无人断言**它：把它改成
+    恒返回 0，全套测试仍然全绿。公开 API 的返回值可以静默变成 0 而无人察觉。
+
+    这里**逐帧**对拍：返回值 == 该帧订阅者收到的条数。
+    """
+    assembly = assemble(seed=SEED)
+    received: list[str] = []
+    assembly.bus.subscribe("*", lambda envelope: received.append(envelope.type))
+
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    for _ in range(60):
+        before = len(received)
+        count = loop.run_frame()
+        assert count == len(received) - before, (
+            f"run_frame 报告 {count} 条事件，订阅者这一帧收到 {len(received) - before} 条"
+        )
+    assert received, "一条事件都没收到——这条对拍等于没比"
+
+
 # ---------------------------------------------------------------------------
 # 验证 2：帧末才产出一条 state:changed
 # ---------------------------------------------------------------------------
@@ -256,6 +356,137 @@ def test_state_changed_payload_matches_the_contract() -> None:
     assert payloads, "这一帧没有 state:changed"
     names = tuple(name for name, _ in payloads[0])
     assert names == STATE_CHANGED_FIELDS
+
+
+def _payload_of(drafts: tuple[EventDraft, ...], event_type: str) -> dict[str, object]:
+    """取某条事件的负载。"""
+    for draft in drafts:
+        if draft.eventType == event_type:
+            return dict(draft.payload)
+    raise AssertionError(f"没有 {event_type} 事件")
+
+
+def _fill_bottom_rows(kernel: Kernel, rows: int, occupied: set[tuple[int, int]]) -> None:
+    """把底 `rows` 行填满（**除了方块自己占的那几格**——写它们会被写入条件拒绝）。"""
+    board = kernel.snapshot().board
+    cells = tuple(
+        (x, board.height - 1 - offset, 1)
+        for offset in range(rows)
+        for x in range(board.width)
+        if (x, board.height - 1 - offset) not in occupied
+    )
+    kernel.execute(Command("writeCells", args=(("cells", cells),), source="test"))
+
+
+def test_state_changed_payload_matches_the_frame_end_snapshot_by_value() -> None:
+    """`state:changed` 的 13 个字段**逐个值**与帧末快照相等。
+
+    **只守字段名与顺序是不够的**（批次 C 审查的发现 C4）：宿主把整份内核状态
+    投影成一条事件，任何一处投影写错（字段名写对、值取错字段、值取旧值）测试
+    都不会响——审查方的变异测试里，`score` 恒 0 / `holdUsed` 恒 False /
+    `next` 恒空 / `activeType` 恒 None / `version` 恒 0 这五种改法**全部存活**。
+
+    **局面必须每一项都非平凡**，否则守不住：开局几帧里 score / lines / combo /
+    b2b 全是 0，"恒 0"的变异照样对得上——那种局面下这两种写法**根本不可区分**。
+    所以这里造一个**四消**的局面（分数、行数、连击、背面连击全有值——背面连击
+    只在**难消**时入链，四消才算），再叠上暂存与落盘。
+
+    比对**逐帧**做，不只比末条：版本号每帧递增，比一条等于只守了一个时刻。
+    """
+    assembly = assemble(seed=SEED)
+    captured: list[tuple[dict[str, object], Snapshot]] = []
+
+    def capture(envelope: Envelope) -> None:
+        # 回调发生在帧末——此刻的快照就是这条事件投影的那一份。
+        captured.append((dict(envelope.payload), assembly.kernel.snapshot()))
+
+    assembly.bus.subscribe("state:changed", capture)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+
+    kernel = assembly.kernel
+    dropped = kernel.execute(Command("hardDrop", source="test"))
+    landing = _payload_of(dropped, "piece:harddrop")["cells"]
+    _fill_bottom_rows(
+        kernel,
+        4,
+        {tuple(cell) for cell in cast("tuple[tuple[int, int], ...]", landing)},
+    )
+    for _ in range(2):
+        loop.run_frame()
+    # 消行之后暂存一下：hold / holdUsed 也得有非平凡取值。
+    kernel.execute(Command("hold", source="test"))
+    loop.run_frame()
+
+    assert captured, "没有收到 state:changed"
+    for payload, snapshot in captured:
+        active = snapshot.active
+        assert payload == {
+            "version": snapshot.version,
+            "rule": snapshot.rule,
+            "phase": snapshot.phase,
+            "score": snapshot.score,
+            "lines": snapshot.lines,
+            "level": snapshot.level,
+            "combo": snapshot.combo,
+            "b2b": snapshot.b2b,
+            "piecesPlaced": snapshot.piecesPlaced,
+            "activeType": None if active is None else active.pieceType,
+            "hold": snapshot.hold,
+            "holdUsed": snapshot.holdUsed,
+            "next": snapshot.next,
+        }, "负载与帧末快照对不上"
+
+    # 局面确实非平凡——否则上面的比对守不住"恒值"变异（这是本用例的前提）。
+    final = captured[-1][1]
+    assert final.score > 0, "没消行，分数恒 0——比对等于没比"
+    assert final.lines > 0, "没消行"
+    assert final.combo > 0, "没消行"
+    assert final.b2b is True, "没做难消，背面连击恒 False——比对等于没比"
+    assert final.piecesPlaced > 0, "方块没落盘"
+    assert final.hold is not None, "没暂存"
+    assert final.holdUsed is True, "没暂存"
+
+
+def test_state_changed_metadata_has_no_upstream_command() -> None:
+    """`state:changed` 的元数据是 `source=''` + `cause=None`——**没有上游命令**。
+
+    它是对**整帧**的观察，不是某条命令的结果：ADR-062 说 `cause=None` 就是
+    "无上游命令"，总线的 `default_source` 默认空串、语义相同——**这两条是配套
+    的**，不是"漏了 source"。
+
+    同帧的 `command:accepted` / `clock:gravity` 有上游（tick 命令），所以它们
+    带 `source='host'`、`cause=(帧号, 帧内序号)`。**两条路径各有各的上游，
+    不该被拉平成同一个值**（批次 C 审查的发现 C2：这条口径此前无任何守卫）。
+
+    产出者由总线按注册表填（ADR-063）——宿主发出，所以是 `host`（需求 §8.1 的
+    「产出者」列定义就是"谁发出这个事件"）。
+    """
+    assembly = assemble(seed=SEED)
+    metadata: list[Metadata] = []
+
+    def capture(envelope: Envelope) -> None:
+        metadata.append(envelope.metadata)
+
+    assembly.bus.subscribe("state:changed", capture)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    loop.run_frame()
+
+    assert metadata, "没有收到 state:changed"
+    assert metadata_value(metadata[-1], "source") == "", "帧末事件不该有上游命令来源"
+    assert metadata_value(metadata[-1], "cause") is None, "帧末事件不该有上游命令"
+    assert metadata_value(metadata[-1], "producer") == "host", "产出者与实际发出者不符"
+
+
+def test_run_frames_rejects_a_negative_frame_count() -> None:
+    """负帧数直接报错——不静默返回一份"跑了 0 帧"的报告（批次 C 审查的发现 C9）。"""
+    assembly = assemble(seed=SEED)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+
+    with pytest.raises(ValueError, match="不能为负"):
+        loop.run_frames(-1)
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +622,87 @@ def test_cli_sim_json_outputs_the_same_fields(capsys: pytest.CaptureFixture[str]
         "piecesPlaced",
         "phase",
     }
+
+
+def test_cli_sim_output_values_match_a_real_run(capsys: pytest.CaptureFixture[str]) -> None:
+    """`sim` 输出的**值**要对得上真实运行（C12）。
+
+    原来人读形态只查「标签字符串在不在」（打印「帧数：99999」照样过），JSON 形态
+    只查字段集合 + `frames` 一个值——把 `_report_dict` 的 `score` 与 `events` 写死，
+    全套测试仍然全绿。
+
+    这里做两次对拍：
+
+    1. JSON 形态的**每个值** == 同种子同帧数**真实跑一遍**的报告；
+    2. 人读形态的**每个值** == JSON 形态的同名值（两种形态不许各说各话）。
+
+    **帧数取 1300**：不少于一块方块落盘（重力间隔 60 帧，20 行可见区），这样
+    事件数 / 已放置方块数 / 棋盘指纹**都不是平凡值**——否则"写死一个恰好等于
+    真值的数"照样能过，对拍等于没比。
+
+    > **一处诚实的弱项**：`sim` 不注入垃圾行、消行要堆满一整行，所以这个场景里
+    > **分数恒为 0**——分数那条对拍在数值上是弱的（写死 `score: 0` 抓不到）。
+    > 抓得住的是事件数 / 已放置方块数 / 棋盘指纹 / 阶段这四项。
+    """
+    frames = 1300
+
+    code = main(["sim", "--frames", str(frames), "--seed", "0", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+
+    # 真实跑一遍（同种子同帧数 = 同一局，事件流是确定的）。
+    assembly = assemble(seed=0)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    report = loop.run_frames(frames)
+
+    assert payload["frames"] == report.frames, "帧数与真实运行对不上"
+    assert payload["events"] == report.events, "事件数与真实运行对不上"
+    assert payload["fingerprint"] == report.fingerprint, "棋盘指纹与真实运行对不上"
+    assert payload["score"] == report.score, "分数与真实运行对不上"
+    assert payload["lines"] == report.lines, "行数与真实运行对不上"
+    assert payload["piecesPlaced"] == report.piecesPlaced, "已放置方块数与真实运行对不上"
+    assert payload["phase"] == report.phase, "阶段与真实运行对不上"
+
+    # 对拍的前提：这些值**不平凡**，否则"写死一个恰好等于真值的数"照样能过。
+    assert payload["events"] > 0, "事件数是平凡值——对拍等于没比"
+    assert payload["piecesPlaced"] > 0, "已放置方块数是平凡值——对拍等于没比"
+    assert payload["fingerprint"], "棋盘指纹是空串——对拍等于没比"
+
+    # 人读形态 vs JSON 形态：同一个报告，两种呈现，值必须一致。
+    code = main(["sim", "--frames", str(frames), "--seed", "0"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"帧数：{payload['frames']}" in out
+    assert f"事件数：{payload['events']}" in out
+    assert f"棋盘指纹：{payload['fingerprint']}" in out
+    assert f"分数：{payload['score']}" in out
+    assert f"行数：{payload['lines']}" in out
+    assert f"已放置方块数：{payload['piecesPlaced']}" in out
+    assert f"阶段：{payload['phase']}" in out
+
+
+def test_cli_output_stream_is_switched_to_utf8(monkeypatch: pytest.MonkeyPatch) -> None:
+    """被**管道接走**的 stdout 被显式切到 UTF-8（批次 C 审查的发现 C6）。
+
+    Windows 的 stdout 在不是 TTY 时用**本地代码页**（本机 GBK / CP936），而
+    人读输出含中文——机器消费方按 UTF-8 读会炸（`UnicodeDecodeError`）。
+
+    这里造一个 **GBK** 的流来验：跑之前是 `gbk`，跑完 `main()` 之后必须是
+    `utf-8`，且按 UTF-8 解得出来。**控制台那条路不动**（Windows 控制台 IO 走
+    Unicode API，Python 已经处理好了，硬切反而可能显示乱码）。
+    """
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="gbk", errors="replace")
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert stream.encoding == "gbk"
+
+    code = main(["sim", "--frames", "2", "--seed", "0"])
+    stream.flush()
+
+    assert code == 0
+    assert stream.encoding == "utf-8", "非 TTY 的输出流没有被切到 UTF-8"
+    assert "帧数" in buffer.getvalue().decode("utf-8")
 
 
 @pytest.mark.parametrize("command", ["play", "replay", "inspect"])

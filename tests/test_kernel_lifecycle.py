@@ -12,7 +12,7 @@
 ## G0-2 的判据怎么落到代码里
 
 需求 AC-2 的原话是「**不存在"改了状态没发事件"**」——这是门的主干。本文件把它
-拆成四条可机检的断言（外加一条"对应语义事件"的收紧）：
+拆成四条可机检的断言（外加两条收紧）：
 
 1. **判决明确**：`command:accepted` 与 `command:rejected` **恰好有一个**——
    「什么都没发生」不算数（这正是 plan-M0.md S9 验证 1 的口径）。
@@ -23,6 +23,10 @@
    游戏状态）。
 4. **无静默状态变更的反面**：被接受但游戏状态没变时，**不得**发出"宣称状态已变"的
    事件类别。
+5. **对应语义事件必须全发**（收紧）：每条命令该发的语义事件**一个都不能少**
+   （批次 C 审查的发现 C3）。
+6. **状态变了 → 版本号必须变**（收紧）：版本号是脏标记载体（架构 §6.6），漏更
+   ⇒ 帧末不发 `state:changed` ⇒ 渲染器不重绘（批次 C 审查的发现 C9）。
 
 > **为什么是四条而不是计划里的两句**：计划里写的是「状态未变 → 必有
 > `command:rejected`；状态变了 → 必有语义事件」。真实内核里还有**第三种**合法情形：
@@ -42,13 +46,32 @@
 **`hold` 在「running 态没有活动方块」时抛 `KernelInvariantError`**——那是**故意的**
 （架构 §6.8）：`hold` 没声明 `no_active_piece`，那个状态没有可发的拒绝事件，内核
 以异常终止而不是硬造一条没声明的拒绝原因。测试把它当成**契约的一部分**对待。
+
+## 批次 C 审查修订（2026-10-24）
+
+本文件是 **plan-M0.md §5.2 指定的 G0-1 / G0-2 门判据文件**——外部审查指出这里
+有几条断言"看起来在守、其实守不住"，逐条改成真能触发的写法：
+
+- **C2**：原来扫 `bus.history()` 找 `kernel:error`（环形缓冲，5 万条事件早被挤掉）
+  → 改成**过程中**订阅计数，结束时必须是 0；
+- **C3**：语义事件原来用**集合交集**判定（删掉 `softDrop` 的 `score:changed` 全绿）
+  → 改成**必须全发** + 二选一分支 + 伴随关系；
+- **C4**：`piecesPlaced >= 0` 是恒真 → 改成 `piecesPlaced > 0`（方块真的放了）；
+- **C9**：「状态变了但版本号没递增」全程无声 → 状态真变了，版本号必须变；
+- **C10**：「无未消费步骤」只看终态、还带 phase 条件 → 改成**逐帧**查；
+- **C18**：`pytest.importorskip` 兜底宿主层（没了就"绿 + 跳过"）→ 改成**直接
+  import**，宿主层没了就是红。
+
 """
 
 from __future__ import annotations
 
 import pytest
 
+from tetris_kernel.bus.envelope import Envelope
 from tetris_kernel.contracts.commands import COMMAND_TYPES
+from tetris_kernel.host.assembly import assemble
+from tetris_kernel.host.loop import HeadlessLoop
 from tetris_kernel.kernel.commands import Args, Command
 from tetris_kernel.kernel.core import Kernel, KernelInvariantError
 from tetris_kernel.kernel.drafts import EventDraft
@@ -86,18 +109,28 @@ VALID_ARGS: dict[str, Args] = {
 #: 命令三段生命周期的事件（**不算语义事件**）。
 COMMAND_LIFECYCLE_EVENTS = frozenset({"command:received", "command:accepted", "command:rejected"})
 
-#: 每条命令被接受时**应当**出现的语义事件（「对应语义事件」的判据）。
+#: 每条命令被接受时**必须全发**的语义事件（「必须全发」= 子集，不是交集）。
 #:
-#: `softDrop` 额外列了 `piece:moved`：受阻的软降走的是"移动受阻"那条事件
-#: （ADR-043：命令仍被接受，另发受阻事件）。
-EXPECTED_SEMANTIC_EVENTS: dict[str, frozenset[str]] = {
-    "start": frozenset({"game:started"}),
+#: **为什么拆成三张表**（批次 C 审查的发现 C3）：原来只有一张「期望集合」，断言
+#: 只要求**交集非空**——`softDrop` 期望集合里根本没有 `score:changed`，把那条
+#: 事件整块删掉（分数照样 +1 = 改了状态却没发事件）全套测试仍然全绿。所以：
+#:
+#: - **必须全发**：这条命令的语义后果，一个都不能少；
+#: - **二选一**：互斥分支（成功 / 受阻），命中其中之一即可；
+#: - **伴随关系**：某条事件出现时必须同时出现哪些事件——软降给分是软降的一半
+#:   语义，`piece:softdrop` 一定伴着 `score:changed`。
+#:
+#: **逐条对着内核实现核对过**（`kernel/core.py` 的 `_cmd_*`）：受阻的移动 / 旋转
+#: 发 `piece:moved` / `piece:rotated`（`blocked=True`），成功的软降发
+#: `piece:softdrop` + `score:changed`。
+REQUIRED_SEMANTIC_EVENTS: dict[str, frozenset[str]] = {
+    "start": frozenset({"game:started", "piece:spawned"}),
     "pause": frozenset({"game:paused"}),
     "resume": frozenset({"game:resumed"}),
     "reset": frozenset({"game:reset"}),
     "moveLeft": frozenset({"piece:moved"}),
     "moveRight": frozenset({"piece:moved"}),
-    "softDrop": frozenset({"piece:softdrop", "piece:moved"}),
+    "softDrop": frozenset(),
     "hardDrop": frozenset({"piece:harddrop"}),
     "rotateCW": frozenset({"piece:rotated"}),
     "rotateCCW": frozenset({"piece:rotated"}),
@@ -107,6 +140,16 @@ EXPECTED_SEMANTIC_EVENTS: dict[str, frozenset[str]] = {
     "setLevel": frozenset({"progress:level-changed"}),
     "injectGarbage": frozenset({"board:garbage-received", "board:changed"}),
     "writeCells": frozenset({"board:changed"}),
+}
+
+#: **二选一**的语义事件分支：命中其中之一即可（成功 / 受阻互斥）。
+ALTERNATIVE_SEMANTIC_EVENTS: dict[str, frozenset[str]] = {
+    "softDrop": frozenset({"piece:softdrop", "piece:moved"}),
+}
+
+#: **伴随关系**：键出现 ⇒ 值必须同时出现（多副作用命令的另一半语义）。
+SEMANTIC_EVENT_COMPANIONS: dict[str, frozenset[str]] = {
+    "piece:softdrop": frozenset({"score:changed"}),
 }
 
 #: "宣称状态已变"的事件类别——**状态没变时它们不该出现**。
@@ -242,22 +285,36 @@ def test_headless_10000_frames() -> None:
     判据（AC-5 + 架构 §6.2）：
 
     - 帧数**跑满** 10000（局结束也不提前退出，帧号照走）；
-    - 事件数不为零，最终棋盘指纹与统计齐全；
-    - **中途无异常**：总线历史里没有 `kernel:error`；
-    - **无未消费步骤**：帧推进的步骤序列被完整消费——`running` 态必然持有活动方块
-      （架构 §6.8），宿主提前 `break` 会留下"锁定已完成、消行未做"的半帧。
-    """
-    assembly_module = pytest.importorskip(
-        "tetris_kernel.host.assembly",
-        reason="G0-1 依赖宿主装配层（plan-M0.md §1.4.4.1 ①）；它没落地，这道门就验不了",
-    )
-    loop_module = pytest.importorskip(
-        "tetris_kernel.host.loop",
-        reason="G0-1 依赖宿主帧循环（plan-M0.md §1.4.4.1 ②）；它没落地，这道门就验不了",
-    )
+    - 事件数不为零，最终棋盘指纹与统计齐全，**方块真的放了**；
+    - **中途无异常**：**过程中**订阅 `kernel:error` 计数，结束时必须是 0；
+    - **无未消费步骤**：**逐帧**查「running 态必然持有活动方块」（架构 §6.8）。
 
-    assembly = assembly_module.assemble(seed=0)
-    loop = loop_module.HeadlessLoop(assembly, source="host")
+    > **宿主层直接 import，不走 `importorskip`**（批次 C 审查的发现 C18）：
+    > 门判据用 `importorskip` 兜底，宿主层没了这条用例是「跳过」而不是「失败」
+    > ——门变绿了，但它什么都没验。
+    """
+    assembly = assemble(seed=0)
+
+    # **过程中**订阅，不查历史（批次 C 审查的发现 C2）：`bus.history()` 是环形
+    # 缓冲（默认 1024 条），10000 帧的五万余条事件早被挤掉——扫历史只看得到最后
+    # 约 200 帧，那条「中途无异常」恒真。
+    errors: list[Envelope] = []
+    assembly.bus.subscribe("kernel:error", errors.append)
+
+    # 通配订阅顺带当**对照**：它证明"订阅机制本身是活的"（真的收到了事件），
+    # 也证明总线把发出去的事件都送到了订阅者手里。
+    seen_count = 0
+    changed: list[tuple[int, dict[str, object]]] = []
+
+    def watch(envelope: Envelope) -> None:
+        nonlocal seen_count
+        seen_count += 1
+        if envelope.type == "state:changed":
+            changed.append((envelope.frame, dict(envelope.payload)))
+
+    assembly.bus.subscribe("*", watch)
+
+    loop = HeadlessLoop(assembly)
     loop.start()
     report = loop.run_frames(HEADLESS_FRAMES)
 
@@ -270,17 +327,36 @@ def test_headless_10000_frames() -> None:
     assert report.events > 0, f"一条事件都没有：{stats}"
     assert report.fingerprint, f"没有最终棋盘指纹：{stats}"
     assert report.phase in PHASES, f"phase 不在取值域内：{stats}"
-    assert report.score >= 0 and report.lines >= 0 and report.piecesPlaced >= 0, stats
+    assert report.score >= 0 and report.lines >= 0, stats
+    # **方块真的放了**（批次 C 审查的发现 C4）：`>= 0` 是恒真的——出生步无条件
+    # 出生那个缺陷在时，这条断言照样过，而门判据文件自己全绿。
+    assert report.piecesPlaced > 0, f"一块方块都没放——帧模型没有真正推进：{stats}"
 
     snapshot = assembly.kernel.snapshot()
     assert snapshot.frame == HEADLESS_FRAMES, f"帧号没照走：{stats}"
     assert report.fingerprint == snapshot.board.structureFingerprint, stats
 
+    # 订阅机制本身可证伪：通配订阅收到了事件，且条数与总线分配的序号一致。
+    assert seen_count > 0, "一条事件都没分发到订阅者"
+    assert seen_count == assembly.bus.last_seq, "有事件没送到订阅者"
     # 中途无异常：订阅者抛错会转成 `kernel:error`（架构 §4.2 · FR-3.4）。
-    errors = [envelope for envelope in assembly.bus.history() if envelope.type == "kernel:error"]
     assert not errors, f"无头跑批里出现了 {len(errors)} 条 kernel:error：{stats}"
 
-    # 无未消费步骤：帧推进被完整消费（架构 §6.2 / B-9）。
+    # 无未消费步骤：**逐帧**查（架构 §6.2 / B-9 / §6.8）。
+    # 每帧末的 `state:changed` 负载带 `phase` 与 `activeType`——那是帧末快照的
+    # 投影，所以「每个状态变了的帧末」都被查到了。**没变化的帧不用查**：版本号
+    # 不变就意味着状态没变（脏标记载体反过来用——G0-2 那条「状态变了 → 版本号
+    # 必须变」正是这个推论的依据），活动方块与上一帧末相同。
+    for frame, payload in changed:
+        phase = payload["phase"]
+        if phase == "running":
+            assert payload["activeType"] is not None, (
+                f"半帧状态残留：第 {frame} 帧末 running 态没有活动方块"
+            )
+        elif phase == "game_over":
+            assert payload["activeType"] is None, f"第 {frame} 帧末 game_over 态还挂着活动方块"
+
+    # 终态再查一遍（与逐帧那条互为对照）。
     if report.phase == "running":
         assert snapshot.active is not None, "running 态没有活动方块——步骤序列没被耗尽"
     if report.phase == "game_over":
@@ -333,10 +409,30 @@ def test_event_completeness(phase: str, has_active: bool, command_type: str) -> 
     assert increments <= len(semantic), (
         f"版本号递增 {increments} 次，语义事件只有 {len(semantic)} 条：{types}"
     )
-    # 「对应语义事件」：这条命令该发的事件必须真的发了。
-    assert set(semantic) & EXPECTED_SEMANTIC_EVENTS[command_type], (
-        f"{command_type} 的语义事件对不上：{types}"
-    )
+    # 「对应语义事件」：**必须全发**（批次 C 审查的发现 C3：原来只要求交集非空，
+    # 删掉 `softDrop` 的 `score:changed` 全套测试仍然全绿）。
+    emitted = set(semantic)
+    missing = REQUIRED_SEMANTIC_EVENTS[command_type] - emitted
+    assert not missing, f"{command_type} 少了语义事件 {sorted(missing)}：{types}"
+    alternatives = ALTERNATIVE_SEMANTIC_EVENTS.get(command_type)
+    if alternatives is not None:
+        assert emitted & alternatives, (
+            f"{command_type} 的语义事件一个都没对上 {sorted(alternatives)}：{types}"
+        )
+    for event_type, companions in SEMANTIC_EVENT_COMPANIONS.items():
+        if event_type in emitted:
+            absent = companions - emitted
+            assert not absent, f"{event_type} 缺伴随事件 {sorted(absent)}：{types}"
+
+    # 状态真变了 → 版本号必须变（批次 C 审查的发现 C9：版本号是宿主的脏标记载体，
+    # 漏更 ⇒ 帧末不发 `state:changed` ⇒ 渲染器不重绘，而**全程无声**）。
+    #
+    # **取「必须变」而不是「必须递增」**：`reset` 把版本号**归零**（契约写定的
+    # 口径），写成递增就得给 `reset` 单开一条例外名单——这里两种口径都盖得住，
+    # 而"改了状态却不动版本号"照样红。
+    if _game_state(after) != _game_state(before):
+        assert after.version != before.version, f"状态变了但版本号没动：{types}"
+
     # ④ 状态没变就不许发"宣称状态已变"的事件。
     if increments == 0 and _game_state(after) == _game_state(before):
         assert not (set(semantic) & STATE_CHANGING_EVENTS), f"状态没变却发了状态变更事件：{types}"

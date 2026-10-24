@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 
@@ -37,11 +38,46 @@ DEFAULT_FRAMES = 100
 DEFAULT_SEED = 0
 
 
+def _force_utf8_output() -> None:
+    """stdout / stderr **被管道接走**时显式切 UTF-8。
+
+    Windows 的 stdout 在**不是 TTY** 时用**本地代码页**（本机 GBK / CP936），
+    而这里的输出含中文——机器消费方按 UTF-8 读会炸（`UnicodeDecodeError`）。
+    `--json` 路径不受影响（字段名与取值全是 ASCII），但人读路径是**第一个用户
+    可见面**，机器消费方也常从它取数。
+
+    **只对非 TTY 生效**：控制台自己那条路 Python 已经处理好了（Windows 控制台
+    IO 走 Unicode API），硬切 UTF-8 反而可能让控制台显示乱码。
+
+    `sys.stdout` 的类型是 `TextIO`，而 `reconfigure` 只在 `TextIOWrapper` 上——
+    **用 isinstance 收窄**，而不是 `# type: ignore` 把这一行变成"永不检查的
+    地方"。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
+        try:
+            if stream.isatty():
+                continue
+        except (OSError, ValueError):
+            pass
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
-    """命令行入口（**返回退出码**，不抛异常）。
+    """命令行入口（**返回退出码**）。
 
     `argv` 省略时取 `sys.argv[1:]`。
+
+    **参数错误走 `SystemExit`**：argparse 的 `parser.error()` 会抛
+    `SystemExit(2)`，穿出 `main()`——这是 argparse 的通行惯例，进程级行为是对的
+    （`__main__.py` 的 `sys.exit(main())` 与 `SystemExit` 都让进程以 2 退出）。
+    所以"返回退出码"说的是**本函数自己判定的那几条路径**（如帧数为负）。
     """
+    _force_utf8_output()
     parser = _build_parser()
     args = parser.parse_args(argv)
     match args.command:

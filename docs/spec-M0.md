@@ -201,13 +201,13 @@ tools/
 | queue | 1 | `queue:refilled` | 内核 |
 | score | 3 | `score:changed` · `score:combo-changed` · `score:b2b-changed` | 内核 |
 | progress | 1 | `progress:level-changed` | 内核 |
-| state | 1 | `state:changed` | 内核 |
+| state | 1 | `state:changed` | host |
 | render | 1 | `render:frame` | 渲染器 |
 | log | 1 | `log:entry` | 日志系统 |
 | metric | 1 | `metric:sampled` | 指标系统 |
 | achievement | 1 | `achievement:unlocked` | 成就系统 |
 
-- **合计 44 条**；产出者分布：内核 **35** · 总线 1 · host 2 · 输入适配器 2 · 渲染器 1 · 日志 / 指标 / 成就各 1（ADR-063）。
+- **合计 44 条**；产出者分布：内核 **34** · 总线 1 · host 3 · 输入适配器 2 · 渲染器 1 · 日志 / 指标 / 成就各 1（ADR-063）。
 - **命名空间 ≠ 产出者**：`kernel:` 前缀说的是"这件事属于内核实例"，不必然是内核干的。
 - 每条的**关键负载字段**以 `docs/需求与边界.md` §8.1 为准，逐条写进 `contracts/` 的声明。负载一律不可变（`frozen=True` + tuple）。
 - `rng:next` 负载瘦身：随机值 + 序号 + 状态指纹（短哈希），**不含完整 MT 状态**（ADR-060）；**默认开启**，不随调试事件一起关。
