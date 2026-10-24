@@ -103,6 +103,7 @@ S5 规则签名声明 ✓ ┘
 1. **一个文件在同一批次内只能属于一个写手**。并行安全性来自"文件归属互斥"，不是来自"小心避开"。
 2. **包级 `__init__.py` 不属于任何写手**——多个写手都要往里加导出，混写必冲突。导出面由**集成者**在批次落地时统一收口（参照 `contracts/__init__.py` 的 `__all__` 一致性测试）。
 3. **共享设施按批次归属**：`tests/conftest.py` 归 C2（S15 那一批），`tests/baseline/**` 归 D2（S17 那一批）；**其他批次不碰**。批次 A / B 的测试文件必须自给自足（不依赖 `conftest.py` 的 fixture）。
+4. **提交由谁切，按"有没有并发写手"定**（批次 A 实跑后补的细则）：**并发写手之间**不能各自提交（git 索引是单一共享资源），所以它们**只交工作区改动**，由**集成者**按阶段切提交；**同一写手串行做的阶段**（如批次 B 的 B1 连做 S9 → S10 → S12）**没有并发冲突**，由该写手**自己按阶段提交**（`git add -- <自己的文件>`，**不用 `git add -A`**——工作区里还有别的写手的半成品）。两种情形都是"一次提交 = 一个阶段"。
 
 **批次 A**
 
@@ -153,6 +154,7 @@ S5 规则签名声明 ✓ ┘
 | 指纹函数 | `blake2b_hex(payload: bytes) -> str`（blake2b / 16 字节 / 小写 hex）· `tlv_digest(items: tuple[tuple[str, bytes], ...]) -> str` | S7（`kernel/fingerprint.py`） | S8（结构指纹 / 扩展指纹）· S17（工具层另有一份，算法一致） |
 | 随机源状态 | 扁平化 `(version, *state)`（626 个 int）；导出时 `gauss_next` 非 `None` 即报错 | S7 | S8（`rngState` 填充）· S15（存档往返） |
 | 内核对外操作面 | `execute(command) -> tuple[draft, ...]` · `advance_frame() -> tuple[draft, ...]`（草稿**不含**全局序号） | S9 / S12（`kernel/core.py`） | S14（宿主装配）· S11（总线只吃草稿，不反向调内核） |
+| **事件草稿**（内核 → 总线） | **必有两个属性**：`eventType: str` · `payload: tuple[tuple[str, JSON_VALUE], ...]`；另带 `frame: int` 与 `metadata: tuple[tuple[str, JSON_VALUE], ...]`。正式形态落 `kernel/drafts.py`（`EventDraft`）；**总线按 Protocol 消费，不 import kernel 的具体类** | S9（`kernel/drafts.py`） | S11（总线）· S14（装配层） |
 | 总线对外操作面 | `publish(draft) -> None`（分配全局序号）· `subscribe(pattern, callback, priority)` | S11 | S14（宿主订阅）· S15（G0-5） |
 | 规则集对外操作面 | 8 条签名（`contracts/rules.py` 已冻结） | S13 | S12（帧模型调用）· S14（装配注入） |
 
