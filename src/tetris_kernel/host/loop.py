@@ -22,7 +22,15 @@
 
 元数据只带 `cause=None`（与内核 `initial_events()` 同款），`source` 交给总线
 的 `default_source`；产出者由总线按注册表填（契约里这条事件的产出者是
-`kernel`——命名空间 ≠ 产出者，ADR-063）。
+`host`——**命名空间 ≠ 产出者，ADR-063**；产出者列的语义是"谁发出这个事件"，
+需求 §8.1）。
+
+**`source` 恒为空串是自洽的**：这条事件**没有上游命令**——它是对整帧的观察，
+不是某条命令的结果，所以 `cause=None`（ADR-062：「`None` = 无上游命令」），
+`source` 也就跟着是空串（总线 `default_source` 的默认值，语义同样是"无上游
+命令"）。同帧的 `command:accepted` / `clock:gravity` 有上游（tick 命令），
+所以它们带 `source='host'`、`cause=(帧号, 帧内序号)`。**两条路径各有各的
+上游，不该被拉平成同一个值**。
 """
 
 from __future__ import annotations
@@ -128,7 +136,12 @@ class HeadlessLoop:
         """跑满 `frames` 帧，返回运行报告。
 
         **局结束也不提前退出**：帧号照走，推进许可不再授予（§1.4.4.1 ②）。
+
+        **负帧数直接报错**：负数会让 `range()` 变成空循环，悄悄返回一份"跑了 0
+        帧"的报告——那是调用方的 bug，API 层也要挡（CLI 层同样挡，两处口径一致）。
         """
+        if frames < 0:
+            raise ValueError(f"frames 不能为负，实为 {frames}")
         for _ in range(frames):
             self.run_frame()
         snapshot = self.snapshot()
