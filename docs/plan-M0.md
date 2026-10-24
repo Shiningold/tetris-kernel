@@ -160,6 +160,108 @@ S5 规则签名声明 ✓ ┘
 
 **偏离怎么办**：若 A1 实现了与上表不一致的签名，A2 的测试会**红**（这正是要的红）——修正由集成者裁决，**不许子代理单方面改接口**。接口要改，先改本文件。
 
+### 1.4.4.1 批次 C 的接口先验定（宿主 ↔ 内核 ↔ 总线）
+
+批次 C 的两个写手文件归属互斥（C1 写 `host/**` · `src/tetris_kernel/__main__.py` · `tests/test_host_loop.py`；C2 写 `tests/conftest.py` 与四个门测试文件），但 **C2 的五道门要调用 C1 的无头闭环**——所以宿主侧的公开面必须先钉死，钉法与 §1.4.4 上表同款：**签名写在这里，谁实现都得照它来**。
+
+> **批次 C 的红线**：写手**不得改** `kernel/` · `bus/` · `rules/` · `contracts/`（B-2 内核文件不得为玩法需求改动）、**不得改**包级 `__init__.py`、**不得碰** `docs/**` · `PROGRESS.md` · `ai_docs/**`（§1.4.3 归集成者）。`tests/conftest.py` 归 C2，C1 **可以**用它的公共 fixture，但**不得自己另定义同名 fixture**。
+
+#### ① 宿主装配层（`host/assembly.py` · 产出方 C1 · 消费方 C2）
+
+```python
+@dataclass(frozen=True)
+class Assembly:
+    kernel: Kernel
+    bus: EventBus[Snapshot]
+    clock: Clock
+
+
+def assemble(
+    *,
+    seed: int = 0,
+    piece_types: tuple[str, ...] = PIECE_TYPES,
+    rule_set: RuleSet = STANDARD_RULESET,
+    rule_id: str = "standard",
+    board_width: int = DEFAULT_BOARD_WIDTH,
+    board_height: int = DEFAULT_BOARD_HEIGHT,
+    hidden_rows: int = DEFAULT_HIDDEN_ROWS,
+    step_ms: int = DEFAULT_STEP_MS,
+    mode: str = "live",
+    limits: QuotaLimits = DEFAULT_LIMITS,
+    clock: Clock | None = None,
+    history_limit: int = DEFAULT_HISTORY_LIMIT,
+) -> Assembly: ...
+```
+
+- `bus` 的 `view_provider` 必须是 `kernel.snapshot`（ADR-056：视图 = 快照，**同一个 dataclass**，不写两套）；
+- `clock` 省略时用 `VirtualClock(step_ms=step_ms)`——**无头批次不读墙钟**；
+- 规则集经 `Kernel(rule_set=…)` 注入内核；**装配层是唯一知道"怎么把部件拼起来"的地方**。
+
+#### ② 宿主帧循环（`host/loop.py` · 产出方 C1 · 消费方 C2）
+
+```python
+@dataclass(frozen=True)
+class RunReport:
+    frames: int
+    events: int
+    fingerprint: str
+    score: int
+    lines: int
+    piecesPlaced: int
+    phase: str
+
+
+class HeadlessLoop:
+    def __init__(self, assembly: Assembly, *, source: str = "host") -> None: ...
+    @property
+    def assembly(self) -> Assembly: ...
+    @property
+    def frames(self) -> int: ...
+    def start(self) -> None: ...
+    def run_frame(self) -> int: ...
+    def run_frames(self, frames: int) -> RunReport: ...
+    def snapshot(self) -> Snapshot: ...
+```
+
+- **构造时**把 `kernel.initial_events()`（`kernel:ready` · `game:created`）发到总线上——**内核不 import 总线，发布是宿主的事**（这两个事件至今没有第二个调用者，宿主是第一个）。想实时收到它们的订阅者要**先订阅、后构造 `HeadlessLoop`**；晚订阅的从 `bus.history()` 里取。
+- `start()`：派发 `start` 命令并跑一轮命令循环（**不开帧**）。
+- `run_frames(n)`：跑满 n 帧，局结束也**不提前退出**（帧号照走，推进许可不再授予）。
+- `fingerprint` 取帧末快照的 `board.structureFingerprint`。
+
+**一帧的固定三段**（架构 §6.6「帧末的定义」）：
+
+1. **派发 `tick`**：`kernel.submit(Command(type="tick", source=source))`——tick 是本帧的推进开关（ADR-022）；
+2. **命令轮次循环**：`kernel.run_rounds(publish)`。`publish` 吃**一批**草稿，总线的 `publish` 吃**一条**——宿主负责逐条转发；
+3. **帧推进五步**：`kernel.advance_frame()` 的生成器**必须被耗尽**（B-9 / 架构 §6.2）。中途抛异常时用 `finally` 把剩余步骤**跑完并照发**，原始异常照常向外抛（排空阶段再抛就吞掉——正在传播的那个才是要报的）。
+
+**帧末**（第 3 段跑完之后）：`snapshot = kernel.snapshot()`；**当且仅当 `snapshot.version` 与上一帧末不同**才产出一条 `state:changed`（**每帧至多一条**——版本号每次变更递增是内部计数器行为，脏标记实际由 `version` 承担，架构 §6.6）。
+
+#### ③ `state:changed` 的归属（**内核 M0 不发，宿主在帧末发**）
+
+「帧末」的边界要等宿主的帧循环才存在（帧末 = 命令轮次循环结束**且**帧推进的步骤序列跑完），所以这条事件由**宿主**在帧末构造并 `bus.publish`——**内核一个字节都不改**。
+
+- 负载 13 个字段**照抄契约声明**（`contracts/events.py` 的 `state:changed`），值全部取自**帧末快照**：`version` · `rule` · `phase` · `score` · `lines` · `level` · `combo` · `b2b` · `piecesPlaced` · `activeType`（`snapshot.active` 为 `None` 时取 `None`）· `hold` · `holdUsed` · `next`；
+- 用 `kernel.drafts.make_draft` 构造——**负载字段名与顺序和契约逐条相等由它当场校验**（写错当场报错，不等回放校验踩空）；
+- 元数据只带 `cause=None`（与内核 `initial_events()` 同款），`source` 交给总线的 `default_source`；
+- 契约里这条事件的产出者写死是 `kernel`，而**总线按注册表填 `producer`、内核填的一律忽略**（架构 §4.2）——负载整份都是内核状态，产出者归属不变。
+
+#### ④ CLI（`host/cli.py` · 产出方 C1）
+
+- `main(argv: list[str] | None = None) -> int`——`pyproject.toml` 的 `tetris = "tetris_kernel.host.cli:main"` 已经钉死这个名字；
+- 子命令 `play` / `sim` / `replay` / `inspect`（M0 只要求 `sim` 能跑无头批量，其余占位）；
+- `sim` 的参数：`--frames`（默认 100）· `--seed`（默认 0）· `--json`；
+- `sim` 的输出**必须含**：帧数 · 事件数 · 最终棋盘指纹 · 分数 / 行数 / 已放置方块数（`--json` 时给机器可读的同款字段）。
+
+#### ⑤ `tests/conftest.py` 的公共 fixture（产出方 C2 · 消费方 C1 可用）
+
+| fixture 名 | 给什么 |
+| --- | --- |
+| `fixed_kernel` | 固定种子（`seed=0`）的 `Kernel`，**未开局**（phase = `not_started`） |
+| `fixed_bus` | 总线，`view_provider` 指向 `fixed_kernel.snapshot` |
+| `tmp_sink` | 临时目录（`pathlib.Path`），给后续落盘用（M0 只建不用） |
+
+`hypothesis` 的 `derandomize=True` 落点就在 `tests/conftest.py`（ADR-053）——**这一条是硬要求**，两个写手都不得在别处另设。
+
 ### 1.4.5 「审查—分支—搭车」工作流
 
 **目标流程**：写完一批 → 交另一个对话审查；审查期间另开分支写关联不大的下一批；审查结束交回 → 本会话逐条核实后修正。
