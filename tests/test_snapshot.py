@@ -121,6 +121,33 @@ def _child_fingerprint(hash_seed: str) -> str:
     return completed.stdout.strip()
 
 
+def _snapshot_with_extensions(
+    extensions: tuple[tuple[str, int | float | str | bool | None], ...],
+) -> Snapshot:
+    """带指定扩展槽的快照（其余字段固定，便于逐条比对）。"""
+    return build_snapshot(
+        version=1,
+        rule="standard",
+        phase="running",
+        frame=0,
+        board=build_board(2, 2, 0, [[0, 0], [0, 0]]),
+        active=None,
+        ghost_delta=(0, 0),
+        hold=None,
+        hold_used=False,
+        next_queue=(),
+        score=0,
+        lines=0,
+        level=1,
+        combo=0,
+        b2b=False,
+        pieces_placed=0,
+        grounded=False,
+        lock_timer=0,
+        extensions=extensions,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 验证 2：字段集合与契约声明完全相等
 # ---------------------------------------------------------------------------
@@ -344,6 +371,56 @@ def test_extensions_are_sorted_by_key() -> None:
     shuffled = build_extensions((("b", 2), ("a", 1)))
     assert ordered == shuffled
     assert tuple(key for key, _ in ordered) == ("a", "b")
+
+
+def test_build_snapshot_normalizes_extensions() -> None:
+    """构造入口**自己规范化**扩展槽：同一组扩展 = 同一个快照。
+
+    「合并顺序不同 → 同一个快照」这条承诺不能只靠调用方记得先过
+    `build_extensions`——快照的 `==` 不该被扩展合并的偶然顺序影响（指纹
+    本来就与顺序无关，快照却不相等，两条口径会分叉）。
+    """
+    ordered = _snapshot_with_extensions((("a", 1), ("b", 2)))
+    shuffled = _snapshot_with_extensions((("b", 2), ("a", 1)))
+
+    assert ordered == shuffled
+    assert ordered.extensions == (("a", 1), ("b", 2))
+    assert shuffled.extensions == (("a", 1), ("b", 2))
+    assert ordered.extensionFingerprint == shuffled.extensionFingerprint
+
+
+def test_build_snapshot_rejects_duplicate_extension_key() -> None:
+    """构造入口也拦重复 key（不只 `build_extensions` 拦）。"""
+    with pytest.raises(ValueError):
+        _snapshot_with_extensions((("a", 1), ("a", 2)))
+
+
+def test_build_board_rejects_size_mismatch() -> None:
+    """尺寸与内容对不上 → **当场报错**。
+
+    结构指纹只覆盖 `cells`，**不覆盖 `width` / `height`**——尺寸错了而指纹
+    照样算得出来、快照照样发得出去，回放比对**四项全绿**。校验要挡在构造
+    入口，而不是事后查指纹。
+    """
+    with pytest.raises(ValueError, match="行数"):
+        build_board(4, 3, 0, ((0, 0),))
+    with pytest.raises(ValueError, match="行数"):
+        build_board(4, 3, 0, ())
+    with pytest.raises(ValueError, match="长度"):
+        build_board(4, 2, 0, ((0, 0, 0, 0), (0, 0)))
+
+
+def test_extension_entry_alias_matches_contract_scalar_map() -> None:
+    """扩展槽的标量联合：内核别名 ↔ 契约常量**同一条**。
+
+    别名不在字段注解的校验范围内（字段比的是 `SCALAR_MAP` 本身）——不钉住
+    就会静默分叉：契约改了标量联合、别名没跟着改，两处各说各话。
+    """
+    from tetris_kernel.contracts.types import SCALAR_MAP
+
+    alias_text = snapshot_module._alias_text(snapshot_module.ExtensionEntry)
+    assert alias_text == "tuple[str, int | float | str | bool | None]"
+    assert SCALAR_MAP == "tuple[tuple[str, int | float | str | bool | None], ...]"
 
 
 # ---------------------------------------------------------------------------

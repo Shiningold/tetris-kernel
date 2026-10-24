@@ -42,7 +42,8 @@ import dataclasses
 import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from types import MappingProxyType
+from typing import Any, get_args
 
 from ..contracts.snapshot import (
     ACTIVE_FIELDS,
@@ -57,9 +58,21 @@ from .fingerprint import blake2b_hex, tlv_digest
 # 类型别名
 # ---------------------------------------------------------------------------
 
-#: 扩展槽条目：key → 标量值（架构 §5.4：只放标量，禁容器与嵌套）。
+#: 扩展槽条目的标量联合的**规范文本**——kernel 侧唯一一处写法。
 #:
-#: 值域与 `contracts.types.SCALAR_MAP` 的元素类型**同一条**。
+#: `ExtensionEntry` 与 `contracts.types.SCALAR_MAP` 的元素类型是**同一条**：
+#: 契约改了、别名没跟着改，两处静默分叉（架构 §4.4 末条）。别名不在字段
+#: 注解的校验范围内（字段注解比的是 `SCALAR_MAP` 本身），所以这里**显式
+#: 断言**把别名、文本、契约常量三者钉成一条。
+_SCALAR_VALUE_TEXT = "int | float | str | bool | None"
+
+#: 类型 → 规范文本（还原联合成员用，**不靠 `repr`**——`repr` 的形状随 Python
+#: 版本漂）。
+_TYPE_TEXT: Mapping[type, str] = MappingProxyType(
+    {int: "int", float: "float", str: "str", bool: "bool", type(None): "None"}
+)
+
+#: 扩展槽条目：key → 标量值（架构 §5.4：只放标量，禁容器与嵌套）。
 ExtensionEntry = tuple[str, int | float | str | bool | None]
 
 
@@ -98,6 +111,22 @@ def _assert_value(name: str, actual: str, expected: str) -> None:
     """一个字段的注解文本与**契约常量**逐字相等。"""
     if actual != expected:
         raise TypeError(f"{name} 的类型与契约常量不一致：{actual!r} ≠ {expected!r}")
+
+
+def _alias_text(alias: object) -> str:
+    """类型别名的**规范文本**（`tuple[str, int | float | …]`）。
+
+    **不靠 `repr`**——`repr` 的形状随 Python 版本漂；这里按 `get_args` 逐个
+    成员还原，形状稳定。
+    """
+    args = get_args(alias)
+    if len(args) != 2 or args[0] is not str:
+        raise TypeError(f"扩展槽条目类型不是 `tuple[str, 标量联合]`：{alias!r}")
+    try:
+        members = " | ".join(_TYPE_TEXT[member] for member in get_args(args[1]))
+    except KeyError as error:
+        raise TypeError(f"扩展槽标量联合里有认不出的成员：{error.args[0]!r}") from error
+    return f"tuple[str, {members}]"
 
 
 # ---------------------------------------------------------------------------
@@ -352,8 +381,22 @@ def build_board(
     hidden_rows: int,
     cells: Sequence[Sequence[int]],
 ) -> Board:
-    """从内核的可变棋盘构造只读 `Board`（深拷贝 + 结构指纹）。"""
+    """从内核的可变棋盘构造只读 `Board`（深拷贝 + 结构指纹）。
+
+    **尺寸与内容必须对得上**：行数等于 `height`、每行长度等于 `width`，
+    不一致当场报错。
+
+    **为什么必须校验**：结构指纹只覆盖 `cells`（架构 §5.4 的口径本就如此），
+    **不覆盖 `width` / `height` / `hiddenRows`**——尺寸与内容对不上时，指纹
+    照样算得出来、快照照样发得出去，存档恢复后是一块尺寸不符的棋盘，而
+    回放比对**四项全绿**。校验挡在构造入口，比事后查指纹便宜得多。
+    """
     frozen = freeze_cells(cells)
+    if len(frozen) != height:
+        raise ValueError(f"棋盘行数与 height 不符：height={height}，实际 {len(frozen)} 行")
+    for index, row in enumerate(frozen):
+        if len(row) != width:
+            raise ValueError(f"第 {index} 行的长度与 width 不符：width={width}，实际 {len(row)} 格")
     return Board(
         width=width,
         height=height,
@@ -391,8 +434,14 @@ def build_snapshot(
     `with_rng_state`）——**本函数不接受 `rngState` 参数**，从签名上就杜绝
     "快照路径顺手带了随机源状态"。
 
+    **扩展槽在构造入口就规范化**（按 key 排序 + key 唯一性校验）——
+    「同一组扩展 = 同一个快照」这条承诺不能只靠调用方记得先过
+    `build_extensions`：直接传进来的扩展若顺序不同，两个快照就不相等
+    （指纹相同，快照不同）。
+
     **纯读**：只读入参，不碰随机源、不改任何状态（架构 §5.2）。
     """
+    normalized = build_extensions(extensions)
     return Snapshot(
         version=version,
         rule=rule,
@@ -412,8 +461,8 @@ def build_snapshot(
         piecesPlaced=pieces_placed,
         grounded=grounded,
         lockTimer=lock_timer,
-        extensions=extensions,
-        extensionFingerprint=compute_extension_fingerprint(extensions),
+        extensions=normalized,
+        extensionFingerprint=compute_extension_fingerprint(normalized),
         rngState=None,
     )
 
@@ -455,6 +504,15 @@ def _assert_contract_alignment() -> None:
     _assert_value("Snapshot.next", snapshot["next"], NEXT_QUEUE)
     _assert_value("Snapshot.extensions", snapshot["extensions"], SCALAR_MAP)
     _assert_value("Snapshot.rngState", snapshot["rngState"], f"{INT_TUPLE} | None")
+
+    # 扩展槽的**标量联合**：契约常量 ↔ 内核别名，逐字相等。
+    #
+    # 别名不在字段注解的校验范围内（字段比的是 `SCALAR_MAP` 本身）——不钉住
+    # 就会静默分叉：契约改了标量联合、别名没跟着改，两处各说各话。
+    _assert_value("SCALAR_MAP", SCALAR_MAP, f"tuple[tuple[str, {_SCALAR_VALUE_TEXT}], ...]")
+    _assert_value(
+        "ExtensionEntry", _alias_text(ExtensionEntry), f"tuple[str, {_SCALAR_VALUE_TEXT}]"
+    )
 
 
 _assert_contract_alignment()
