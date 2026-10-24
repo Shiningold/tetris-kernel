@@ -39,20 +39,22 @@ command:received  →  command:accepted  /  command:rejected
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass, field, replace
 
 from ..contracts.commands import COMMANDS, CommandSpec
 from ..contracts.placement import PlacementInfo
 from ..contracts.rules import RuleContext, ScoreState
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
+from . import frame
 from .commands import Command, validate_args
 from .drafts import (
     METADATA_CAUSE,
     METADATA_MERGED_COUNT,
     METADATA_SOURCE,
     EventDraft,
+    JsonValue,
     Payload,
     make_draft,
 )
@@ -115,6 +117,13 @@ PREVIEW_SIZE = 5
 LEVEL_MIN = 1
 LEVEL_MAX = 20
 
+#: "没有类别"的类别键 / T-Spin 标记。
+#:
+#: **取值域由规则集定义**（契约的 `RULE_SET_DEFINED_FIELDS` 刻意不钉死它——
+#: 钉死会把变体挡在门外）。标准规则集用的是 `none`，所以内核带一个自己的
+#: 常量并注明出处；换规则集时改这一处。
+CLASS_KEY_NONE = "none"
+
 #: 出生横坐标（M0 的最小标准：所有方块同一个出生列）。
 SPAWN_X = 3
 
@@ -139,6 +148,9 @@ REJECT_WRITE_CONDITION_FAILED = "write_condition_failed"
 
 #: `tick` 命令名（帧推进的开关）。
 COMMAND_TICK = "tick"
+
+#: `reset` 命令名（归零帧号 / 帧内序号 / 版本号）。
+COMMAND_RESET = "reset"
 
 #: 内部事件：`(事件类型, 负载字段)`。**由内核在拿到帧内序号之前产出**，
 #: 元数据（`source` / `cause`）由内核统一补上。
@@ -281,6 +293,10 @@ class Kernel:
         )
         self._coalescer = RejectCoalescer()
         self._in_round = False
+        # 推进许可：**在 tick 被接受时授予**（ADR-022）——帧号推进是另一件事。
+        self._advance_permitted = False
+        self._advance_cause: tuple[int, int] | None = None
+        self._advance_source = "host"
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -369,8 +385,14 @@ class Kernel:
 
         订阅者在分发期间派发的命令走这里——它们**不在本轮生效**，当前分发
         结束后才按 FIFO 执行（G0-4 / ADR-039）。
+
+        **帧首以 tick 为队首重建队列**（架构 §6.1）：tick 插到队首，上帧遗留
+        的命令排在其后——tick 恒定是本帧第 1 条命令。
         """
-        self._queue.append(command)
+        if command.type == COMMAND_TICK:
+            self._queue.insert(0, command)
+        else:
+            self._queue.append(command)
 
     def run_rounds(self, publish: PublishFn) -> int:
         """轮次循环（ADR-039 · G0-4 · 架构 §6.4）。
@@ -524,7 +546,13 @@ class Kernel:
         self._seq += 1
         cause = (self._frame, seq)
         metadata = ((METADATA_SOURCE, command.source), (METADATA_CAUSE, cause))
-        return (
+        if command.type == COMMAND_TICK:
+            # **推进许可在 tick 被接受时授予**（ADR-022）：帧号已经在出队时
+            # +1，这里授予的是"本帧可以推进"的许可。
+            self._advance_permitted = True
+            self._advance_cause = cause
+            self._advance_source = command.source
+        drafts = [
             *flushed,
             self._received_draft(command),
             make_draft(
@@ -541,7 +569,15 @@ class Kernel:
                 make_draft(event_type, payload, self._frame, metadata)
                 for event_type, payload in outcome.events
             ),
-        )
+        ]
+        if command.type == COMMAND_RESET:
+            # `reset` 归零帧号、帧内序号与版本号——**在它自己的事件发完之后**：
+            # 否则这条命令会带两个帧号（`received` 旧帧、`accepted` 新帧，
+            # ADR-022 明确说那是错的）。
+            self._frame = 0
+            self._seq = 0
+            self._state.version = 0
+        return tuple(drafts)
 
     def _draft_from_raw(self, raw: RawEvent, source: str) -> EventDraft:
         """把内部事件（类型 + 负载）变成草稿（元数据补 `source` / `cause`）。"""
@@ -729,9 +765,11 @@ class Kernel:
         return _Outcome(True, events=(("game:resumed", (("phase", self._state.phase),)),))
 
     def _cmd_reset(self) -> _Outcome:
-        """`reset`：结束当前局并开新局——**帧号 / 帧内序号 / 版本号一并归零**。
+        """`reset`：结束当前局并开新局。
 
-        归零后与首次启动完全等价（FR-1.4）：随机源也回到初始种子。
+        归零后与首次启动完全等价（FR-1.4）：随机源也回到初始种子。**帧号 /
+        帧内序号 / 版本号的归零在命令自己的事件发完之后做**（见 `execute`）——
+        否则这条命令会带两个帧号。
         """
         if not self._lifecycle.apply(TRANSITION_RESET):
             return _Outcome(False, REJECT_ILLEGAL_TRANSITION)
@@ -740,8 +778,6 @@ class Kernel:
         )
         self._lifecycle = Lifecycle()
         self._rng = KernelRng(self._seed)
-        self._frame = 0
-        self._seq = 0
         return _Outcome(True, events=(("game:reset", (("seed", self._seed),)),))
 
     # ------------------------------------------------------------------
@@ -1112,6 +1148,211 @@ class Kernel:
             return False
         occupied = set(self._active_cells(active))
         return any((x, y) in occupied for x, y, _value in cells)
+
+    # ------------------------------------------------------------------
+    # 帧推进五步（架构 §6.2 · ADR-023）
+    # ------------------------------------------------------------------
+
+    def advance_frame(self) -> Iterator[tuple[EventDraft, ...]]:
+        """帧推进五步，**逐步产出草稿**。
+
+        **必须完整消费**：装配层提前 `break` 会留下"锁定已完成、消行未做"的
+        静默半帧（架构 §6.2）——宿主要用 `try/finally` 把序列耗尽。
+
+        没有推进许可（tick 没被接受）或 phase 不是 running 时**本帧不推进**。
+        """
+        if not self._advance_permitted:
+            return
+        # 推进前复查 phase：`clock:tick` 分发期间若有人派发 `pause`，它会在
+        # 下一轮被执行——首个步骤前必须复查（架构 §6.2）。
+        if self._state.phase != PHASE_RUNNING:
+            self._advance_permitted = False
+            return
+        self._advance_permitted = False
+        yield from frame.advance_frame(self)
+
+    def _advance_metadata(self) -> tuple[tuple[str, JsonValue], ...]:
+        """帧推进事件的元数据（`cause` 指向**批准推进的那条 tick**）。"""
+        return (
+            (METADATA_SOURCE, self._advance_source),
+            (METADATA_CAUSE, self._advance_cause),
+        )
+
+    def step_gravity(self, context: frame.FrameContext) -> frame.StepOutcome:
+        """第一步：重力。
+
+        重力受阻时**位移为 0**（事件照发——五步的节奏是固定的，订阅者据此
+        知道"这一帧重力没能推动方块"）。
+        """
+        active = self._state.active
+        if active is None:
+            return frame.StepOutcome((), context)
+        dx, dy = self._rules.gravity_vector(self._rule_context())
+        moved = not self._collides(active.pieceType, active.rotation, active.x + dx, active.y + dy)
+        if moved:
+            active.x += dx
+            active.y += dy
+            active.lastCause = "ground"
+        else:
+            # 落到底：方块**待锁定**（锁定是下一步的事）。
+            self._state.grounded = True
+        self._state.ghost_delta = self._compute_ghost_delta()
+        self._touch()
+        drafts = (
+            make_draft(
+                "clock:gravity",
+                (
+                    ("pieceType", active.pieceType),
+                    ("x", active.x),
+                    ("y", active.y),
+                    ("dx", dx if moved else 0),
+                    ("dy", dy if moved else 0),
+                ),
+                self._frame,
+                self._advance_metadata(),
+            ),
+        )
+        return frame.StepOutcome(drafts, context)
+
+    def step_lock(self, context: frame.FrameContext) -> frame.StepOutcome:
+        """第二步：锁定。
+
+        **分类用的棋盘含本次放置、尚未消行**（规则集的两条约定之一）——所以
+        分类在这里算，消行步只**搬运**不重新判定。
+        """
+        active = self._state.active
+        if active is None or not self._state.grounded:
+            return frame.StepOutcome((), context)
+        placement = self._placement_info(active)
+        cells = self._active_cells(active)
+        board = self._state.board
+        # 先算完再一次性写入（架构 §6.2）。
+        changes = tuple((x, y, 1) for x, y in cells)
+        for x, y in cells:
+            board[y][x] = 1
+        self._state.pieces_placed += 1
+        self._state.active = None
+        self._state.grounded = False
+        self._state.ghost_delta = (0, 0)
+        self._touch()
+        classification = self._rules.classify_placement(board, placement, self._rule_context())
+        cause = "hardDrop" if active.lastCause == "hardDrop" else "ground"
+        metadata = self._advance_metadata()
+        drafts = (
+            make_draft(
+                "piece:locked",
+                (
+                    ("pieceType", active.pieceType),
+                    ("rotation", active.rotation),
+                    ("x", active.x),
+                    ("y", active.y),
+                    ("cells", cells),
+                    ("tSpin", classification.tSpin),
+                    ("cause", cause),
+                ),
+                self._frame,
+                metadata,
+            ),
+            make_draft(
+                "board:changed",
+                (("cellChanges", changes), ("cause", "lock")),
+                self._frame,
+                metadata,
+            ),
+        )
+        return frame.StepOutcome(
+            drafts,
+            replace(context, placement=placement, classification=classification),
+        )
+
+    def step_clear(self, context: frame.FrameContext) -> frame.StepOutcome:
+        """第三步：消行。
+
+        **内核只搬运、不重新判定**（架构 §7.3.1）：`scan_clears` 产出的组
+        `classification` 恒为 `None`，这里把 `classify_placement` 的结果挂到
+        每个组上，再交给 `score_clear`——**落笔由内核做**。
+        """
+        groups = self._rules.scan_clears(self._state.board, self._rule_context())
+        if not groups:
+            return frame.StepOutcome((), context)
+        classification = context.classification
+        attached = tuple(replace(group, classification=classification) for group in groups)
+        delta = self._rules.score_clear(attached, self._rule_context(), self._score_state())
+        before = self._state.score
+        self._state.score = delta.state.score
+        self._state.lines = delta.state.lines
+        self._state.combo = delta.state.combo
+        self._state.b2b = delta.state.b2b
+        self._state.level = delta.state.level
+        self._touch()
+        rows = tuple(group.index for group in groups)
+        metadata = self._advance_metadata()
+        drafts = (
+            make_draft(
+                "board:lines-cleared",
+                (
+                    ("rowIndexes", rows),
+                    ("count", len(groups)),
+                    ("tSpin", classification.tSpin if classification else CLASS_KEY_NONE),
+                    (
+                        "classKey",
+                        classification.classKey if classification else CLASS_KEY_NONE,
+                    ),
+                ),
+                self._frame,
+                metadata,
+            ),
+            make_draft(
+                "score:changed",
+                (
+                    ("delta", delta.scoreDelta),
+                    ("before", before),
+                    ("after", self._state.score),
+                    ("cause", "clear"),
+                ),
+                self._frame,
+                metadata,
+            ),
+        )
+        return frame.StepOutcome(drafts, replace(context, cleared_rows=rows))
+
+    def step_collapse(self, context: frame.FrameContext) -> frame.StepOutcome:
+        """第四步：塌落（被消的行消失，上面的行落下来）。"""
+        rows = context.cleared_rows
+        if not rows:
+            return frame.StepOutcome((), context)
+        board = self._state.board
+        before = [row[:] for row in board]
+        cleared = set(rows)
+        # 先算完再一次性写入（架构 §6.2）。
+        kept = [board[row][:] for row in range(self._height) if row not in cleared]
+        while len(kept) < self._height:
+            kept.insert(0, [0] * self._width)
+        board[:] = kept
+        changes: list[tuple[int, int, int]] = []
+        for row in range(self._height):
+            for x in range(self._width):
+                if board[row][x] != before[row][x]:
+                    changes.append((x, row, board[row][x]))
+        self._touch()
+        drafts = (
+            make_draft(
+                "board:collapsed",
+                (("cellChanges", tuple(changes)),),
+                self._frame,
+                self._advance_metadata(),
+            ),
+        )
+        return frame.StepOutcome(drafts, context)
+
+    def step_spawn(self, context: frame.FrameContext) -> frame.StepOutcome:
+        """第五步：出生。"""
+        metadata = self._advance_metadata()
+        drafts = tuple(
+            make_draft(event_type, payload, self._frame, metadata)
+            for event_type, payload in self._spawn_piece()
+        )
+        return frame.StepOutcome(drafts, context)
 
     # ------------------------------------------------------------------
     # 内部：方块与棋盘
