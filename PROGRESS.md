@@ -1,13 +1,13 @@
 # 进度 · Tetris Kernel
 
-> 最后更新：2026-10-24 10:23
+> 最后更新：2026-10-24 12:20
 > **本文件是当前状态快照，不是流水账**：每次工作结束直接改写下面三段，历史记录交给 git，**不往这里堆历史条目**。
 > 分批契约、门判据编号、任务编号索引在 `docs/需求与边界.md` §11–§12；**契约 v1 冻结清单在 `docs/契约v1清单.md`**。
 > **M0 的规格与分阶段计划在 `docs/spec-M0.md` 与 `docs/plan-M0.md`**——阶段编号 S0–S18、验证方案、提交序列都在那里，本文件只记状态。
 
 ## 当前在攻
 
-**M0 阶段 B（契约面）已收官。阶段 C（行为面）已按批次编排排好：下一步是批次 A（S7 · S8 · S13），三个写手并行开工。**
+**M0 阶段 B（契约面）已收官。阶段 C（行为面）的**批次 A（S7 · S8 · S13）已落笔并完成审查修订**（`feature/batch-a`）；批次 B（S9 · S10 · S12 · S11）已落笔（`feature/batch-b`），正在被外部审查。**
 
 - **S0–S6 全部完成**：S0 规格与计划入档（`2185114`）· S1 分层空壳与打包可用（`facd1d4`）· S2 事件契约声明（44 条）· S3 命令契约声明（16 条 + 12 值拒绝原因）· S4 快照契约声明（21 + 5）+ `PlacementInfo` · S5 规则签名声明（8 条）+ `RuleContext` 与四个中性交换结构 · S6 契约校验与基线脚本。契约清单第 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 / 11 / 12 / 13 / 15 项已勾（**14 随 S11 · 16 在生成基线那次提交里勾**）。
 - **`contracts/` 现有七个模块**：`events.py`（44 条事件声明）· `types.py`（取值域 + **10 形**类型文法表）· `commands.py`（16 条命令 + 拒绝原因）· `snapshot.py`（21 顶层 + `board` 5 + `Active` 4 + 坐标常量 + 内核状态清单机器可读版）· `placement.py`（`PlacementInfo`，frozen 6 字段）· `rules.py`（8 条签名 + `RuleContext` + 四个交换结构 + 取值域绑定）· `structures.py`（**命名结构注册表**，形态 9 的唯一权威清单）。
@@ -15,24 +15,31 @@
 - **审查已闭环**：S2 / S3 / S4 / S5 / S6 各过一次外部审查并修订（`e69a561` / `4866bbc` / `0a2117e` / `8f98ed3` / `e69a561`），随后两轮 S2–S6 汇总复核（`tests/ocr/S2-S6-review.md`，`5f0a083` + `c2af156`）。**第 2 轮复审结论「0 项新发现」经作者逐项独立复跑确认**（行号 / 计数 / 355 条基线与四处哈希 / 8 组回归探针 / 需求 ↔ 机器声明逐条比对 / 五道门退出码），并订正了报告自身两处笔误。**五道门当前全绿**：157 passed · ruff check / format 全过 · pyright 0 错 · lint-imports 4 kept。
 - **2026-10-24 已完成 S7 的开工前准备**：核出并定下三处原本没写死的接缝（`rngState` 编码 / 时间源落层 / 指纹工具落点），已写进下方待办与 `docs/plan-M0.md` 的 S7 段。**S7 代码一行未写。**
 - **2026-10-24 已把 S7–S18 重排成 5 个批次**（`docs/plan-M0.md` §1.4）：**A** 行为地基（S7 · S8 · S13）· **B** 命令与帧（S9 · S10 · S12 · S11）· **C** 闭环与验收（S14 · S15）· **D** 采集与冻结（S16 · S17）· **E** 收尾（S18）。**批次是排期单位，不是依赖单位**——阶段之间的依赖链（S7 → S8 → S9 → S10 → S12 → S14 → S15 → S16 → S17 → S18）一个字没动，变的是"几个写手同时开工"。并行靠三条东西撑：**文件归属互斥**（§1.4.2）· **跨写手的东西先验定签名**（§1.4.4）· **分支链 + 只加不改**（§1.4.5）。
+- **批次 A 已落笔并完成审查修订**（`feature/batch-a`）：`a2af287`（S7 随机源与时间源）· `d59b17f`（S8 快照与只读视图）· `27313e4`（S13 规则最小标准实现）· `a9355c7`（集成者收口包级导出面）· **本笔（按批次 A 审查报告的修订）**。三个写手**并行**产出、文件归属互斥、互不踩文件。**外部审查已回**（报告 `tests/ocr/batch-a-review.md`，15 项发现：3 中 · 12 低 · 0 高），**15 项逐条独立复跑全部复现**，按 §1.4.5 规则 7 逐条裁定后修正（**成立 14 项全部修掉，1 项修法不采纳并写明理由**）；审查报告**随本笔提交入库留证**。**五道门全绿**：259 passed · ruff check / format 全过 · pyright 0 错 · lint-imports 4 kept · 纯净度绿 · 契约基线仍 **355** 条（`contracts/` 一字未动）。
+- **批次 A 审查的 15 项裁定（逐条独立复跑，不照单全收）**：**A1** `b2b` 与 `prev.b2b` 相与 → 链永远起不来（FR-4.6 静默失效）→ **修**（本次难消即入链；B2B 倍率条件 = 本次难消 ∧ 上一手也难消）· **A2** 空组早返回 → 连击永不中断 → **修**（落空清零；口径写进 plan S13 段）· **A3** `build_snapshot` 不规范化扩展槽 → 快照 `==` 受顺序影响 → **修** · **A4** 形状表内层是普通 dict → 运行期可改写 → **修**（内层改 `MappingProxyType`）· **A5** `build_board` 不校验尺寸 → **修** · **A6** 事件名复制字面量 → **修**（导入期自检与注册表对齐；**不改契约**）· **A7** `ExtensionEntry` 复制契约标量联合 → **修**（导入期断言钉住；**报告说"会新增基线条目"有误**——基线只哈希声明表，类型串常量不进基线）· **A8** 恢复后 `seed` 仍报构造种子 → **修**（置 `None`）· **A9** 越界状态值抛 `OverflowError` → **修**（统一 `ValueError`）· **A10** AST 守卫只认属性调用 → **修**（补 `from random import X` 形态 + 守卫能触发的用例）· **A11** 纯净度用例只扫两文件、理由过期 → **修**（扩到整个冻结区）· **A12** 三处文档把 S7 记成 25 passed（实为 27）→ **修** · **A13** 横向重力下 `lines` 口径未对齐 → **修**（写进 plan S13 段 + 补用例）· **A14** 行 / 列两条路径对不齐棋盘口径不一致 → **修**（统一用 `_board_width`）· **A15** 恒真断言 → **修**。
+- **批次 B 已落笔**（`feature/batch-b`，分支点 = 批次 A 的落笔提交）：`09cef8e`（文档：先验定草稿接口与提交切分）· `3ffcf62`（S9 命令通道）· `ccb3f98`（S10 合并防抖与配额）· `87c57a0`（S12 帧模型）· `437e253`（S11 总线，与 S9→S10→S12 全程并行）· `0c60138`（集成者收口导出面）· `aab75cf`（文档）。**441 passed · 44 skipped** · ruff check / format 全过 · pyright 0 错 · lint-imports 4 kept · 纯净度绿 · 事件登记绿 · 基线 355 条。**正在被外部审查**（报告落 `tests/ocr/batch-b-review.md`）。
 
 ## 待办
 
-**接下来一步：批次 A（S7 · S8 · S13）——3 个写手并行开工，分支 `feature/batch-a`**
+**批次 A（S7 · S8 · S13）已落笔并完成审查修订；批次 B（S9 · S10 · S12 · S11）已落笔，正在被外部审查**
 
-- [ ] **写手 A1 · S7 随机源与时间源**（独占 `kernel/rng.py` · `kernel/fingerprint.py` · `host/clock.py` · `tests/test_rng.py`）——**先交 `kernel/fingerprint.py`**，A2 等它才能自测
-  - [ ] `src/tetris_kernel/kernel/rng.py`：可播种随机源，**只用 `random()` 与 `getrandbits()` 两个原语**（ADR-010）。`random.Random(seed)` **只许出现在这一个文件**——纯净度脚本按路径后缀 `kernel/rng.py` 匹配豁免（`tools/check_kernel_purity.py:376`）
-  - [ ] 7-bag 洗牌**自己实现 Fisher-Yates**：用 `getrandbits()` + 拒绝采样取下标，**不用** `shuffle` / `sample` / `choice` / `randrange`（前三个的实现细节在 CPython 版本间变过，升级 Python 会让全部旧录像集体作废）
-  - [ ] `getstate()` / `setstate()` 往返可复现（ADR-011）。**状态进出用扁平化的 `tuple[int, ...]`**（`(version, *state)` = 626 个 int）——与快照契约声明的 `rngState: tuple[int, ...] | None` 天然吻合，**契约一个字不用改**
-  - [ ] 导出状态时若 `gauss_next` 不是 `None` 就**报错**（实测：只用两个原语时它恒为 `None`；不报错就等于静默丢状态）
-  - [ ] 状态指纹用 `kernel/fingerprint.py` 的 **blake2b + TLV**（16 字节 hex，与 `tools/_toolkit.py` 同算法同长度），**不用内置 `hash()`**（受 `PYTHONHASHSEED` 影响，跨进程必变）
-  - [ ] `rng:next` 负载 = 随机值 + 序号 + 状态指纹，**不含完整 MT 状态**（ADR-060，625 整数 ≈ 7.17 KiB，一局几百方块就是几 MB 常驻负载）；**载荷 dataclass 留在 kernel 内部**——`EventDraft` 的正式形态归 S9 / S11，S7 不提前实现
-  - [ ] **时间源放 `src/tetris_kernel/host/clock.py`**：真实 / 虚拟两种实现同一接口，**不拆到两层**（拆了就是两处维护同一对签名）。**`kernel/` 与 `rules/` 禁读墙钟**（架构 §5.3），所以真实时钟**不能**放进内核；内核侧只认逻辑帧
-  - [ ] 机检：`tools/check_kernel_purity.py` 绿——`kernel/` 内无模块级 `random.*`、无未注入的 `random.Random()`
-- [ ] **写手 A2 · S8 快照与只读视图**（独占 `kernel/snapshot.py` · `tests/test_snapshot.py`）：消费 A1 的 `kernel/fingerprint.py`，**签名已先验定**（`docs/plan-M0.md` §1.4.4），实现偏离则本阶段测试红——细节见 plan-M0.md 的 S8 段
-- [ ] **写手 A3 · S13 规则最小标准实现**（独占 `rules/interface.py` · `rules/standard.py` · `rules/tables.py` · `tests/test_rules.py`）：**只依赖已冻结的 `contracts/`**，可与 A1 同时开工——细节见 plan-M0.md 的 S13 段
-- [ ] **批次 A 的集成者收口**（合并前做）：包级 `kernel/__init__.py` / `rules/__init__.py` 的导出面 · `PROGRESS.md` · 当日 `ai_docs/` · plan-M0.md §3 状态表；并把批次内**三笔阶段提交**切出来——**写手只交工作区改动，提交由集成者按阶段串行切**（并行 `git add` 会撞索引）
-- [ ] 后续批次（详见 `docs/plan-M0.md` §1.4）：**B**（S9 · S10 · S12 · S11）· **C**（S14 · S15）· **D**（S16 · S17）· **E**（S18）
+- [x] **写手 A1 · S7 随机源与时间源** → `a2af287`（`kernel/rng.py` · `kernel/fingerprint.py` · `host/clock.py` · `tests/test_rng.py`，27 passed）
+  - [x] `src/tetris_kernel/kernel/rng.py`：可播种随机源，**只用 `random()` 与 `getrandbits()` 两个原语**（ADR-010）。`random.Random(seed)` **只许出现在这一个文件**——纯净度脚本按路径后缀 `kernel/rng.py` 匹配豁免（`tools/check_kernel_purity.py:376`）
+  - [x] 7-bag 洗牌**自己实现 Fisher-Yates**：用 `getrandbits()` + 拒绝采样取下标，**不用** `shuffle` / `sample` / `choice` / `randrange`（前三个的实现细节在 CPython 版本间变过，升级 Python 会让全部旧录像集体作废）
+  - [x] `getstate()` / `setstate()` 往返可复现（ADR-011）。**状态进出用扁平化的 `tuple[int, ...]`**（`(version, *state)` = 626 个 int）——与快照契约声明的 `rngState: tuple[int, ...] | None` 天然吻合，**契约一个字不用改**
+  - [x] 导出状态时若 `gauss_next` 不是 `None` 就**报错**（实测：只用两个原语时它恒为 `None`；不报错就等于静默丢状态）
+  - [x] 状态指纹用 `kernel/fingerprint.py` 的 **blake2b + TLV**（16 字节 hex，与 `tools/_toolkit.py` 同算法同长度），**不用内置 `hash()`**（受 `PYTHONHASHSEED` 影响，跨进程必变）
+  - [x] `rng:next` 负载 = 随机值 + 序号 + 状态指纹，**不含完整 MT 状态**（ADR-060，625 整数 ≈ 7.17 KiB，一局几百方块就是几 MB 常驻负载）；**载荷 dataclass 留在 kernel 内部**——`EventDraft` 的正式形态归 S9 / S11，S7 不提前实现
+  - [x] **时间源放 `src/tetris_kernel/host/clock.py`**：真实 / 虚拟两种实现同一接口，**不拆到两层**（拆了就是两处维护同一对签名）。**`kernel/` 与 `rules/` 禁读墙钟**（架构 §5.3），所以真实时钟**不能**放进内核；内核侧只认逻辑帧
+  - [x] 机检：`tools/check_kernel_purity.py` 绿——`kernel/` 内无模块级 `random.*`、无未注入的 `random.Random()`
+- [x] **写手 A2 · S8 快照与只读视图** → `d59b17f`（`kernel/snapshot.py` · `tests/test_snapshot.py`，24 passed）
+- [x] **写手 A3 · S13 规则最小标准实现** → `27313e4`（`rules/interface.py` · `rules/standard.py` · `rules/tables.py` · `tests/test_rules.py`，34 passed）
+- [x] **批次 A 的集成者收口** → `a9355c7`（包级 `kernel/__init__.py` / `rules/__init__.py` / `host/__init__.py` 的导出面 + `tests/test_package_exports.py` 的导出一致性守卫；**三笔阶段提交由集成者按阶段串行切**——写手只交工作区改动，并行 `git add` 会撞索引）
+- [x] **把批次 A 交给另一个对话审查** → 报告落 `tests/ocr/batch-a-review.md`（**随修正提交入库留证**）
+- [x] **审查期间在 `feature/batch-b` 上写批次 B**（S9 · S10 · S12 · S11）：B1 串行三阶段（共用 `kernel/core.py`）· B2 写 `bus/`（与 B1 全程并行）。**只加不改**——不得动批次 A 已提交的任何文件
+- [x] **审查报告逐条核实并在 `feature/batch-a` 上修正**：15 项**逐条独立复跑全部复现**（自写探针，不照抄报告结论）；修正提交**单独一笔**（`修复：按 batch-a 审查报告修订…`），不与新功能混提；报告随该笔入库留证
+- [ ] **把批次 A 的修正 merge 进 `feature/batch-b`**（§1.4.5 规则 3），并在批次 B 分支上把内核侧对齐到新口径（**落空也调 `score_clear`**——内核当前在无消行组时提前返回，连击断不了）
+- [ ] 后续批次（详见 `docs/plan-M0.md` §1.4）：**C**（S14 · S15）· **D**（S16 · S17）· **E**（S18）
 
 **S6 留下的两条口径（S7 / S17 要照此办）**
 
@@ -62,6 +69,9 @@
 - **S2–S6 汇总复核的三条教训（`5f0a083` · 报告 `tests/ocr/S2-S6-review.md`）**：**文档残留的成因是"改了 A，没回头看还有谁引用 A"**——N1（`commands.py` 还写着"文法只有 8 形"，实际已 10 形）· N2（`snapshot.py` 指向全仓不存在的 `rngSource`）· N3（测试里 docstring 说叶子由 `NAMED_STRUCTS` 展开，实现却用快照自己的成员表）**三处都是上一轮修订的漏改**。→ **修订完要回头搜一遍引用**，不是只改出问题的那一处。**「少守一处」比「多守一处」更难发现**——N6：删掉 `EXPECTED_PAYLOAD` 里一个事件，该事件的字段级用例就静默不再生成（事件本身仍被另一张表守住，所以**不是红灯，只是少了一层守护**）。→ **转录表之间也要有集合断言**。**同一形状只允许一处权威定义**——N5 的 `tuple[str, ...]` 复制了 4 份（架构 §4.4 末条），已补 `types.NEXT_QUEUE`。
 - **审查报告本身不是完全可靠的清单**：S2 报告自陈「11 项」实为 12、S3-M1 的「11 处」实为 9 处、S2–S6 汇总报告 §1 交叉引用指错节、§4 脚注的 46 文件拆分算成 47。**结论对不代表过程省**——行号 / 计数 / 哈希都要自己复跑才算数（2026-10-24 已按此逐项复现，见 `ai_docs/261003.md` 2026-10-24 条目）。
 - **并行批次的三条纪律（2026-10-24 定的，`docs/plan-M0.md` §1.4）**：**文件归属互斥**——同一批次内一个文件只能属于一个写手；重叠就把两个阶段拆到不同批次（或交给同一写手串行做），不靠"小心避开"。**写手只交工作区改动、不自己提交**——git 索引是**单一共享资源**，两个写手并行 `git add` 会互相覆盖；提交由集成者按"一次提交 = 一个阶段"串行切，批次合并用 `--no-ff`。**跨写手的东西先验定签名**（§1.4.4）——并行写手之间**没有协商通道**，一方单方面改签名，另一方必然踩空；接口要改先改 plan，修正由集成者裁决。**审查期间写下一批时"只加不改"**——不得动正在被审查的批次已提交的文件（要改的记进 `ai_docs`，等审查回合）；批次 N 的修正落地后 **merge 进批次 N+1 的分支**再合并 N+1。分支命名 `feature/batch-<字母>`，**链式分支点**（下一批从上一批的落笔提交起，不回 master）。
+- **批次 A 集成时抓到的一处真缺陷**（2026-10-24）：写手初版的 `import_state` 用**当前实例**的 version 复原扁平状态——等于把 ADR-011 的版本检测绕过去（状态容器格式随 Python 版本变过，混用会**静默重放出不同结果**）。已改为用**导入状态自带的** version 复原，版本对不上当场报错，并补两条用例守住。**教训：接口先验定只能覆盖"签名"，覆盖不了实现细节——并行写手之间没有协商通道，集成者必须自己把每个写手的文件读一遍。**
+- **S8 / S13 留给下游的三条约定**（S12 / S14 照此办）：① `classify_placement` 拿到的棋盘必须**含本次放置、尚未消行**（它靠棋盘数出"这次消几行"）；② `scan_clears` 产出的组 `classification` 恒为 `None`，由内核把 `classify_placement` 的结果挂到组上再交给 `score_clear`——**内核只搬运、不重新判定**；③ **每次放置锁定后都要调 `score_clear`**（**含空组**）——空组即落空，**连击与背面连击链在规则集里断**（内核不自己改 `combo` / `b2b`）。第 ③ 条是 2026-10-24 审查回合定的：原先 M0 内**没有任何地方写过"连击何时中断"**，落空不清连击会让奖励按**已经断了的**连击数发。
+- **S13 的三处刻意边界**（**别当成"没做完"**）：标准踢墙表只做恒等偏移（逐条验证是 **M1 的开门判据**）· 形状表只填 `down` 轴，其余三轴留空位、调用即报错（横向重力的形状 / 踢墙变换属 M4-A5）· T-Spin 只一档（Mini 与三档区分是 M1）。
 - **类型不精确只靠编辑器兜着，等于没有门**（2026-10-23）：`tools/` 里的 4 处类型不精确（`sys.stdout` 的 `reconfigure` 不在 `TextIO` 上 · 语法树节点字段写成 `object`）在 IDE 的 basedpyright 里看得见，**项目自己的门却看不见**——`pyproject.toml` 的 `include` 只写了 `src`。已把 `tools/` 纳入（命令改为不带路径的 `pyright`，**受检目录只有 include 一处权威**）。**这与 S1 那次 pyright `overrides` 静默失效是同一族**：门说自己守着，实际上没守。**处理方式一律是"把类型写对"，不是加 `# type: ignore`**——ignore 注释把那一行变成永不检查的地方，正是本仓最反感的失效模式。
 - **~~`pyright` 的 strict 从未生效~~ → 已解（2026-10-23，`cb24f7d`）**：pyright 1.1.414 的配置项里**已无 `overrides` 键**，写 `[[tool.pyright.overrides]]` 只会得到一行 `Config contains unrecognized setting "overrides"` 警告，**strict 静默失效而退出码仍是 0**——架构 §1.1 说的"内核与总线走 strict"其实一直没兑现。改用 `strict = ["src/tetris_kernel/kernel", "src/tetris_kernel/bus"]`（已实测：报错如约出现、配置无警告）。**教训：会"静默失效"的质量门比没有质量门更坏。**
 - **类型文法表是 S6 解析器的规格书，规则与实例必须同时回验**：S3 审查发现规则 1（"`None` 只在可空形态里且永远末位"）与自家三个取值域冲突，S6 照规则写解析器会把合规声明判成"不合规"。已改规则（形态 2 放宽、`None` 可作普通成员）。**S4 补了形态 9（命名结构引用）**，**S5 补了形态 10（只读序列 `Sequence[T]`）**——架构签名表原文写的就是 `Sequence[Sequence[int]]`，内核内部棋盘是可变 `list[list[int]]`，写成 tuple 会逼内核在逐方块调用的热路径上反复深拷贝。形态 9 的结构名 ↔ 成员表登记在 `contracts/structures.py` 的 `NAMED_STRUCTS`（**类型文法层面的清单**，快照 / 放置 / 规则三处共用；成员表**从声明推导**，不另抄一份）。全库类型串的文法回验已进测试。**S6 的解析器以文法表为准重新实现，别照抄测试里那份。**
