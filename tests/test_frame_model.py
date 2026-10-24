@@ -164,6 +164,52 @@ def test_a_frame_produces_five_steps_even_without_a_clear() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 计分口径：落空断连击（plan-M0.md S13 段的第三条约定）
+# ---------------------------------------------------------------------------
+
+
+def test_combo_breaks_when_a_placement_clears_nothing() -> None:
+    """落空（没消行）把**连击**断掉。
+
+    **内核每次锁定后都调 `score_clear`，含空组**——空组即落空，连击由规则集
+    断（**内核不自己改 `combo`**，口径见 `docs/plan-M0.md` S13 段）。
+    """
+    kernel = _kernel_ready_to_clear()
+
+    # 第一帧：锁定 → 消 1 行 → 连击变 1。
+    kernel.execute(Command("tick", source="test"))
+    first = _advance(kernel)
+    assert kernel.snapshot().combo == 1
+    first_events = [event_type for step in first for event_type in _types(tuple(step))]
+    assert "score:combo-changed" in first_events, first_events
+
+    # 下一块硬降到底但不消行 → 落空 → 连击断回 0。
+    kernel.execute(Command("hardDrop", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    second = _advance(kernel)
+    assert kernel.snapshot().combo == 0
+    second_events = [event_type for step in second for event_type in _types(tuple(step))]
+    assert "score:combo-changed" in second_events, second_events
+    assert "board:lines-cleared" not in second_events, second_events
+
+
+def test_a_clearless_frame_does_not_change_the_state() -> None:
+    """本来就没有连击 / 链时，落空**什么都不改**——不发事件、不落笔。
+
+    架构 §6.2：先算完再一次性写入；**状态没变就不该有"状态变更"事件**。
+    """
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+
+    steps = _advance(kernel)
+
+    events = [event_type for step in steps for event_type in _types(tuple(step))]
+    assert "score:combo-changed" not in events, events
+    assert "score:b2b-changed" not in events, events
+    assert "board:lines-cleared" not in events, events
+
+
+# ---------------------------------------------------------------------------
 # 验证 3：piece:locked 时棋盘尚未消行
 # ---------------------------------------------------------------------------
 

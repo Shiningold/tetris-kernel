@@ -1271,50 +1271,95 @@ class Kernel:
         **内核只搬运、不重新判定**（架构 §7.3.1）：`scan_clears` 产出的组
         `classification` 恒为 `None`，这里把 `classify_placement` 的结果挂到
         每个组上，再交给 `score_clear`——**落笔由内核做**。
+
+        **每次锁定后都调 `score_clear`，含空组**（`docs/plan-M0.md` S13 段的
+        第三条约定）：空组 = **落空** = 连击与背面连击链都断。**内核不自己改
+        `combo` / `b2b`**——计分口径归规则集。
+
+        **状态没变就不落笔**（架构 §6.2：先算完再一次性写入）：落空且本来
+        就没有连击 / 链时什么都没变，也就不发事件。
         """
         groups = self._rules.scan_clears(self._state.board, self._rule_context())
-        if not groups:
-            return frame.StepOutcome((), context)
         classification = context.classification
         attached = tuple(replace(group, classification=classification) for group in groups)
         delta = self._rules.score_clear(attached, self._rule_context(), self._score_state())
-        before = self._state.score
-        self._state.score = delta.state.score
-        self._state.lines = delta.state.lines
-        self._state.combo = delta.state.combo
-        self._state.b2b = delta.state.b2b
+
+        before_score = self._state.score
+        before_lines = self._state.lines
+        before_combo = self._state.combo
+        before_b2b = self._state.b2b
+
+        new_score = delta.state.score
+        new_lines = delta.state.lines
+        new_combo = delta.state.combo
+        new_b2b = delta.state.b2b
+        if (new_score, new_lines, new_combo, new_b2b) == (
+            before_score,
+            before_lines,
+            before_combo,
+            before_b2b,
+        ):
+            # 落空且本来就没有连击 / 链：状态没变，不落笔、不发事件。
+            return frame.StepOutcome((), context)
+
+        self._state.score = new_score
+        self._state.lines = new_lines
+        self._state.combo = new_combo
+        self._state.b2b = new_b2b
         self._state.level = delta.state.level
         self._touch()
         rows = tuple(group.index for group in groups)
         metadata = self._advance_metadata()
-        drafts = (
-            make_draft(
-                "board:lines-cleared",
-                (
-                    ("rowIndexes", rows),
-                    ("count", len(groups)),
-                    ("tSpin", classification.tSpin if classification else CLASS_KEY_NONE),
+        drafts: list[EventDraft] = []
+        if groups:
+            drafts.append(
+                make_draft(
+                    "board:lines-cleared",
                     (
-                        "classKey",
-                        classification.classKey if classification else CLASS_KEY_NONE,
+                        ("rowIndexes", rows),
+                        ("count", len(groups)),
+                        ("tSpin", classification.tSpin if classification else CLASS_KEY_NONE),
+                        (
+                            "classKey",
+                            classification.classKey if classification else CLASS_KEY_NONE,
+                        ),
                     ),
-                ),
-                self._frame,
-                metadata,
-            ),
-            make_draft(
-                "score:changed",
-                (
-                    ("delta", delta.scoreDelta),
-                    ("before", before),
-                    ("after", self._state.score),
-                    ("cause", "clear"),
-                ),
-                self._frame,
-                metadata,
-            ),
-        )
-        return frame.StepOutcome(drafts, replace(context, cleared_rows=rows))
+                    self._frame,
+                    metadata,
+                )
+            )
+            drafts.append(
+                make_draft(
+                    "score:changed",
+                    (
+                        ("delta", delta.scoreDelta),
+                        ("before", before_score),
+                        ("after", new_score),
+                        ("cause", "clear"),
+                    ),
+                    self._frame,
+                    metadata,
+                )
+            )
+        if new_combo != before_combo:
+            drafts.append(
+                make_draft(
+                    "score:combo-changed",
+                    (("combo", new_combo),),
+                    self._frame,
+                    metadata,
+                )
+            )
+        if new_b2b != before_b2b:
+            drafts.append(
+                make_draft(
+                    "score:b2b-changed",
+                    (("b2b", new_b2b),),
+                    self._frame,
+                    metadata,
+                )
+            )
+        return frame.StepOutcome(tuple(drafts), replace(context, cleared_rows=rows))
 
     def step_collapse(self, context: frame.FrameContext) -> frame.StepOutcome:
         """第四步：塌落（被消的行消失，上面的行落下来）。"""
