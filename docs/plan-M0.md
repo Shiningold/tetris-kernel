@@ -334,10 +334,10 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 | S9 | 命令通道（门禁 + 三段生命周期） | — | B | 已完成 | `3ffcf62`（审查修订 `dad36c0`） |
 | S10 | 合并防抖与配额 | — | B | 已完成 | `ccb3f98`（审查修订 `dad36c0`） |
 | S11 | 总线 | AC-4 切片 | B | 已完成 | `437e253`（审查修订 `dad36c0`） |
-| S12 | 帧模型 | G0-4 | B | 已完成 | `87c57a0`（审查修订 `dad36c0`） |
+| S12 | 帧模型 | G0-4 | B | 已完成 | `87c57a0`（审查修订 `dad36c0` · 出生步修正 `d396e2d`） |
 | S13 | 规则最小标准实现 | — | A | 已完成 | `27313e4`（审查修订 `7b9e9fc`） |
-| S14 | 宿主装配与无头闭环 | G0-1 | C | 未开始 | — |
-| S15 | 测试骨架与五道门 | G0-1…G0-5 | C | 未开始 | — |
+| S14 | 宿主装配与无头闭环 | G0-1 | C | 已完成 | `ab4ca47` |
+| S15 | 测试骨架与五道门 | G0-1…G0-5 | C | 已完成 | `5c2e249` |
 | S16 | 开放项 B / C 采集 | — | D | 未开始 | — |
 | S17 | 冻结（契约基线 + 内核基线） | 清单 16 | D | 未开始 | — |
 | S18 | 收尾与状态同步 | — | E | 未开始 | — |
@@ -348,7 +348,7 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 | --- | --- | --- | --- | --- | --- | --- |
 | A 行为地基 | `feature/batch-a` | A1 / A2 / A3 | S7 / S8 / S13 | **已落笔 · 审查修订完成** | `a2af287`（S7）· `d59b17f`（S8）· `27313e4`（S13）· `a9355c7`（集成收口）· `7b9e9fc`（审查修订） | `tests/ocr/batch-a-review.md`（**已入库**） |
 | B 命令与帧 | `feature/batch-b` | B1 / B2 | S9 / S10 / S12 · S11 | **已落笔 · 审查修订完成** | `3ffcf62`（S9）· `ccb3f98`（S10）· `87c57a0`（S12）· `437e253`（S11）· `0c60138`（集成收口）· `96f5f50`（并入批次 A 修订）· `810e035`（内核侧对齐新口径）· `8dc0bab`（审查报告入库）· `dad36c0`（**审查修订：16 项逐条裁定，成立 14 项全修**） | `tests/ocr/batch-b-review.md`（**已入库**） |
-| C 闭环与验收 | `feature/batch-c` | C1 / C2 | S14 / S15 | 未开始 | — | `tests/ocr/batch-c-review.md` |
+| C 闭环与验收 | `feature/batch-c` | C1 / C2 | S14 / S15 | **已落笔 · 待审查** | `8ed41bc`（接口先验定）· `ab4ca47`（S14）· `d396e2d`（**内核侧修正：出生步无条件换掉活动方块**）· `5c2e249`（S15）· `f90e7a2`（集成收口导出面） | `tests/ocr/batch-c-review.md`（**未入库**） |
 | D 采集与冻结 | `feature/batch-d` | D1 / D2 | S16 / S17 | 未开始 | — | `tests/ocr/batch-d-review.md` |
 | E 收尾 | `feature/batch-e` | 集成者 | S18 | 未开始 | — | `tests/ocr/batch-e-review.md` |
 
@@ -865,6 +865,8 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   - **`next` 队列放的是"当前一袋剩下的全部方块"（≤7），不是契约文档里的 5 个**：少放两个的话"这袋还剩哪几个"只活在内核私有字段里，**存档恢复后取片序列会分叉**（FR-10.2）。类型没变（`tuple[str, ...]`），**基线不受影响**；渲染时取**前 5 个**当预览。**措辞已收口**（2026-10-24 审查回合）：需求 §8.3 与契约 `next` 字段 docstring 都改成「当前这一袋剩下的全部方块（≤7）；**渲染层取前 5 个当预览**」——**只改描述，类型与基线不变**。
   - **出生时机不止帧推进**：`_spawn_piece` 被**三条路径**调用——帧推进的出生步（第五步）· `start` 的出生步 · `hold` 暂存后换新方块（后两处必须立刻给出一块方块）。所以 `piece:spawned` / `queue:refilled` / `rng:next` **会出现在命令事件流里**，不只在帧推进里。**S14 装配层别假设"出生事件只在帧里出现"**。
   - **M0 最小实现**：无锁定延迟（落即锁，`lockTimer` 恒为 0）· 出生列固定 · `writeCells` 默认放行（授权粒度是 C 级需求，M1 再做；`not_authorized` 在 M0 不会触发，`write_condition_failed` 会）· 标准踢墙表仍是恒等偏移（批次 A 的 M1 边界）。
+  - **出生步只在锁定之后补一块**（2026-10-24 批次 C 收口修正，`d396e2d`）：出生步曾**无条件**调 `_spawn_piece()`，把活动方块**换掉**——方块每帧被换新（`y` 恒为 0），永远落不到地板 → 永不锁定 → `piecesPlaced` 恒 0、棋盘不填、局不结束。**这处此前没被发现，是因为各步都是单步单测，从没把帧模型整体串起来跑过**；S14 的宿主无头闭环是第一次这么做的地方（写手 C1 独立复现，按 B-2 红线没碰内核文件）。修法：活动方块还在时出生步直接返回。回归守卫在 `tests/test_frame_model.py` 两条（出生步不换掉活动方块 · 只靠重力也能落盘锁定）。
+  - **重力间隔在 M0 不由内核兑现**（2026-10-24 批次 C 收口记口径）：`gravity_interval(ctx)` 是规则集接口，标准实现查等级表（1 级 = 60 帧落一格，**已实现**，S13）——但**内核的帧模型不消费它**：`step_gravity` 只取 `gravity_vector` 的方向向量，所以方块**每帧落一格**（比等级表快 60 倍）。**后果**：无人操作的一局约 250 帧就顶出结束；G0-1 的 10000 帧里只有前 ~250 帧在真打，其余走「tick 被拒（game_over）」那条路径。**为什么不在这一阶段补**：兑现间隔要内核持有「距上次落格过了几帧」的计数，而**内核状态必须全部进快照**（清单第 15 项）→ 要给契约**加一个快照字段** → 契约变更 = major 变更流程；且节奏本身是玩法（B-2「内核文件不得为玩法需求改动」）。**M0 规格 §7.3 的帧模型没有这一条**，§7.5 把「最小重力间隔」放在规则集那侧（已完成）。**截止期：必须在 S17 生成基线之前定**——基线冻结后契约就动不了了。
 - **常见坑**
   - **整批返回草稿** → 所有事件共享"执行后的最终态"，`piece:locked` 的订阅者读到的是已消行、已塌落、已出生的棋盘（ADR-023）。
   - **帧号在被接受时才 +1** → tick 的 `received` 带旧帧号、`accepted` 带新帧号，一条命令两个帧号（ADR-022）。
@@ -940,14 +942,14 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 
 - **目标**：五道门各有可复跑的测试，测试骨架与属性测试纪律就位。
 - **任务**
-  - [ ] `tests/conftest.py`：**hypothesis `derandomize=True`**（落点在此，ADR-053）+ 公共 fixture（固定种子内核、总线、临时目录 sink）
-  - [ ] `test_kernel_lifecycle.py` → **G0-1**、**G0-2**
-  - [ ] `test_determinism.py` → **G0-3**
-  - [ ] `test_command_rounds.py` → **G0-4**
-  - [ ] `test_bus_isolation.py` → **G0-5**
-  - [ ] `test_contracts_declarations.py` 补全（S2–S5 期间已建骨架）
-  - [ ] 事件完备性遍历脚本：遍历"命令类型 × phase × 有无活动方块"，断言每次 `execute` 后要么状态未变（必有 `command:rejected`）、要么状态变了（必有对应语义事件）
-  - [ ] 属性测试：内核随机源固定种子；断言不崩、无静默状态变更、同序列重跑指纹一致、拒绝不改状态
+  - [x] `tests/conftest.py`：**hypothesis `derandomize=True`**（落点在此，ADR-053）+ 公共 fixture（固定种子内核、总线、临时目录 sink）
+  - [x] `test_kernel_lifecycle.py` → **G0-1**、**G0-2**
+  - [x] `test_determinism.py` → **G0-3**
+  - [x] `test_command_rounds.py` → **G0-4**
+  - [x] `test_bus_isolation.py` → **G0-5**
+  - [x] `test_contracts_declarations.py` 补全（S2–S5 期间已建骨架）
+  - [x] 事件完备性遍历脚本：遍历"命令类型 × phase × 有无活动方块"，断言每次 `execute` 后要么状态未变（必有 `command:rejected`）、要么状态变了（必有对应语义事件）
+  - [x] 属性测试：内核随机源固定种子；断言不崩、无静默状态变更、同序列重跑指纹一致、拒绝不改状态
 - **涉及文件**：`tests/conftest.py` · `tests/test_kernel_lifecycle.py` · `tests/test_determinism.py` · `tests/test_command_rounds.py` · `tests/test_bus_isolation.py` · `tests/test_contracts_declarations.py`（补全）
 - **批次 / 写手 / 文件归属**：**批次 C** · 写手 **C2**（承 C1 的无头闭环）· 独占上列全部文件。**`tests/conftest.py` 是跨批次共享设施，在本批次内归 C2，其他批次（尤其 A / B）不碰**——批次 A / B 的测试必须自给自足，不依赖这里的 fixture。
 - **验证方案**
@@ -956,11 +958,15 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   3. **G0-5 的反向验证**：临时去掉订阅者异常隔离 → 测试**必须红**。
   4. 测试属性：连续跑 `pytest` 两次，hypothesis 用例**结果一致**（`derandomize=True` 生效的证据）。
   5. `pytest --durations=10` 看最慢用例，避免 10000 帧用例拖垮整套。
-- **完成判据**：五道门各一个可复跑用例 + 两条反向验证（人为破坏 → 必红）。
-- **提交**：`测试：补齐 M0 五道门判据与契约声明测试`
+- **完成判据**：五道门各一个可复跑用例 + 两条反向验证（人为破坏 → 必红）。→ **达成**（`5c2e249`；全量 615 passed / 44 skipped）
+- **提交**：`测试：补齐 M0 五道门判据与契约声明测试` → **`5c2e249`**
+- **实现补记**（两处口径 —— 都与计划上写的字面略有出入，**按实际落地的写**）
+  - **G0-2 落成三桶，不是计划上写的两桶**：真实内核存在第三种合法情形——**「被接受但状态没变」**：`tick`（推进许可，ADR-022）· 受阻的移动 / 旋转（ADR-043）· 状态本来就在初值时的 `reset`。硬套「未变 → 必有 rejected / 变了 → 必有语义事件」两句会把这些**合法路径判红**。所以拆成**被拒 / 变了 / 没变**三桶，每桶都有断言；原有的「版本递增次数 ≤ 语义事件条数」「对应语义事件」「拒绝不改状态（帧号除外，ADR-022）」全部保留。遍历覆盖 **96 / 128** 组合：另 32 个（`not_started` 与 `game_over` 态 + 有活动方块）**结构性不可达**（`start` 才给方块、`_end_game` 清空方块），由一条专门的用例守住这个理由——**不可达要写成用例，不能靠注释带过**。
+  - **G0-1 的门判据用例只有一个**：§5.2 规定它归 `tests/test_kernel_lifecycle.py`。S14 的实现侧长跑留在 `tests/test_host_loop.py`，帧数取 **2000**——两条都跑 10000 帧会让这两个用例占掉整套的一半时间（实测 4.3s + 3.9s），而实现侧要验的东西（帧数对得上、队列清空、指纹一致、局真的在打）2000 帧全都验得到。`-k headless_10000_frames` 因此**只命中一条**。
 - **常见坑**
   - **完备性检查写成"没报错就算过"** → 必须在人为破坏时**红**，否则它什么也没检查。
   - **hypothesis 不开 `derandomize=True`** → CI 上的偶发失败无法复现（只固定内核种子不够）。
+  - **把"状态没变"一律判成漏事件** → 内核有「被接受但状态没变」的合法路径（见上面的三桶）。
 
 ---
 
@@ -1056,12 +1062,12 @@ pytest -q
 python tools\check_kernel_purity.py
 python tools\check_event_registry.py
 python tools\check_frozen_baseline.py
-python tools\contract_baseline.py --check
+python tools\contract_baseline.py --checklist-only
 ```
 
 > **ruff 只认环境内那一份**（0.17.1；PATH 上是 0.15.17，格式结果不同会打架，ADR-052）。若 PATH 上的版本不符，改用 `D:\miniconda3\envs\py312\python.exe -m ruff check .`（环境内那一份）。`pytest` / `pyright` / `lint-imports` 同理可用环境内解释器调用。
 > **S1 之前**这批 dev 工具尚未装上（当前 py312 里只有 ruff），S1 装完 dev 组才开始逐条跑。
-> **S17 之前** `check_frozen_baseline.py` 与 `contract_baseline.py --check` 预期输出"基线尚未生成"的**提示**而非错误——那两阶段还没到生成时点。
+> **`contract_baseline.py` 没有 `--check`**（2026-10-24 批次 C 收口订正）：它的参数是 `--checklist <路径>` · `--checklist-only` · `--update-baseline` · `--print-entries`，而 `--check` 是 `--checklist` 与 `--checklist-only` 的**歧义前缀**，argparse 直接报错。**清单校验用 `--checklist-only`**（有未勾项就打印缺哪几项并以退出码 1 拒绝）。基线比对本身由 `--update-baseline` 与基线文件的存在与否承担——**基线文件要到 S17 才生成**，那之前这一项预期输出"尚未生成"的提示而非错误。
 
 ### 5.2 五道门的验证入口（S15 落地后）
 
