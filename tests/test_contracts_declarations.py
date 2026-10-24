@@ -65,6 +65,7 @@ from tetris_kernel.contracts import (
     is_lifecycle_gated,
     namespace_of,
 )
+from tetris_kernel.kernel.core import KernelState
 
 # ---------------------------------------------------------------------------
 # 需求 §8.1 的事件目录，独立转录一份做交叉核对。
@@ -1823,3 +1824,182 @@ def test_package_all_matches_actual_exports() -> None:
     }
     public = {n for n in dir(contracts_pkg) if not n.startswith("_") and n not in submodule_names}
     assert public == set(exported), "包级公开名与 __all__ 不一致"
+
+
+# ---------------------------------------------------------------------------
+# S15 补全：契约面新守的三块
+#
+# ① `state:changed` 的负载是**快照的投影**——宿主在帧末发它（§1.4.4.1 ③），
+#    这条契约面要有牙齿：快照字段改名 / 改型 → 红；
+# ② 禁浮点（B-7 / ADR-025）**只约束 `args`**，事件负载不受约束；
+# ③ 快照 = 内核状态全集（契约清单第 15 项）：内核加字段 → 快照必须同步加字段，
+#    这条纪律**能反过来守**（契约表自己的注释就是这么写的）。
+#
+# 前两块是**补上没守的面**，第三块是把 S4 标注为"人检"的第 15 项落成机检。
+# ---------------------------------------------------------------------------
+
+#: `state:changed` 的负载字段 → 它投影的快照字段路径。
+#:
+#: 转录自需求 §8.1 的「轻量摘要（不含整张棋盘）」与契约 `state:changed` 的声明：
+#: 12 个字段是快照的**同名投影**，只有 `activeType` 是**类型投影**（快照的
+#: `active` 可空 → 事件侧给 `str | None`）。
+EXPECTED_STATE_CHANGED_PROJECTION: dict[str, str] = {
+    "version": "version",
+    "rule": "rule",
+    "phase": "phase",
+    "score": "score",
+    "lines": "lines",
+    "level": "level",
+    "combo": "combo",
+    "b2b": "b2b",
+    "piecesPlaced": "piecesPlaced",
+    "activeType": "active.pieceType",
+    "hold": "hold",
+    "holdUsed": "holdUsed",
+    "next": "next",
+}
+
+#: `state:changed` 的负载字段顺序（**顺序进基线**，重排 = 哈希全变）。
+EXPECTED_STATE_CHANGED_ORDER: tuple[str, ...] = (
+    "version",
+    "rule",
+    "phase",
+    "score",
+    "lines",
+    "level",
+    "combo",
+    "b2b",
+    "piecesPlaced",
+    "activeType",
+    "hold",
+    "holdUsed",
+    "next",
+)
+
+#: 内核**单独持有**、不在 `KernelState` 里的两个属性（它们同样进快照）。
+#:
+#: - `ruleId` = `self._rule_id`（规则集标识）；
+#: - `frame` = `self._frame`（逻辑帧号——它是**时间轴**，不是游戏状态）。
+KERNEL_ATTRIBUTES_OUTSIDE_STATE: frozenset[str] = frozenset({"ruleId", "frame"})
+
+
+def _snake_to_camel(name: str) -> str:
+    """内核字段名（snake_case）→ 契约映射表里的写法（camelCase）。
+
+    契约表的 `kernel_field` 用的是**快照那侧的命名**（`ghostDelta` / `holdUsed`），
+    内核的 dataclass 字段是 snake_case（`ghost_delta` / `hold_used`）——同一套
+    命名体系的两种拼法，这里做一次机械转换，不另抄一份名单。
+    """
+    head, *rest = name.split("_")
+    return head + "".join(part.capitalize() for part in rest)
+
+
+def test_event_registry_order_matches_the_requirement_table() -> None:
+    """事件注册表的枚举顺序 = 需求 §8.1 的表格顺序。
+
+    **顺序进基线**（契约清单第 12 项：字段级哈希）——重排会让基线全变，却不
+    改变任何字段的语义：这种改动**必须**是显式的，不该悄悄发生。
+    """
+    assert tuple(EVENT_TYPES) == tuple(EXPECTED_EVENTS)
+
+
+def test_command_registry_order_matches_the_requirement_table() -> None:
+    """命令注册表的枚举顺序 = 需求 §8.2 的表格顺序（同上：顺序进基线）。"""
+    assert COMMAND_TYPES == tuple(EXPECTED_COMMAND_ARGS)
+
+
+def test_state_changed_payload_is_a_projection_of_the_snapshot() -> None:
+    """`state:changed` 的每个字段都投影一个快照字段——**同名同类型**。
+
+    宿主在帧末发这条事件（plan-M0.md §1.4.4.1 ③），负载整份都是内核状态。
+    所以契约面必须保证"事件字段 ↔ 快照字段"的对应关系：快照字段改名或改型，
+    这里当场变红——**否则宿主会照着旧契约发出一条与快照对不上的事件**。
+    """
+    spec = EVENT_TYPES["state:changed"]
+    payload = {field.name: field.type for field in spec.payload}
+    assert set(payload) == set(EXPECTED_STATE_CHANGED_PROJECTION), "字段集合对不上"
+    for name, snapshot_path in EXPECTED_STATE_CHANGED_PROJECTION.items():
+        if name == "activeType":
+            # 类型投影：快照的 `active` 可空 → 事件侧给 `str | None`。
+            assert payload[name] == "str | None", name
+            assert ACTIVE_FIELDS["pieceType"].type == "str"
+            continue
+        field = SNAPSHOT_FIELDS[snapshot_path]
+        assert payload[name] == field.type, f"{name} 与快照 {snapshot_path} 的类型不一致"
+
+
+def test_state_changed_payload_field_order_is_locked() -> None:
+    """`state:changed` 的负载字段**顺序**也锁死。
+
+    `make_draft` 按**顺序**逐条校验负载字段（架构 §4.4：字段名与顺序照抄契约），
+    顺序错了当场报错——但那是在**运行期**；这里把它提到**契约期**。
+    """
+    assert tuple(field.name for field in EVENT_TYPES["state:changed"].payload) == (
+        EXPECTED_STATE_CHANGED_ORDER
+    )
+
+
+def test_state_changed_does_not_carry_the_whole_board() -> None:
+    """需求 §8.1：`state:changed` 是**轻量摘要（不含整张棋盘）**。
+
+    整张棋盘走快照（`state:changed` + 快照是渲染器的两条入口，需求 §7）——
+    事件负载里再塞一份棋盘，事件流会被每帧拖大。
+    """
+    fields = EVENT_TYPES["state:changed"].payload
+    names = {field.name for field in fields}
+    assert "board" not in names, names
+    for field in fields:
+        assert "tuple[tuple[int" not in field.type, f"{field.name} 带着格子清单"
+
+
+def test_float_is_forbidden_in_args_but_allowed_in_event_payloads() -> None:
+    """禁浮点**只约束 `args`**（B-7 / ADR-025）——事件负载不受这条约束。
+
+    `args` 参与重放（JSON 里 `1.0` 与 `1` 不可区分）；事件负载不参与，所以
+    `metric:sampled` 的聚合值带小数、`rng:next` 的取值可能是浮点。**口径不同是
+    对的**：这条断言守住"只约束 args"这个范围——哪天有人把浮点全局禁掉（连事件
+    负载也不许带），这里会红。
+    """
+    assert "float" not in ARGS_VALUE
+    assert "float" not in ARGS
+    for name, spec in COMMANDS.items():
+        for arg in spec.args:
+            assert "float" not in arg.type, f"{name}.{arg.name}"
+    with_float = {
+        name
+        for name, spec in EVENT_TYPES.items()
+        if any("float" in field.type for field in spec.payload)
+    }
+    assert with_float == {
+        "kernel:system:installed",
+        "log:entry",
+        "metric:sampled",
+        "rng:next",
+    }
+    assert "float" in JSON_VALUE, "事件负载的取值域里应当有浮点"
+
+
+def test_every_kernel_state_field_is_mapped_to_the_snapshot() -> None:
+    """内核**真实持有的**每个状态字段都在快照映射表里（快照 = 内核状态全集）。
+
+    契约清单第 15 项原本是"人检"——这里落成机检：内核往 `KernelState` 里加一个
+    字段而没同步加快照字段，这里当场变红（FR-10.2：存档恢复缺一块，回放就废了）。
+    """
+    mapped = {entry.kernel_field.split(".")[0] for entry in KERNEL_STATE_TO_SNAPSHOT}
+    for field in dataclasses.fields(KernelState):
+        camel = _snake_to_camel(field.name)
+        assert camel in mapped, f"内核状态字段 {field.name}（{camel}）没进快照映射表"
+
+
+def test_every_mapped_kernel_field_exists_in_the_kernel() -> None:
+    """映射表里的每个内核字段**都真实存在**——不许指着一个不存在的字段。
+
+    反方向的那条纪律：映射表写错了名字（手滑），快照就会少一块或多一块，而
+    **两边都"看起来有声明"**——不交叉核对就发现不了。
+    """
+    known = {_snake_to_camel(field.name) for field in dataclasses.fields(KernelState)}
+    known |= KERNEL_ATTRIBUTES_OUTSIDE_STATE
+    known |= set(RUNTIME_ONLY_STATE)
+    for entry in KERNEL_STATE_TO_SNAPSHOT:
+        root = entry.kernel_field.split(".")[0]
+        assert root in known, f"映射表指着内核没有的字段：{entry.kernel_field}"
