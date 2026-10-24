@@ -35,16 +35,38 @@
 不进基线；引用处展开后的类型串进——**常量改了、引用没改，两处静默分叉的
 后果正是基线要抓的**。
 
+## 基线文件自己也要可信
+
+「允许新增键」这条口径的前提是**基线文件本身没被动过**。基线一旦被清空或
+残缺，「当前有、基线没有」的键会全被当成"新增"放行——**「只增不改」在那一刻
+静默退化成「只查已有键」**（批次 D 审查 D1）。所以基线的自述块里记着**它自己
+有多少条**（`meta.entryCount`）与**它记的是哪个契约版本**（`meta.contractVersion`）：
+
+- 自述条数与实际条数对不上 → 基线被改过 → 红；
+- 基线一条都没有 → 基线被清空 → 红；
+- 自述的契约版本与当前契约版本不符 → 红（版本升级 = major 变更）。
+
+**契约版本号是双向对账的**：当前版本升了（基线还记着旧版）与基线里的版本号
+被人手改成新版，**两边都红**（批次 D 审查 D6——`meta` 原来只写不读，读的人会
+被它误导）。
+
+## 刷新要写明理由
+
+`--update-baseline` **必须带 `--reason`**（不给就用法错误退出），并打印
+**「旧基线 → 新基线」的差异摘要**：刷新不是无声覆盖，理由与改了什么都要看得见
+（批次 D 审查 D4）。
+
 ## 用法
 
 ```
 python tools/contract_baseline.py                    # 校验（默认）
-python tools/contract_baseline.py --update-baseline   # 生成 / 刷新基线
+python tools/contract_baseline.py --update-baseline --reason "<理由>"
 python tools/contract_baseline.py --checklist-only    # 只看清单状态
 python tools/contract_baseline.py --print-entries     # 打印当前条目（排查用）
 ```
 
-退出码：0 = 通过；1 = 有红项（清单没勾完 / 已有键变化 / 已有键消失）；2 = 用法或 IO 错误。
+退出码：0 = 通过；1 = 有红项（清单没勾完 / 已有键变化 / 已有键消失 /
+基线自身不可信）；2 = 用法或 IO 错误。
 """
 
 from __future__ import annotations
@@ -96,6 +118,18 @@ class Entry:
     key: str
     canonical: str
     digest: str
+
+
+@dataclass(frozen=True)
+class BaselineDocument:
+    """读进来的基线文件：条目 + 自述块。
+
+    **自述块不能丢**：它记着"基线自己有多少条"与"基线记的是哪个契约版本"
+    ——这两样是基线**自证没被动过**的依据（批次 D 审查 D1 / D6）。
+    """
+
+    entries: dict[str, str]
+    meta: dict[str, object]
 
 
 # ---------------------------------------------------------------------------
@@ -243,10 +277,15 @@ def baseline_document(entries: list[Entry]) -> dict[str, object]:
 
     **不写时间戳**：基线文件每次生成都该逐字节一样，否则 git 里全是噪声，
     而噪声会让人对真正的差异视而不见。
+
+    **自述块里记着基线自己有多少条**（`entryCount`）：这是基线**自证没被
+    动过**的依据——基线被清空或被删掉几条时，自述块与实际条数对不上，
+    基线自己就会报红（批次 D 审查 D1）。
     """
     return {
         "meta": {
             "contractVersion": CONTRACT_VERSION,
+            "entryCount": len(entries),
             "hashAlgorithm": HASH_ALGORITHM,
             "generatedBy": "tools/contract_baseline.py",
         },
@@ -254,13 +293,57 @@ def baseline_document(entries: list[Entry]) -> dict[str, object]:
     }
 
 
-def load_baseline(path: Path) -> dict[str, str]:
-    """读基线文件，返回「键 → 哈希」。"""
+def load_baseline(path: Path) -> BaselineDocument:
+    """读基线文件，返回「条目 + 自述块」。"""
     document = json.loads(path.read_text(encoding="utf-8"))
     entries = document.get("entries")
     if not isinstance(entries, dict):
         raise ValueError(f"基线文件结构不对（缺 entries）：{relative_to_repo(path)}")
-    return {str(key): str(value) for key, value in entries.items()}
+    meta = document.get("meta")
+    if not isinstance(meta, dict):
+        raise ValueError(f"基线文件结构不对（缺 meta）：{relative_to_repo(path)}")
+    return BaselineDocument(
+        entries={str(key): str(value) for key, value in entries.items()},
+        meta={str(key): value for key, value in meta.items()},
+    )
+
+
+def baseline_integrity_problems(baseline: BaselineDocument) -> list[str]:
+    """基线文件自身不自洽的地方（**每一条都是红项**）。
+
+    **「允许新增键」的前提是基线可信**：基线被清空或残缺时，「当前有、基线
+    没有」的键会全被当成"新增"放行——「只增不改」那一刻静默退化成「只查
+    已有键」，而工具绿、pytest 绿、文档里的条数照旧写着（批次 D 审查 D1）。
+
+    两条判据：
+
+    - **自述条数与实际条数对账**（`meta.entryCount`）：基线说自己有 N 条，
+      实际只有 M 条 → 有人动过它（M < N = 被删了几条，M > N = 被塞了东西）；
+    - **契约版本双向对账**（`meta.contractVersion`）：基线记的版本与当前
+      `CONTRACT_VERSION` 不符 → 版本升级了而基线没刷新 = major 变更，或
+      基线里的版本号被人手改过（批次 D 审查 D6）。
+    """
+    problems: list[str] = []
+    entries = baseline.entries
+
+    if not entries:
+        problems.append("基线一条条目都没有：基线被清空了")
+
+    declared = baseline.meta.get("entryCount")
+    if not isinstance(declared, int):
+        problems.append(f"基线自述块缺 entryCount（现在是 {declared!r}）：基线不是当前口径生成的")
+    elif declared != len(entries):
+        problems.append(f"基线自述块记着 {declared} 条，实际只有 {len(entries)} 条：基线被改过")
+
+    version = baseline.meta.get("contractVersion")
+    if not isinstance(version, str):
+        problems.append(f"基线自述块缺 contractVersion（现在是 {version!r}）")
+    elif version != CONTRACT_VERSION:
+        problems.append(
+            f"基线记的契约版本是 {version}，当前是 {CONTRACT_VERSION}：版本升级 = major 变更"
+        )
+
+    return problems
 
 
 def write_baseline(path: Path, entries: list[Entry]) -> None:
@@ -333,6 +416,37 @@ def _print_result(result: CheckResult) -> None:
         print(f"已有键消失（红）：{key}  —— 改名或删除 = major 变更")
 
 
+def _print_update_diff(path: Path, entries: list[Entry], reason: str | None) -> None:
+    """打印「旧基线 → 新基线」的差异摘要。
+
+    **刷新必须看得见改了什么**：理由与差异一起打印，刷新就不是无声覆盖
+    （批次 D 审查 D4）。
+    """
+    print(f"刷新理由：{reason}")
+    if not path.exists():
+        print("旧基线不存在：本次是首次生成。")
+        return
+    try:
+        old = load_baseline(path)
+    except (OSError, ValueError) as error:
+        # 旧基线读不出来不拦刷新——拦了就是"坏基线永远刷不掉"。
+        print(f"旧基线读不出来（只报不拦）：{error}")
+        return
+    new = {entry.key: entry.digest for entry in entries}
+    added = sorted(key for key in new if key not in old.entries)
+    changed = sorted(key for key in old.entries if key in new and old.entries[key] != new[key])
+    removed = sorted(key for key in old.entries if key not in new)
+    print(f"旧基线 {len(old.entries)} 条 → 新基线 {len(new)} 条")
+    for key in added:
+        print(f"  新增：{key}")
+    for key in changed:
+        print(f"  变化：{key}（{old.entries[key]} → {new[key]}）")
+    for key in removed:
+        print(f"  消失：{key}")
+    if not (added or changed or removed):
+        print("  条目无变化（只有自述块可能变了）")
+
+
 def main(argv: list[str] | None = None) -> int:
     """命令行入口。"""
     configure_output()
@@ -352,7 +466,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--update-baseline",
         action="store_true",
-        help="生成 / 刷新基线（清单没勾完就拒绝）",
+        help="生成 / 刷新基线（清单没勾完就拒绝；必须带 --reason）",
+    )
+    parser.add_argument(
+        "--reason",
+        type=str,
+        default=None,
+        help="刷新基线的理由（--update-baseline 必须带）",
     )
     parser.add_argument(
         "--checklist-only",
@@ -365,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:
         help="打印当前声明条目（键 + 规范化串 + 哈希），排查用",
     )
     args = parser.parse_args(argv)
+
+    if args.update_baseline and not args.reason:
+        parser.error(
+            '--update-baseline 必须带 --reason "<理由>"：基线刷新要写明理由，不做无声覆盖。'
+        )
 
     try:
         items = parse_checklist(args.checklist)
@@ -394,10 +519,21 @@ def main(argv: list[str] | None = None) -> int:
         if not _report_checklist(items, args.checklist):
             print("拒绝生成基线：冻结清单没勾完。", file=sys.stderr)
             return 1
+        _print_update_diff(args.baseline, entries, args.reason)
         write_baseline(args.baseline, entries)
         print(f"已写入基线：{relative_to_repo(args.baseline)}（{len(entries)} 条）")
         print("提醒：生成基线的那次提交，message 里必须写明「契约 v1 冻结」。")
         return 0
+
+    # ---- 默认校验路径 ----
+    #
+    # **清单门在校验路径上也管**：工具的 docstring 写着"清单没勾完 = 红项"，
+    # 那默认路径就必须真的查——否则用户按文档跑第一条命令，看到的是
+    # "基线校验通过"，而清单明明缺项（批次 D 审查 D3）。
+
+    if not _report_checklist(items, args.checklist):
+        print("基线校验失败：契约 v1 冻结清单没勾完。", file=sys.stderr)
+        return 1
 
     if not args.baseline.exists():
         print(
@@ -412,7 +548,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"读基线失败：{error}", file=sys.stderr)
         return 2
 
-    result = compare(baseline, entries)
+    problems = baseline_integrity_problems(baseline)
+    if problems:
+        for problem in problems:
+            print(f"基线自身不可信（红）：{problem}")
+        print("基线校验失败：基线文件被清空 / 残缺 / 与当前契约版本不符。", file=sys.stderr)
+        return 1
+
+    result = compare(baseline.entries, entries)
     _print_result(result)
     print(
         f"条目 {len(entries)} 条：新增 {len(result.added)} · 变化 {len(result.changed)}"

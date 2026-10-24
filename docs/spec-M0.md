@@ -87,7 +87,7 @@ def publish(self, drafts: Sequence[EventDraft]) -> None: ...                    
 # contracts —— 公共叶子，不 import 任何东西
 EVENT_TYPES: Mapping[str, EventSpec]        # 44 条：负载字段声明 + 产出者
 COMMAND_SPECS: Mapping[str, CommandSpec]    # 16 条：参数规格 + 可拒绝情形
-SNAPSHOT_FIELDS: Mapping[str, FieldSpec]    # 21 顶层字段 + board 5 子字段
+SNAPSHOT_FIELDS: Mapping[str, FieldSpec]    # 22 顶层字段 + board 5 子字段
 RULE_SIGNATURES: Mapping[str, SignatureSpec] # 8 条规则接口签名
 @dataclass(frozen=True) class PlacementInfo: ...   # 6 字段
 ```
