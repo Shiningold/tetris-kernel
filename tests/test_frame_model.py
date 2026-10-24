@@ -273,6 +273,61 @@ def test_scoring_follows_the_rule_set() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 出生步：锁定之后才补一块（2026-10-24 批次 C 收口发现的回归）
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_step_does_not_replace_the_active_piece() -> None:
+    """出生步**不换掉**活动方块——它只在锁定步清空活动方块之后才补一块。
+
+    **回归守卫**：出生步曾无条件调用 `_spawn_piece()`，把活动方块**换掉**。
+    后果：方块每帧被换新（`y` 恒为 0），永远落不到地板 → 永不锁定 → 棋盘
+    不填、分数不动、局不结束。**S14 的无头闭环第一次把帧模型整体跑起来，
+    才把这处暴露出来**——此前各步都是单步单测，从没串起来跑过。
+    """
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+
+    drafts = [draft for step in _advance(kernel) for draft in step]
+
+    assert "piece:spawned" not in _types(drafts), "出生步把活动方块换掉了"
+    assert kernel.snapshot().active is not None, "活动方块不见了"
+
+
+def test_gravity_alone_lets_a_piece_fall_and_lock() -> None:
+    """只靠重力，方块也能落到地板、被锁定，锁定之后补上新的一块。
+
+    这是上面那条缺陷的**后果级**守卫：缺陷在时方块每帧被换新，
+    `piecesPlaced` 恒为 0、棋盘永远不填。
+    """
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    first = kernel.snapshot()
+    assert first.active is not None, "开局没有活动方块"
+    start_y = first.active.y
+
+    # 再跑几帧：方块应当**往下走**（不是每帧被换成新方块）。
+    for _ in range(5):
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+    moved = kernel.snapshot()
+    assert moved.active is not None, "活动方块不见了"
+    assert moved.active.y > start_y, "方块没有往下走——活动方块被换掉了"
+
+    # 一直跑到落盘为止。
+    for _ in range(60):
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+        if kernel.snapshot().piecesPlaced > 0:
+            break
+    final = kernel.snapshot()
+    assert final.piecesPlaced == 1, "方块没有落盘"
+    assert any(cell != 0 for row in final.board.cells for cell in row), "棋盘上没有一个格子"
+    assert final.active is not None, "锁定之后没有补一块新方块"
+
+
+# ---------------------------------------------------------------------------
 # 暂存：每块一次（审查回合 B1）+ 被拒时发事件（B5）
 # ---------------------------------------------------------------------------
 

@@ -1479,7 +1479,19 @@ class Kernel:
         return frame.StepOutcome(drafts, context)
 
     def step_spawn(self, context: frame.FrameContext) -> frame.StepOutcome:
-        """第五步：出生。"""
+        """第五步：出生。
+
+        **只在没有活动方块时出生**——上一帧的锁定步刚把方块落盘（活动方块被
+        清空），这一步才**补**一块新的。
+
+        **无条件出生是错的**：出生步会把活动方块**换掉**，于是方块每帧被换新
+        （`y` 恒为 0），永远落不到地板 → 永不锁定 → 棋盘不填、分数不动、
+        局不结束。2026-10-24 批次 C 收口时发现：S14 的无头闭环第一次把帧
+        模型整体跑起来，才把这处暴露出来（此前各步都是单步单测，没串过）。
+        """
+        if self._state.active is not None:
+            # 活动方块还在（这一帧没锁定任何东西）→ **不出生**。
+            return frame.StepOutcome((), context)
         metadata = self._advance_metadata()
         drafts = tuple(
             make_draft(event_type, payload, self._frame, metadata)
