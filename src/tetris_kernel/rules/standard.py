@@ -111,11 +111,16 @@ def _board_width(board: Sequence[Sequence[int]]) -> int:
 def _full_indices(board: Sequence[Sequence[int]], clear_axis: str) -> tuple[int, ...]:
     """已满的行 / 列的索引（升序）。
 
-    **行与列同一宽度口径**（`_board_width`）：行按「本行前 `width` 格全非空」
+    **判满用同一个宽度口径**（`_board_width`）：行按「本行前 `width` 格全非空」
     判满，列按「各行该列全非空」判满。对不齐的棋盘按最窄的一行算，两条路径
     得出同一个答案。
+
+    **零宽棋盘没有满线**：宽度为 0 时一行都判不满——`all()` 对空切片恒真，
+    不挡的话「零列的棋盘」会凭空冒出 N 条满行（每条的格子清单还是空的）。
     """
     width = _board_width(board)
+    if width == 0:
+        return ()
     if clear_axis == "row":
         return tuple(
             index for index, row in enumerate(board) if all(cell != 0 for cell in row[:width])
@@ -205,9 +210,12 @@ def scan_clears(board: Sequence[Sequence[int]], ctx: RuleContext) -> tuple[Clear
     **分类是 `None`**：本函数不知道放置上下文（签名里没有 `PlacementInfo`），
     分类由内核拿到 `classify_placement` 的结果后挂上来（内核只搬运）。
 
-    **一条线 = 棋盘宽度那么长**：行路径的组是「整行」，列路径的组是「整列」，
-    两者的格子清单都按**同一个宽度口径**（`_board_width`）取——对不齐的棋盘
-    按最窄的一行算，不按行自身的长度算。
+    **一条线多长**：行路径的组是「整行」——格子清单 = 棋盘**宽度**那么多个
+    （每行取前 `width` 格）；列路径的组是「整列」——格子清单 = 棋盘**高度**
+    那么多个（每行一格，共 `height` 个）。
+
+    **判满**用同一个宽度口径（`_board_width`）：列路径只考察前 `width` 列，
+    对不齐的棋盘按最窄的一行算，不按行自身的长度算。
     """
     clear_axis = CLEAR_AXIS_BY_GRAVITY[ctx.axis]
     width = _board_width(board)

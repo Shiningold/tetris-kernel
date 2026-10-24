@@ -59,6 +59,16 @@ S14 落地了无头帧循环，本脚本直接驱动它（**不再依赖任何"�
 （种子 / 预热 / 帧数写死）下的**逐帧事件数**。事件数是**确定性的**（宿主用
 `VirtualClock`，内核不读墙钟），两次独立实跑逐帧相同——所以它适合当基线。
 
+**只记条数不够——还要记类型**（M0 全量审查 M0-8）：内核把 `piece:spawned`
+换成一条同条数的事件（5 → 5），**逐帧条数一模一样**，基线照样全绿——**行为
+变了但基线看不见**。所以基线里除了 `frameEventCounts`（逐帧条数），还记
+`frameEventTypeShapes`（逐帧**事件类型**，按"类型组合"归并）：**条数一样
+而类型不一样**时它就红。
+
+**类型表按形状归并**：6100 帧里只有 **3 种**类型组合（常态帧 · 锁定帧 ·
+锁定 + 消行帧），逐帧存 6100 份是浪费；归并成「形状 → 帧号列表」既小，
+又**逐帧可还原**（形状 + 帧号 = 原来的逐帧清单）。
+
 **耗时不进基线**：墙钟噪声跨度能到 3 倍（P99 490 → 1460 μs），拿它当基线
 就是拿噪声当标准（批次 D 审查 D7）。耗时只用来对照预算。
 
@@ -168,12 +178,15 @@ class FrameSample:
     - `cost_us`：这一帧的墙钟耗时（微秒，整数）；
     - `events`：这一帧发出的事件条数；
     - `phase`：**该帧开始时**的 phase——门禁读的就是它，所以它决定这一帧的
-      `tick` 是被接受还是被拒。
+      `tick` 是被接受还是被拒；
+    - `event_types`：这一帧发出的事件**类型**（按发布顺序）——**条数一样
+      而类型不一样，也是行为变了**（M0 全量审查 M0-8）。
     """
 
     cost_us: int
     events: int
     phase: str
+    event_types: tuple[str, ...] = ()
 
     @property
     def accepted(self) -> bool:
@@ -288,8 +301,17 @@ def _collect(*, seed: int, frames: int, warmup: int) -> list[FrameSample]:
 
     **预热帧照跑但不收**：跑预热是为了让进程进入稳态，样本只取预热之后的
     那些帧。
+
+    **订阅在构造帧循环之前挂上**：`HeadlessLoop` 构造时就把 `kernel:ready` ·
+    `game:created` 发到总线上了，晚订阅的收不到。订阅用全局通配 `*`——
+    记的是**每条事件的类型**，不是某几类事件。
+
+    **采集到的类型条数必须与 `run_frame()` 给的事件数相等**：不等就说明
+    采集口径坏了（漏订阅 / 多订阅）——当场报错，不给出一份自相矛盾的基线。
     """
     assembly = assemble(seed=seed)
+    published: list[str] = []
+    assembly.bus.subscribe("*", lambda envelope: published.append(envelope.type))
     loop = HeadlessLoop(assembly)
     loop.start()
     kernel = assembly.kernel
@@ -299,6 +321,7 @@ def _collect(*, seed: int, frames: int, warmup: int) -> list[FrameSample]:
     samples: list[FrameSample] = []
     for index in range(frames):
         phase_before = kernel.phase
+        before = len(published)
         started = time.perf_counter()
         event_count = loop.run_frame()
         elapsed_us = (time.perf_counter() - started) * 1_000_000
@@ -310,8 +333,19 @@ def _collect(*, seed: int, frames: int, warmup: int) -> list[FrameSample]:
                 f"第 {index} 帧开始时 phase 是 {phase_before!r}："
                 "既不是常态帧（running）也不是拒绝路径（game_over）"
             )
+        event_types = tuple(published[before:])
+        if len(event_types) != event_count:
+            raise RuntimeError(
+                f"第 {index} 帧采集到 {len(event_types)} 条事件类型，"
+                f"但总线发出的事件数是 {event_count}：采集口径坏了"
+            )
         samples.append(
-            FrameSample(cost_us=round(elapsed_us), events=event_count, phase=phase_before)
+            FrameSample(
+                cost_us=round(elapsed_us),
+                events=event_count,
+                phase=phase_before,
+                event_types=event_types,
+            )
         )
     return samples
 
@@ -418,21 +452,67 @@ def _print_budget(summary: Summary) -> None:
     print(f"  结论：{verdict}")
 
 
+def _type_shapes(frames: list[tuple[str, ...]]) -> list[dict[str, object]]:
+    """逐帧事件类型 → **按形状归并**（类型组合 → 帧号列表）。
+
+    **归并不丢信息**：形状 + 帧号 = 原来的逐帧清单，**逐帧可还原**。
+    6100 帧里只有三种组合，逐帧存 6100 份是纯浪费。
+    """
+    buckets: dict[tuple[str, ...], list[int]] = {}
+    for index, shape in enumerate(frames):
+        buckets.setdefault(shape, []).append(index)
+    ordered = sorted(buckets.items(), key=lambda item: item[1][0])
+    return [{"frames": indices, "types": list(shape)} for shape, indices in ordered]
+
+
+def _types_from_shapes(shapes: object) -> list[tuple[str, ...]] | None:
+    """把基线里的形状表**还原**成逐帧事件类型清单（还原不了 = 结构不对）。
+
+    形状表里没被任何形状覆盖的帧还原成空清单——**基线自身的不自洽由
+    比对层查**（每帧的类型条数必须等于该帧的事件数）。
+    """
+    if not isinstance(shapes, list):
+        return None
+    per_frame: list[tuple[str, ...]] = []
+    for entry in shapes:
+        if not isinstance(entry, dict):
+            return None
+        types = entry.get("types")
+        indices = entry.get("frames")
+        if not isinstance(types, list) or not isinstance(indices, list):
+            return None
+        if not all(isinstance(item, str) for item in types):
+            return None
+        if not all(isinstance(item, int) and not isinstance(item, bool) for item in indices):
+            return None
+        shape = tuple(str(item) for item in types)
+        for index in indices:
+            while len(per_frame) <= index:
+                per_frame.append(())
+            per_frame[index] = shape
+    return per_frame
+
+
 def _baseline_document(samples: list[FrameSample]) -> dict[str, object]:
     """事件数基线文件的内容（**逐字节可复现**：不写时间戳）。
 
     **只记常态帧**（`tick` 被接受的那些帧）——拒绝路径每帧只有 2 条事件，
     混进来会把"每帧事件数"这个开放项的答案拉低一大截。
+
+    **条数与类型都记**：只记条数的话，"条数一样、类型换了"的行为改动
+    看不见（M0 全量审查 M0-8）。
     """
     normal = [sample for sample in samples if sample.accepted]
     counts = [sample.events for sample in normal]
+    types = [sample.event_types for sample in normal]
     return {
         "meta": {
             "frames": BASELINE_FRAMES,
             "generatedBy": "tools/measure_frame_cost.py",
             "normalFrames": len(normal),
             "note": (
-                "只记常态帧的逐帧事件数；耗时不进基线（墙钟噪声跨度可达 3 倍，批次 D 审查 D7）"
+                "只记常态帧的逐帧事件数与事件类型；"
+                "耗时不进基线（墙钟噪声跨度可达 3 倍，批次 D 审查 D7）"
             ),
             "seed": BASELINE_SEED,
             "source": "内核无头帧循环（tetris_kernel.host.HeadlessLoop）",
@@ -445,14 +525,21 @@ def _baseline_document(samples: list[FrameSample]) -> dict[str, object]:
             "total": sum(counts),
         },
         "frameEventCounts": counts,
+        "frameEventTypeShapes": _type_shapes(types),
     }
 
 
-def _compare_baseline(document: dict[str, object], counts: list[int]) -> list[str]:
+def _compare_baseline(
+    document: dict[str, object],
+    counts: list[int],
+    types: list[tuple[str, ...]],
+) -> list[str]:
     """比对当前事件数与基线，返回差异描述（**空 = 一致**）。
 
     **逐帧比**：只看 P50 / max 的话，"多出来的 3 条事件挪到了别的帧上"
     会溜过去——那正是行为变了。
+
+    **条数与类型都比**：条数一样而类型换了，同样是行为变了（M0-8）。
     """
     problems: list[str] = []
     baseline_counts = document.get("frameEventCounts")
@@ -463,6 +550,25 @@ def _compare_baseline(document: dict[str, object], counts: list[int]) -> list[st
         problems.append(f"帧数不同：基线 {len(baseline_counts)} 帧，当前 {len(counts)} 帧")
         return problems
 
+    baseline_types = _types_from_shapes(document.get("frameEventTypeShapes"))
+    if baseline_types is None:
+        problems.append("基线文件结构不对（缺 frameEventTypeShapes）")
+        return problems
+    if len(baseline_types) != len(baseline_counts):
+        problems.append(
+            f"基线自述的类型形状还原出 {len(baseline_types)} 帧，"
+            f"事件数基线却是 {len(baseline_counts)} 帧：基线自身不自洽"
+        )
+        return problems
+
+    # **基线自身要自洽**：每一帧的类型条数必须等于该帧的事件数。
+    for index, (shape, count) in enumerate(zip(baseline_types, baseline_counts, strict=True)):
+        if len(shape) != count:
+            problems.append(
+                f"基线第 {index} 帧的事件类型 {len(shape)} 条 ≠ 事件数 {count} 条：基线自身不自洽"
+            )
+            return problems
+
     differences = [
         (index, old, new)
         for index, (old, new) in enumerate(zip(baseline_counts, counts, strict=True))
@@ -472,6 +578,16 @@ def _compare_baseline(document: dict[str, object], counts: list[int]) -> list[st
         problems.append(f"第 {index} 帧（0 起）的事件数不同：基线 {old} ≠ 当前 {new}")
     if len(differences) > 10:
         problems.append(f"……共 {len(differences)} 帧不同（只列前 10 帧）")
+
+    type_differences = [
+        (index, old, new)
+        for index, (old, new) in enumerate(zip(baseline_types, types, strict=True))
+        if old != new
+    ]
+    for index, old, new in type_differences[:10]:
+        problems.append(f"第 {index} 帧（0 起）的事件类型不同：基线 {list(old)} ≠ 当前 {list(new)}")
+    if len(type_differences) > 10:
+        problems.append(f"……共 {len(type_differences)} 帧的事件类型不同（只列前 10 帧）")
     return problems
 
 
@@ -489,6 +605,7 @@ def _baseline_mode(args: argparse.Namespace) -> int:
 
     normal = [sample for sample in samples if sample.accepted]
     counts = [sample.events for sample in normal]
+    types = [sample.event_types for sample in normal]
 
     if args.baseline_check is not None:
         path = args.baseline_check
@@ -503,7 +620,7 @@ def _baseline_mode(args: argparse.Namespace) -> int:
         if not isinstance(document, dict):
             print(f"事件数基线结构不对：{relative_to_repo(path)}", file=sys.stderr)
             return 2
-        problems = _compare_baseline(document, counts)
+        problems = _compare_baseline(document, counts, types)
         if problems:
             for problem in problems:
                 print(f"事件数基线不一致（红）：{problem}", file=sys.stderr)

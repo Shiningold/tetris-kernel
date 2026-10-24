@@ -187,6 +187,46 @@ def test_scan_clears_empty_board() -> None:
     assert standard.scan_clears([], CTX_DOWN) == ()
 
 
+def test_scan_clears_line_length_follows_the_axis() -> None:
+    """一条线多长：**行路径 = 宽度，列路径 = 高度**（M0 全量审查 M0-9）。
+
+    原 docstring 写的是"一条线 = 棋盘宽度那么长"，可列路径的组是**整列**——
+    它的格子清单是**每行一格**，长度等于**棋盘高度**。口径写错时，塌落动画
+    与事件负载会按错的长度算——这里把口径钉死。
+    """
+    board = [
+        [1, 1, 1],
+        [1, 0, 0],
+        [1, 0, 0],
+        [1, 0, 0],
+    ]
+
+    rows = standard.scan_clears(board, CTX_DOWN)
+    columns = standard.scan_clears(board, _ctx("left"))
+
+    assert rows, "第 0 行是满的，却没有行组"
+    assert len(rows[0].cells) == 3, "行路径的组 = 整行，长度 = 宽度"
+    assert columns, "第 0 列是满的，却没有列组"
+    assert len(columns[0].cells) == 4, "列路径的组 = 整列，长度 = 高度"
+
+
+def test_scan_clears_on_a_zero_width_board_finds_no_line() -> None:
+    """零宽棋盘（每行 0 格）→ **一条满线都没有**（M0 全量审查 M0-10）。
+
+    `all()` 对空切片**恒真**：不挡的话「零列的棋盘」会凭空冒出 N 条满行，
+    每条的格子清单还是空的——塌落动画按 0 个格子算，还凭空多出 N 次消行。
+    """
+    board = [[], [], []]
+
+    assert standard.scan_clears(board, CTX_DOWN) == ()
+    assert standard.scan_clears(board, _ctx("left")) == ()
+
+    # **分类那侧同样**：消行数是 0，类别键是 `none`（不是"消了 3 行"）。
+    classification = standard.classify_placement(board, TSPIN_PLACEMENT, CTX_DOWN)
+    assert classification.classKey == "none"
+    assert classification.tSpin == "none"
+
+
 def test_classify_placement_detects_tspin() -> None:
     """最小 T-Spin 判定：T 型 + 最后一手是旋转 + 外框四角占其三。"""
     classification = standard.classify_placement(TSPIN_BOARD, TSPIN_PLACEMENT, CTX_DOWN)

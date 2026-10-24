@@ -12,7 +12,7 @@
     "kernel/snapshot.py": "99201798ed11c53b5db8846e9873ba44",
     "rules/__init__.py": "fc59602029de1c4ad28e8e9980eba942",
     "rules/interface.py": "c177b1cf50aacaf8b514b1feec93ec14",
-    "rules/standard.py": "37e3eecc74825745b178d2b87b7f3879",
+    "rules/standard.py": "5c57e6a5d9f1d69cc8051b6336829740",
     "rules/tables.py": "cf15da1c49935280e9c70dc254e9d30d"
   },
   "meta": {

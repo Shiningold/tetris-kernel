@@ -345,6 +345,51 @@ def test_state_rejection_changes_no_state() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 命令的 `source` 要随事件透传（M0 全量审查 M0-12）
+# ---------------------------------------------------------------------------
+
+
+def test_the_command_source_is_passed_through_to_the_events() -> None:
+    """命令的 `source` 必须**原样透传**到它的事件元数据上（FR-2.4）。
+
+    `source` 标的是"这条命令是谁发的"——**内核不得因它分支**（架构 §5.1：
+    `source` 只是随事件透传的标记），但**事件上要看得出来**：日志 / 回放 /
+    指标要分得清"这条指令是玩家按的还是 AI 算的"。
+
+    原先**没有任何用例断言它**：内核把 `source` 写死成 `"host"` 或写死成空串，
+    排除冻结区哈希之后**全套测试照样全绿**——只剩"改内核得重刷基线"这条
+    橡皮图章式的阻拦。
+    """
+    kernel = _kernel_in_phase("running")
+
+    drafts = kernel.execute(Command("moveLeft", source="ai"))
+
+    accepted = next(draft for draft in drafts if draft.eventType == "command:accepted")
+    metadata = dict(accepted.metadata)
+    assert metadata["source"] == "ai", (
+        f"command:accepted 的 source 没透传：{metadata.get('source')!r}"
+    )
+
+    # **语义事件**同样带着这个来源——它才是"这条命令做了什么"的那条。
+    moved = next(draft for draft in drafts if draft.eventType == "piece:moved")
+    assert dict(moved.metadata)["source"] == "ai", "语义事件的 source 没透传"
+
+
+def test_the_command_source_is_passed_through_on_rejection_too() -> None:
+    """**被拒**的命令也带它的 `source`——拒绝事件同样是"某条命令的结果"。
+
+    只在接受路径上带来源、拒绝路径上丢掉的实现，日志里就会看到一批来路不明的
+    拒绝事件——排查时恰恰是拒绝事件最需要知道"是谁被拒了"。
+    """
+    kernel = _kernel_in_phase("paused")
+
+    drafts = kernel.execute(Command("moveLeft", source="ai"))
+
+    rejected = next(draft for draft in drafts if draft.eventType == "command:rejected")
+    assert dict(rejected.metadata)["source"] == "ai", "拒绝事件的 source 没透传"
+
+
+# ---------------------------------------------------------------------------
 # 活动方块不变量（审查回合 B2 · 架构 §6.8）
 # ---------------------------------------------------------------------------
 

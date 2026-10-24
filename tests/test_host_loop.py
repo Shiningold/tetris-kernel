@@ -682,6 +682,21 @@ def test_cli_sim_output_values_match_a_real_run(capsys: pytest.CaptureFixture[st
     assert f"阶段：{payload['phase']}" in out
 
 
+def test_cli_sim_rejects_a_negative_frame_count(capsys: pytest.CaptureFixture[str]) -> None:
+    """负帧数 → CLI 层**以 2 退出**（不是只有 API 层挡）。
+
+    API 层的 `run_frames` 早就挡了负帧数（`ValueError`），CLI 是**另一条路**：
+    `main(["sim", "--frames", "-1"])` 的退出码原先**没人验**——它要是返回 0，
+    进程级行为就是"跑成功了"（M0 全量审查 M0-11）。
+
+    **成功路径的退出码另有用例守着**（`code == 0`），这里只补**失败路径**。
+    """
+    code = main(["sim", "--frames", "-1", "--seed", "0"])
+
+    assert code == 2, f"负帧数应当以 2 退出，实为 {code}"
+    assert "帧数不能为负" in capsys.readouterr().err
+
+
 def test_cli_output_stream_is_switched_to_utf8(monkeypatch: pytest.MonkeyPatch) -> None:
     """被**管道接走**的 stdout 被显式切到 UTF-8（批次 C 审查的发现 C6）。
 
