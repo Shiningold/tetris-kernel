@@ -87,6 +87,7 @@ def _sample_snapshot() -> Snapshot:
         pieces_placed=31,
         grounded=False,
         lock_timer=5,
+        gravity_timer=12,
         extensions=(("mode", "marathon"), ("seedTag", 7)),
     )
 
@@ -144,6 +145,7 @@ def _snapshot_with_extensions(
         pieces_placed=0,
         grounded=False,
         lock_timer=0,
+        gravity_timer=0,
         extensions=extensions,
     )
 
@@ -359,6 +361,7 @@ def test_duplicate_extension_key_rejected_on_direct_construction() -> None:
             piecesPlaced=0,
             grounded=False,
             lockTimer=0,
+            gravityTimer=0,
             extensions=(("k", 1), ("k", 2)),
             extensionFingerprint="whatever",
             rngState=None,

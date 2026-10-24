@@ -565,9 +565,14 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
         "state:changed",
         _spec(
             "state",
-            "kernel",
+            "host",
             (
-                PayloadField("version", "int", "状态版本号，每次变更递增"),
+                PayloadField(
+                    "version",
+                    "int",
+                    "状态版本号，每次变更递增；**`reset` 后归零**（归零的是整局状态，"
+                    "版本号跟着一起归）",
+                ),
                 PayloadField("rule", "str", "规则集标识，用于区分标准玩法与变体"),
                 PayloadField("phase", "str", "生命周期状态"),
                 PayloadField("score", "int", "当前分数"),

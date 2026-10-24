@@ -160,6 +160,108 @@ S5 规则签名声明 ✓ ┘
 
 **偏离怎么办**：若 A1 实现了与上表不一致的签名，A2 的测试会**红**（这正是要的红）——修正由集成者裁决，**不许子代理单方面改接口**。接口要改，先改本文件。
 
+### 1.4.4.1 批次 C 的接口先验定（宿主 ↔ 内核 ↔ 总线）
+
+批次 C 的两个写手文件归属互斥（C1 写 `host/**` · `src/tetris_kernel/__main__.py` · `tests/test_host_loop.py`；C2 写 `tests/conftest.py` 与四个门测试文件），但 **C2 的五道门要调用 C1 的无头闭环**——所以宿主侧的公开面必须先钉死，钉法与 §1.4.4 上表同款：**签名写在这里，谁实现都得照它来**。
+
+> **批次 C 的红线**：写手**不得改** `kernel/` · `bus/` · `rules/` · `contracts/`（B-2 内核文件不得为玩法需求改动）、**不得改**包级 `__init__.py`、**不得碰** `docs/**` · `PROGRESS.md` · `ai_docs/**`（§1.4.3 归集成者）。`tests/conftest.py` 归 C2，C1 **可以**用它的公共 fixture，但**不得自己另定义同名 fixture**。
+
+#### ① 宿主装配层（`host/assembly.py` · 产出方 C1 · 消费方 C2）
+
+```python
+@dataclass(frozen=True)
+class Assembly:
+    kernel: Kernel
+    bus: EventBus[Snapshot]
+    clock: Clock
+
+
+def assemble(
+    *,
+    seed: int = 0,
+    piece_types: tuple[str, ...] = PIECE_TYPES,
+    rule_set: RuleSet = STANDARD_RULESET,
+    rule_id: str = "standard",
+    board_width: int = DEFAULT_BOARD_WIDTH,
+    board_height: int = DEFAULT_BOARD_HEIGHT,
+    hidden_rows: int = DEFAULT_HIDDEN_ROWS,
+    step_ms: int = DEFAULT_STEP_MS,
+    mode: str = "live",
+    limits: QuotaLimits = DEFAULT_LIMITS,
+    clock: Clock | None = None,
+    history_limit: int = DEFAULT_HISTORY_LIMIT,
+) -> Assembly: ...
+```
+
+- `bus` 的 `view_provider` 必须是 `kernel.snapshot`（ADR-056：视图 = 快照，**同一个 dataclass**，不写两套）；
+- `clock` 省略时用 `VirtualClock(step_ms=step_ms)`——**无头批次不读墙钟**；
+- 规则集经 `Kernel(rule_set=…)` 注入内核；**装配层是唯一知道"怎么把部件拼起来"的地方**。
+
+#### ② 宿主帧循环（`host/loop.py` · 产出方 C1 · 消费方 C2）
+
+```python
+@dataclass(frozen=True)
+class RunReport:
+    frames: int
+    events: int
+    fingerprint: str
+    score: int
+    lines: int
+    piecesPlaced: int
+    phase: str
+
+
+class HeadlessLoop:
+    def __init__(self, assembly: Assembly, *, source: str = "host") -> None: ...
+    @property
+    def assembly(self) -> Assembly: ...
+    @property
+    def frames(self) -> int: ...
+    def start(self) -> None: ...
+    def run_frame(self) -> int: ...
+    def run_frames(self, frames: int) -> RunReport: ...
+    def snapshot(self) -> Snapshot: ...
+```
+
+- **构造时**把 `kernel.initial_events()`（`kernel:ready` · `game:created`）发到总线上——**内核不 import 总线，发布是宿主的事**（这两个事件至今没有第二个调用者，宿主是第一个）。想实时收到它们的订阅者要**先订阅、后构造 `HeadlessLoop`**；晚订阅的从 `bus.history()` 里取。
+- `start()`：派发 `start` 命令并跑一轮命令循环（**不开帧**）。
+- `run_frames(n)`：跑满 n 帧，局结束也**不提前退出**（帧号照走，推进许可不再授予）。
+- `fingerprint` 取帧末快照的 `board.structureFingerprint`。
+
+**一帧的固定三段**（架构 §6.6「帧末的定义」）：
+
+1. **派发 `tick`**：`kernel.submit(Command(type="tick", source=source))`——tick 是本帧的推进开关（ADR-022）；
+2. **命令轮次循环**：`kernel.run_rounds(publish)`。`publish` 吃**一批**草稿，总线的 `publish` 吃**一条**——宿主负责逐条转发；
+3. **帧推进五步**：`kernel.advance_frame()` 的生成器**必须被耗尽**（B-9 / 架构 §6.2）。中途抛异常时用 `finally` 把剩余步骤**跑完并照发**，原始异常照常向外抛（排空阶段再抛就吞掉——正在传播的那个才是要报的）。
+
+**帧末**（第 3 段跑完之后）：`snapshot = kernel.snapshot()`；**当且仅当 `snapshot.version` 与上一帧末不同**才产出一条 `state:changed`（**每帧至多一条**——版本号每次变更递增是内部计数器行为，脏标记实际由 `version` 承担，架构 §6.6）。
+
+#### ③ `state:changed` 的归属（**内核 M0 不发，宿主在帧末发**）
+
+「帧末」的边界要等宿主的帧循环才存在（帧末 = 命令轮次循环结束**且**帧推进的步骤序列跑完），所以这条事件由**宿主**在帧末构造并 `bus.publish`——**内核一个字节都不改**。
+
+- 负载 13 个字段**照抄契约声明**（`contracts/events.py` 的 `state:changed`），值全部取自**帧末快照**：`version` · `rule` · `phase` · `score` · `lines` · `level` · `combo` · `b2b` · `piecesPlaced` · `activeType`（`snapshot.active` 为 `None` 时取 `None`）· `hold` · `holdUsed` · `next`；
+- 用 `kernel.drafts.make_draft` 构造——**负载字段名与顺序和契约逐条相等由它当场校验**（写错当场报错，不等回放校验踩空）；
+- 元数据只带 `cause=None`（与内核 `initial_events()` 同款），`source` 交给总线的 `default_source`；
+- **产出者是 `host`**（2026-10-24 批次 C 审查修订 C1）：总线按注册表填 `producer`、草稿填的一律忽略（架构 §4.2）——契约声明的产出者必须与**实际发出者**一致（需求 §8.1 的「产出者」列定义就是"谁发出这个事件"），所以 `contracts/events.py` 里这条事件的产出者写 `host`。ADR-063 的先例同款：`kernel:system:installed` / `removed` 也是宿主发出、产出者记 `host`。**负载整份是内核状态**这件事不改变归属——归属看的是**谁发出**，不是负载像谁。
+
+#### ④ CLI（`host/cli.py` · 产出方 C1）
+
+- `main(argv: list[str] | None = None) -> int`——`pyproject.toml` 的 `tetris = "tetris_kernel.host.cli:main"` 已经钉死这个名字；
+- 子命令 `play` / `sim` / `replay` / `inspect`（M0 只要求 `sim` 能跑无头批量，其余占位）；
+- `sim` 的参数：`--frames`（默认 100）· `--seed`（默认 0）· `--json`；
+- `sim` 的输出**必须含**：帧数 · 事件数 · 最终棋盘指纹 · 分数 / 行数 / 已放置方块数（`--json` 时给机器可读的同款字段）。
+
+#### ⑤ `tests/conftest.py` 的公共 fixture（产出方 C2 · 消费方 C1 可用）
+
+| fixture 名 | 给什么 |
+| --- | --- |
+| `fixed_kernel` | 固定种子（`seed=0`）的 `Kernel`，**未开局**（phase = `not_started`） |
+| `fixed_bus` | 总线，`view_provider` 指向 `fixed_kernel.snapshot` |
+| `tmp_sink` | 临时目录（`pathlib.Path`），给后续落盘用（M0 只建不用） |
+
+`hypothesis` 的 `derandomize=True` 落点就在 `tests/conftest.py`（ADR-053）——**这一条是硬要求**，两个写手都不得在别处另设。
+
 ### 1.4.5 「审查—分支—搭车」工作流
 
 **目标流程**：写完一批 → 交另一个对话审查；审查期间另开分支写关联不大的下一批；审查结束交回 → 本会话逐条核实后修正。
@@ -232,10 +334,10 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 | S9 | 命令通道（门禁 + 三段生命周期） | — | B | 已完成 | `3ffcf62`（审查修订 `dad36c0`） |
 | S10 | 合并防抖与配额 | — | B | 已完成 | `ccb3f98`（审查修订 `dad36c0`） |
 | S11 | 总线 | AC-4 切片 | B | 已完成 | `437e253`（审查修订 `dad36c0`） |
-| S12 | 帧模型 | G0-4 | B | 已完成 | `87c57a0`（审查修订 `dad36c0`） |
+| S12 | 帧模型 | G0-4 | B | 已完成 | `87c57a0`（审查修订 `dad36c0` · 出生步修正 `d396e2d` · **重力间隔兑现 `ab6211d`**） |
 | S13 | 规则最小标准实现 | — | A | 已完成 | `27313e4`（审查修订 `7b9e9fc`） |
-| S14 | 宿主装配与无头闭环 | G0-1 | C | 未开始 | — |
-| S15 | 测试骨架与五道门 | G0-1…G0-5 | C | 未开始 | — |
+| S14 | 宿主装配与无头闭环 | G0-1 | C | 已完成 | `ab4ca47` |
+| S15 | 测试骨架与五道门 | G0-1…G0-5 | C | 已完成 | `5c2e249` |
 | S16 | 开放项 B / C 采集 | — | D | 未开始 | — |
 | S17 | 冻结（契约基线 + 内核基线） | 清单 16 | D | 未开始 | — |
 | S18 | 收尾与状态同步 | — | E | 未开始 | — |
@@ -246,7 +348,7 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 | --- | --- | --- | --- | --- | --- | --- |
 | A 行为地基 | `feature/batch-a` | A1 / A2 / A3 | S7 / S8 / S13 | **已落笔 · 审查修订完成** | `a2af287`（S7）· `d59b17f`（S8）· `27313e4`（S13）· `a9355c7`（集成收口）· `7b9e9fc`（审查修订） | `tests/ocr/batch-a-review.md`（**已入库**） |
 | B 命令与帧 | `feature/batch-b` | B1 / B2 | S9 / S10 / S12 · S11 | **已落笔 · 审查修订完成** | `3ffcf62`（S9）· `ccb3f98`（S10）· `87c57a0`（S12）· `437e253`（S11）· `0c60138`（集成收口）· `96f5f50`（并入批次 A 修订）· `810e035`（内核侧对齐新口径）· `8dc0bab`（审查报告入库）· `dad36c0`（**审查修订：16 项逐条裁定，成立 14 项全修**） | `tests/ocr/batch-b-review.md`（**已入库**） |
-| C 闭环与验收 | `feature/batch-c` | C1 / C2 | S14 / S15 | 未开始 | — | `tests/ocr/batch-c-review.md` |
+| C 闭环与验收 | `feature/batch-c` | C1 / C2 | S14 / S15 | **已落笔 · 待审查** | `8ed41bc`（接口先验定）· `ab4ca47`（S14）· `d396e2d`（**内核侧修正：出生步无条件换掉活动方块**）· `5c2e249`（S15）· `f90e7a2`（集成收口导出面）· `ab6211d`（**契约 v1 增补：兑现重力间隔**） | `tests/ocr/batch-c-review.md`（**未入库**） |
 | D 采集与冻结 | `feature/batch-d` | D1 / D2 | S16 / S17 | 未开始 | — | `tests/ocr/batch-d-review.md` |
 | E 收尾 | `feature/batch-e` | 集成者 | S18 | 未开始 | — | `tests/ocr/batch-e-review.md` |
 
@@ -763,6 +865,9 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   - **`next` 队列放的是"当前一袋剩下的全部方块"（≤7），不是契约文档里的 5 个**：少放两个的话"这袋还剩哪几个"只活在内核私有字段里，**存档恢复后取片序列会分叉**（FR-10.2）。类型没变（`tuple[str, ...]`），**基线不受影响**；渲染时取**前 5 个**当预览。**措辞已收口**（2026-10-24 审查回合）：需求 §8.3 与契约 `next` 字段 docstring 都改成「当前这一袋剩下的全部方块（≤7）；**渲染层取前 5 个当预览**」——**只改描述，类型与基线不变**。
   - **出生时机不止帧推进**：`_spawn_piece` 被**三条路径**调用——帧推进的出生步（第五步）· `start` 的出生步 · `hold` 暂存后换新方块（后两处必须立刻给出一块方块）。所以 `piece:spawned` / `queue:refilled` / `rng:next` **会出现在命令事件流里**，不只在帧推进里。**S14 装配层别假设"出生事件只在帧里出现"**。
   - **M0 最小实现**：无锁定延迟（落即锁，`lockTimer` 恒为 0）· 出生列固定 · `writeCells` 默认放行（授权粒度是 C 级需求，M1 再做；`not_authorized` 在 M0 不会触发，`write_condition_failed` 会）· 标准踢墙表仍是恒等偏移（批次 A 的 M1 边界）。
+  - **出生步只在锁定之后补一块**（2026-10-24 批次 C 收口修正，`d396e2d`）：出生步曾**无条件**调 `_spawn_piece()`，把活动方块**换掉**——方块每帧被换新（`y` 恒为 0），永远落不到地板 → 永不锁定 → `piecesPlaced` 恒 0、棋盘不填、局不结束。**这处此前没被发现，是因为各步都是单步单测，从没把帧模型整体串起来跑过**；S14 的宿主无头闭环是第一次这么做的地方（写手 C1 独立复现，按 B-2 红线没碰内核文件）。修法：活动方块还在时出生步直接返回。回归守卫在 `tests/test_frame_model.py` 两条（出生步不换掉活动方块 · 只靠重力也能落盘锁定）。
+  - **消行步只在「本帧锁定过」时调 `score_clear`**（2026-10-24 批次 C 审查回合发现的缺陷）：plan S13 段的第三条约定是「每次**放置锁定后**都要调 `score_clear`（含空组）」——**落空是"一次放置没有消行"，它发生在锁定时**。实现曾**每帧**都调：空组一调就是"落空"，于是**连击与背面连击链每帧被断一次**，FR-4.6 静默失效（连击活不过一帧）；而且没锁定的帧里若棋盘上有满行（`writeCells` 填的），那行会被**无端消掉**。修法：内核加一个**帧级标志**（`self._locked_in_frame`，运行时状态、**不进快照**），`step_lock` 锁定时置位，消行步据此决定要不要调 `score_clear`。回归守卫在 `tests/test_frame_model.py` 一条（连击活过没锁定的帧）。**这处是写 C4 的值级守卫时撞出来的**——守「负载的值与快照相等」需要局面每项都非平凡，而 `b2b` 只在难消（四消 / T-Spin）时才为 `True`。
+  - **重力间隔已由内核兑现**（2026-10-24 契约 v1 增补，在 S17 冻结之前定）：`gravity_interval(ctx)` 是规则集接口，标准实现查等级表（1 级 = 60 帧落一格，S13）——此前**内核的帧模型不消费它**：`step_gravity` 只取 `gravity_vector` 的方向向量，方块**每帧落一格**（比等级表快 60 倍），无人操作的一局约 250 帧就顶出结束。现在**内核消费这个签名**：新增快照字段 `gravityTimer`（**距下一次落格还有几帧，0 = 本帧到期**），每帧递减，到期才落一格，落格后重置为 `间隔 − 1`；**随方块出生重置**（新方块在第 `间隔` 帧落第一格）。**触地判定仍每帧做**（幽灵落点走 0 格即触地），所以**间隔不拖慢锁定**——M0 的「落即锁」不变。**三条口径**：① 间隔取自规则集的等级表（换等级就换间隔），间隔变短时把剩余帧数**夹到新间隔**；② 契约面**只增不改**——`gravityTimer` 是**新增键**（既有键的哈希一个没动，不撞基线），**事件面零改动**（`clock:gravity` 的负载与语义不变：未到期时 `dx` / `dy` 记 0，与「重力受阻时位移为 0」的既有语义一致）；③ 快照字段 21 → 22（需求 §8.3 与契约清单第 3 项同步改）。回归守卫在 `tests/test_frame_model.py` 六条（计时起点取自规则集 · 间隔没到不动 · 到期恰好落一格 · 贴地仍当场锁定 · 出生重置计时 · 间隔随等级表走）。
 - **常见坑**
   - **整批返回草稿** → 所有事件共享"执行后的最终态"，`piece:locked` 的订阅者读到的是已消行、已塌落、已出生的棋盘（ADR-023）。
   - **帧号在被接受时才 +1** → tick 的 `received` 带旧帧号、`accepted` 带新帧号，一条命令两个帧号（ADR-022）。
@@ -838,14 +943,14 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
 
 - **目标**：五道门各有可复跑的测试，测试骨架与属性测试纪律就位。
 - **任务**
-  - [ ] `tests/conftest.py`：**hypothesis `derandomize=True`**（落点在此，ADR-053）+ 公共 fixture（固定种子内核、总线、临时目录 sink）
-  - [ ] `test_kernel_lifecycle.py` → **G0-1**、**G0-2**
-  - [ ] `test_determinism.py` → **G0-3**
-  - [ ] `test_command_rounds.py` → **G0-4**
-  - [ ] `test_bus_isolation.py` → **G0-5**
-  - [ ] `test_contracts_declarations.py` 补全（S2–S5 期间已建骨架）
-  - [ ] 事件完备性遍历脚本：遍历"命令类型 × phase × 有无活动方块"，断言每次 `execute` 后要么状态未变（必有 `command:rejected`）、要么状态变了（必有对应语义事件）
-  - [ ] 属性测试：内核随机源固定种子；断言不崩、无静默状态变更、同序列重跑指纹一致、拒绝不改状态
+  - [x] `tests/conftest.py`：**hypothesis `derandomize=True`**（落点在此，ADR-053）+ 公共 fixture（固定种子内核、总线、临时目录 sink）
+  - [x] `test_kernel_lifecycle.py` → **G0-1**、**G0-2**
+  - [x] `test_determinism.py` → **G0-3**
+  - [x] `test_command_rounds.py` → **G0-4**
+  - [x] `test_bus_isolation.py` → **G0-5**
+  - [x] `test_contracts_declarations.py` 补全（S2–S5 期间已建骨架）
+  - [x] 事件完备性遍历脚本：遍历"命令类型 × phase × 有无活动方块"，断言每次 `execute` 后要么状态未变（必有 `command:rejected`）、要么状态变了（必有对应语义事件）
+  - [x] 属性测试：内核随机源固定种子；断言不崩、无静默状态变更、同序列重跑指纹一致、拒绝不改状态
 - **涉及文件**：`tests/conftest.py` · `tests/test_kernel_lifecycle.py` · `tests/test_determinism.py` · `tests/test_command_rounds.py` · `tests/test_bus_isolation.py` · `tests/test_contracts_declarations.py`（补全）
 - **批次 / 写手 / 文件归属**：**批次 C** · 写手 **C2**（承 C1 的无头闭环）· 独占上列全部文件。**`tests/conftest.py` 是跨批次共享设施，在本批次内归 C2，其他批次（尤其 A / B）不碰**——批次 A / B 的测试必须自给自足，不依赖这里的 fixture。
 - **验证方案**
@@ -854,11 +959,15 @@ feature/batch-a ── A1' A2' A3'          批次 A 的三笔阶段提交（各
   3. **G0-5 的反向验证**：临时去掉订阅者异常隔离 → 测试**必须红**。
   4. 测试属性：连续跑 `pytest` 两次，hypothesis 用例**结果一致**（`derandomize=True` 生效的证据）。
   5. `pytest --durations=10` 看最慢用例，避免 10000 帧用例拖垮整套。
-- **完成判据**：五道门各一个可复跑用例 + 两条反向验证（人为破坏 → 必红）。
-- **提交**：`测试：补齐 M0 五道门判据与契约声明测试`
+- **完成判据**：五道门各一个可复跑用例 + 两条反向验证（人为破坏 → 必红）。→ **达成**（`5c2e249`；全量 615 passed / 44 skipped）
+- **提交**：`测试：补齐 M0 五道门判据与契约声明测试` → **`5c2e249`**
+- **实现补记**（两处口径 —— 都与计划上写的字面略有出入，**按实际落地的写**）
+  - **G0-2 落成三桶，不是计划上写的两桶**：真实内核存在第三种合法情形——**「被接受但状态没变」**：`tick`（推进许可，ADR-022）· 受阻的移动 / 旋转（ADR-043）· 状态本来就在初值时的 `reset`。硬套「未变 → 必有 rejected / 变了 → 必有语义事件」两句会把这些**合法路径判红**。所以拆成**被拒 / 变了 / 没变**三桶，每桶都有断言；原有的「版本递增次数 ≤ 语义事件条数」「对应语义事件」「拒绝不改状态（帧号除外，ADR-022）」全部保留。遍历覆盖 **96 / 128** 组合：另 32 个（`not_started` 与 `game_over` 态 + 有活动方块）**结构性不可达**（`start` 才给方块、`_end_game` 清空方块），由一条专门的用例守住这个理由——**不可达要写成用例，不能靠注释带过**。
+  - **G0-1 的门判据用例只有一个**：§5.2 规定它归 `tests/test_kernel_lifecycle.py`。S14 的实现侧长跑留在 `tests/test_host_loop.py`，帧数取 **2000**——两条都跑 10000 帧会让这两个用例占掉整套的一半时间（实测 4.3s + 3.9s），而实现侧要验的东西（帧数对得上、队列清空、指纹一致、局真的在打）2000 帧全都验得到。`-k headless_10000_frames` 因此**只命中一条**。
 - **常见坑**
   - **完备性检查写成"没报错就算过"** → 必须在人为破坏时**红**，否则它什么也没检查。
   - **hypothesis 不开 `derandomize=True`** → CI 上的偶发失败无法复现（只固定内核种子不够）。
+  - **把"状态没变"一律判成漏事件** → 内核有「被接受但状态没变」的合法路径（见上面的三桶）。
 
 ---
 
@@ -954,12 +1063,12 @@ pytest -q
 python tools\check_kernel_purity.py
 python tools\check_event_registry.py
 python tools\check_frozen_baseline.py
-python tools\contract_baseline.py --check
+python tools\contract_baseline.py --checklist-only
 ```
 
 > **ruff 只认环境内那一份**（0.17.1；PATH 上是 0.15.17，格式结果不同会打架，ADR-052）。若 PATH 上的版本不符，改用 `D:\miniconda3\envs\py312\python.exe -m ruff check .`（环境内那一份）。`pytest` / `pyright` / `lint-imports` 同理可用环境内解释器调用。
 > **S1 之前**这批 dev 工具尚未装上（当前 py312 里只有 ruff），S1 装完 dev 组才开始逐条跑。
-> **S17 之前** `check_frozen_baseline.py` 与 `contract_baseline.py --check` 预期输出"基线尚未生成"的**提示**而非错误——那两阶段还没到生成时点。
+> **`contract_baseline.py` 没有 `--check`**（2026-10-24 批次 C 收口订正）：它的参数是 `--checklist <路径>` · `--checklist-only` · `--update-baseline` · `--print-entries`，而 `--check` 是 `--checklist` 与 `--checklist-only` 的**歧义前缀**，argparse 直接报错。**清单校验用 `--checklist-only`**（有未勾项就打印缺哪几项并以退出码 1 拒绝）。基线比对本身由 `--update-baseline` 与基线文件的存在与否承担——**基线文件要到 S17 才生成**，那之前这一项预期输出"尚未生成"的提示而非错误。
 
 ### 5.2 五道门的验证入口（S15 落地后）
 

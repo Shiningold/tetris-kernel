@@ -26,7 +26,7 @@ from typing import cast
 from tetris_kernel.kernel.commands import Args, Command
 from tetris_kernel.kernel.core import Kernel
 from tetris_kernel.kernel.drafts import EventDraft
-from tetris_kernel.rules.tables import PIECE_TYPES, SCORE_TABLE
+from tetris_kernel.rules.tables import GRAVITY_INTERVAL_FRAMES, PIECE_TYPES, SCORE_TABLE
 
 #: 固定种子（测试不依赖随机性）。
 SEED = 20261024
@@ -34,6 +34,9 @@ SEED = 20261024
 #: 棋盘尺寸（与内核默认一致）。
 WIDTH = 10
 HEIGHT = 22
+
+#: 标准规则集 1 级的重力间隔（**取自规则集的等级表**，不在测试里写死帧数）。
+GRAVITY_INTERVAL = GRAVITY_INTERVAL_FRAMES[0]
 
 #: 五步的固定次序（架构 §6.2 / ADR-023）。
 FIVE_STEPS = (
@@ -213,6 +216,31 @@ def test_a_clearless_frame_does_not_change_the_state() -> None:
     assert "board:lines-cleared" not in events, events
 
 
+def test_combo_survives_a_frame_without_a_lock() -> None:
+    """**没锁定的帧不该断连击**——`score_clear` 只在锁定后调。
+
+    **回归守卫**（2026-10-24 批次 C 审查回合发现）：消行步曾**每帧**都调
+    `score_clear`（含空组），而 plan-M0.md S13 段的第三条约定是「每次**放置
+    锁定后**都要调 `score_clear`（含空组）」——**落空是"一次放置没有消行"，
+    它发生在锁定时**。没锁定的帧里根本没有"落空"这回事，空组一调就等于
+    **每帧都断一次连击**，连击与背面连击链活不过一帧（FR-4.6 静默失效）。
+
+    后果还不止连击：没锁定的帧里若棋盘上有满行（`writeCells` 填的），那行
+    也会被**无端消掉**。
+    """
+    kernel = _kernel_ready_to_clear()
+
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    assert kernel.snapshot().combo == 1, "消行后连击没有起来"
+
+    # 下一帧**没有锁定**（新方块还在空中，够不着地板）→ 不是"落空"。
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+
+    assert kernel.snapshot().combo == 1, "没锁定的帧把连击断了"
+
+
 # ---------------------------------------------------------------------------
 # 行为语义：五步的**实际副作用**（审查回合 B6）
 # ---------------------------------------------------------------------------
@@ -270,6 +298,150 @@ def test_scoring_follows_the_rule_set() -> None:
     assert after.lines == before.lines + 1, "消行数没跟着涨"
     assert after.score == before.score + SCORE_TABLE["single"], "分数没按规则集算"
     assert after.combo == before.combo + 1, "连击没跟着涨"
+
+
+# ---------------------------------------------------------------------------
+# 出生步：锁定之后才补一块（2026-10-24 批次 C 收口发现的回归）
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_step_does_not_replace_the_active_piece() -> None:
+    """出生步**不换掉**活动方块——它只在锁定步清空活动方块之后才补一块。
+
+    **回归守卫**：出生步曾无条件调用 `_spawn_piece()`，把活动方块**换掉**。
+    后果：方块每帧被换新（`y` 恒为 0），永远落不到地板 → 永不锁定 → 棋盘
+    不填、分数不动、局不结束。**S14 的无头闭环第一次把帧模型整体跑起来，
+    才把这处暴露出来**——此前各步都是单步单测，从没串起来跑过。
+    """
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+
+    drafts = [draft for step in _advance(kernel) for draft in step]
+
+    assert "piece:spawned" not in _types(drafts), "出生步把活动方块换掉了"
+    assert kernel.snapshot().active is not None, "活动方块不见了"
+
+
+def test_gravity_alone_lets_a_piece_fall_and_lock() -> None:
+    """只靠重力，方块也能落到地板、被锁定，锁定之后补上新的一块。
+
+    这是上面那条缺陷的**后果级**守卫：缺陷在时方块每帧被换新，
+    `piecesPlaced` 恒为 0、棋盘永远不填。
+
+    **落格要等一个间隔**（规则集给的 `gravity_interval`，标准 1 级 = 60 帧），
+    所以这里跑的帧数按间隔算，不是按"几帧"算。
+    """
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    first = kernel.snapshot()
+    assert first.active is not None, "开局没有活动方块"
+    start_y = first.active.y
+
+    # 跑满一个间隔：方块应当**往下走一格**（不是每帧被换成新方块）。
+    for _ in range(GRAVITY_INTERVAL - 1):
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+    moved = kernel.snapshot()
+    assert moved.active is not None, "活动方块不见了"
+    assert moved.active.y == start_y + 1, "方块没有按间隔往下走"
+
+    # 一直跑到落盘为止（每格一个间隔，所以帧数按"格数 × 间隔"给足）。
+    for _ in range(GRAVITY_INTERVAL * 25):
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+        if kernel.snapshot().piecesPlaced > 0:
+            break
+    final = kernel.snapshot()
+    assert final.piecesPlaced == 1, "方块没有落盘"
+    assert any(cell != 0 for row in final.board.cells for cell in row), "棋盘上没有一个格子"
+    assert final.active is not None, "锁定之后没有补一块新方块"
+
+
+# ---------------------------------------------------------------------------
+# 重力间隔：规则集的 `gravity_interval(ctx)` 由内核兑现（2026-10-24 契约 v1 增补）
+# ---------------------------------------------------------------------------
+
+
+def test_the_gravity_timer_starts_at_the_rule_set_interval() -> None:
+    """开局时**重力计时 = 规则集给的间隔**——内核不写死帧数。
+
+    计时记的是「还有几帧才落格」，所以出生时是 `间隔 − 1`（第 `间隔` 帧落
+    第一格）。
+    """
+    kernel = _running_kernel()
+
+    assert kernel.snapshot().gravityTimer == GRAVITY_INTERVAL - 1
+
+
+def test_a_piece_does_not_fall_every_frame() -> None:
+    """间隔没到，**方块不动**——「每帧落一格」的旧行为被换掉的守卫。"""
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    start_y = kernel.snapshot().active.y
+
+    for _ in range(GRAVITY_INTERVAL - 2):
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+
+    mid = kernel.snapshot()
+    assert mid.active is not None
+    assert mid.active.y == start_y, "间隔没到方块就动了"
+    assert mid.gravityTimer == 0, "重力计时没有逐帧递减"
+
+
+def test_the_piece_falls_exactly_one_row_when_the_interval_expires() -> None:
+    """间隔到期 → **恰好落一格**（不是落到底），且计时重置。"""
+    kernel = _running_kernel()
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+    start_y = kernel.snapshot().active.y
+
+    for _ in range(GRAVITY_INTERVAL - 1):
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+
+    after = kernel.snapshot()
+    assert after.active is not None
+    assert after.active.y == start_y + 1, "到期后没有恰好落一格"
+    assert after.gravityTimer == GRAVITY_INTERVAL - 1, "落格后计时没有重置"
+
+
+def test_a_grounded_piece_locks_immediately_despite_the_interval() -> None:
+    """间隔**不拖慢锁定**：方块贴地那一帧就被锁定（M0 是落即锁）。"""
+    kernel = _running_kernel()
+    kernel.execute(Command("hardDrop", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+
+    assert kernel.snapshot().piecesPlaced == 1, "贴地的方块没有当场锁定"
+
+
+def test_a_newly_spawned_piece_restarts_the_gravity_timer() -> None:
+    """锁定后补的新方块**先等满一个间隔**才落第一格。"""
+    kernel = _running_kernel()
+    kernel.execute(Command("hardDrop", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+
+    snapshot = kernel.snapshot()
+    assert snapshot.piecesPlaced == 1
+    assert snapshot.active is not None, "锁定之后没有补新方块"
+    assert snapshot.gravityTimer == GRAVITY_INTERVAL - 1, "新方块的计时没有随出生重置"
+
+
+def test_the_interval_follows_the_rule_set_level_table() -> None:
+    """间隔查的是**规则集的等级表**——换等级就换间隔（内核不写死 60）。"""
+    kernel = _running_kernel()
+    kernel.execute(Command("setLevel", args=(("level", 10),), source="test"))
+    assert kernel.snapshot().level == 10
+
+    # 间隔变短 → 计时**夹到新间隔**（别让节奏停在旧间隔上）。
+    kernel.execute(Command("tick", source="test"))
+    _advance(kernel)
+
+    assert kernel.snapshot().gravityTimer == GRAVITY_INTERVAL_FRAMES[9] - 1
 
 
 # ---------------------------------------------------------------------------

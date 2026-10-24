@@ -236,6 +236,7 @@ class KernelState:
     pieces_placed: int = 0
     grounded: bool = False
     lock_timer: int = 0
+    gravity_timer: int = 0
     extensions: tuple[ExtensionEntry, ...] = ()
 
 
@@ -327,6 +328,9 @@ class Kernel:
         self._advance_permitted = False
         self._advance_cause: tuple[int, int] | None = None
         self._advance_source = "host"
+        # 帧级标志：**这一帧锁定过没有**（消行步据此决定要不要调 `score_clear`）。
+        # **运行时状态，不进快照**——它只活在一轮帧推进里。
+        self._locked_in_frame = False
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -384,6 +388,7 @@ class Kernel:
             pieces_placed=self._state.pieces_placed,
             grounded=self._state.grounded,
             lock_timer=self._state.lock_timer,
+            gravity_timer=self._state.gravity_timer,
             extensions=self._state.extensions,
         )
 
@@ -1253,6 +1258,8 @@ class Kernel:
             self._advance_permitted = False
             return
         self._advance_permitted = False
+        # 帧级标志归零：每一帧从"没锁定过"开始（锁定的帧由 `step_lock` 置位）。
+        self._locked_in_frame = False
         yield from frame.advance_frame(self)
 
     def _advance_metadata(self) -> tuple[tuple[str, JsonValue], ...]:
@@ -1265,22 +1272,44 @@ class Kernel:
     def step_gravity(self, context: frame.FrameContext) -> frame.StepOutcome:
         """第一步：重力。
 
+        **两件事分开**（2026-10-24 契约 v1 增补，兑现规则集的重力间隔）：
+
+        - **落格**由**重力计时**决定：距上次落格满一个间隔（规则集的
+          `gravity_interval(ctx)`，标准 1 级 = 60 帧）才真正下移一格；没到期
+          就**原地不动**（`dx` / `dy` 记 0）；
+        - **触地判定每帧都做**（"再往重力方向走一格会不会撞"）——所以方块
+          贴地的那一帧就被判为 `grounded`，紧随其后的锁定步当场锁定（**落即
+          锁**，M0 不做锁定延迟）。
+
         重力受阻时**位移为 0**（事件照发——五步的节奏是固定的，订阅者据此
         知道"这一帧重力没能推动方块"）。
         """
         active = self._state.active
         if active is None:
             return frame.StepOutcome((), context)
-        dx, dy = self._rules.gravity_vector(self._rule_context())
-        moved = not self._collides(active.pieceType, active.rotation, active.x + dx, active.y + dy)
-        if moved:
-            active.x += dx
-            active.y += dy
-            active.lastCause = "ground"
+        rule_context = self._rule_context()
+        dx, dy = self._rules.gravity_vector(rule_context)
+        interval = max(1, self._rules.gravity_interval(rule_context))
+        timer = self._state.gravity_timer
+        moved = False
+        if timer == 0:
+            # 到期：本帧落一格。
+            moved = not self._collides(
+                active.pieceType, active.rotation, active.x + dx, active.y + dy
+            )
+            if moved:
+                active.x += dx
+                active.y += dy
+                active.lastCause = "ground"
+                # 下一格在**一个间隔之后**落——本次落格已经消耗掉 1 帧。
+                self._state.gravity_timer = interval - 1
         else:
-            # 落到底：方块**待锁定**（锁定是下一步的事）。
-            self._state.grounded = True
+            # 没到期：只走表。间隔变短时（等级下降）把剩余帧数**夹到新间隔**，
+            # 别让节奏停在旧间隔上。
+            self._state.gravity_timer = min(timer - 1, interval - 1)
         self._state.ghost_delta = self._compute_ghost_delta()
+        # 触地判定：**幽灵落点就在脚下**（走 0 格）⟺ 再往重力方向走一格会撞。
+        self._state.grounded = self._state.ghost_delta == (0, 0)
         self._touch()
         drafts = (
             make_draft(
@@ -1318,6 +1347,12 @@ class Kernel:
         self._state.active = None
         self._state.grounded = False
         self._state.ghost_delta = (0, 0)
+        # **本帧锁定了**：消行步据此决定要不要调 `score_clear`（plan-M0.md
+        # S13 段的第三条约定：「每次**放置锁定后**都要调 `score_clear`（含空
+        # 组）」）。没有这一条，消行步会在**每一个没锁定的帧**也调一次
+        # `score_clear`——空组即落空，**连击与背面连击链每帧都被断一次**，
+        # FR-4.6 静默失效。
+        self._locked_in_frame = True
         # **本块结束 → 暂存额度复位**（FR-4.5「每块一次」）：锁定就是"本块
         # 结束"，下一块重新获得额度。不复位就变成"每局一次"，暂存功能整局
         # 只生效一次（快照的 `holdUsed` 也会与契约写的"本块"分叉）。
@@ -1366,7 +1401,16 @@ class Kernel:
 
         **状态没变就不落笔**（架构 §6.2：先算完再一次性写入）：落空且本来
         就没有连击 / 链时什么都没变，也就不发事件。
+
+        **只在"本帧锁定过"时才调 `score_clear`**（plan-M0.md S13 段的第三条
+        约定：「每次**放置锁定后**都要调 `score_clear`（含空组）」）。落空是
+        **一次放置没有消行**，它发生在锁定时——没锁定的帧里根本没有"落空"这
+        回事，调一次空组等于**每帧都断一次连击**（FR-4.6 静默失效）。
         """
+        if not self._locked_in_frame:
+            # 本帧没有锁定 → 不是"落空"，**不调 `score_clear`**。
+            return frame.StepOutcome((), context)
+        self._locked_in_frame = False  # 一帧只算一次
         groups = self._rules.scan_clears(self._state.board, self._rule_context())
         classification = context.classification
         attached = tuple(replace(group, classification=classification) for group in groups)
@@ -1479,7 +1523,19 @@ class Kernel:
         return frame.StepOutcome(drafts, context)
 
     def step_spawn(self, context: frame.FrameContext) -> frame.StepOutcome:
-        """第五步：出生。"""
+        """第五步：出生。
+
+        **只在没有活动方块时出生**——上一帧的锁定步刚把方块落盘（活动方块被
+        清空），这一步才**补**一块新的。
+
+        **无条件出生是错的**：出生步会把活动方块**换掉**，于是方块每帧被换新
+        （`y` 恒为 0），永远落不到地板 → 永不锁定 → 棋盘不填、分数不动、
+        局不结束。2026-10-24 批次 C 收口时发现：S14 的无头闭环第一次把帧
+        模型整体跑起来，才把这处暴露出来（此前各步都是单步单测，没串过）。
+        """
+        if self._state.active is not None:
+            # 活动方块还在（这一帧没锁定任何东西）→ **不出生**。
+            return frame.StepOutcome((), context)
         metadata = self._advance_metadata()
         drafts = tuple(
             make_draft(event_type, payload, self._frame, metadata)
@@ -1510,6 +1566,10 @@ class Kernel:
             pieceType=piece_type, rotation=0, x=SPAWN_X, y=SPAWN_Y, lastCause="ground"
         )
         self._state.grounded = False
+        # **重力计时随出生重置**：新方块先等满一个间隔才落第一格——落格间隔
+        # 是节奏，节奏从这一块开始算，不接着上一块 leftover。计时记的是
+        # 「还有几帧才落格」，所以出生时是 `间隔 − 1`（第 `间隔` 帧落第一格）。
+        self._state.gravity_timer = max(1, self._rules.gravity_interval(self._rule_context())) - 1
         self._state.ghost_delta = self._compute_ghost_delta()
         events.append(
             (

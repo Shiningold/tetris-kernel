@@ -65,6 +65,8 @@ from tetris_kernel.contracts import (
     is_lifecycle_gated,
     namespace_of,
 )
+from tetris_kernel.kernel.core import Kernel, KernelState
+from tetris_kernel.rules.tables import PIECE_TYPES
 
 # ---------------------------------------------------------------------------
 # 需求 §8.1 的事件目录，独立转录一份做交叉核对。
@@ -124,7 +126,7 @@ EXPECTED_EVENTS: dict[str, tuple[str, str]] = {
     # progress（1 条）
     "progress:level-changed": ("progress", "kernel"),
     # state（1 条）
-    "state:changed": ("state", "kernel"),
+    "state:changed": ("state", "host"),
     # render（1 条）
     "render:frame": ("render", "renderer"),
     # log（1 条）
@@ -137,9 +139,9 @@ EXPECTED_EVENTS: dict[str, tuple[str, str]] = {
 
 #: 产出者分布（需求 §8.1 / 契约清单第 8 项）。
 EXPECTED_PRODUCER_COUNTS: dict[str, int] = {
-    "kernel": 35,
+    "kernel": 34,
     "bus": 1,
-    "host": 2,
+    "host": 3,
     "input-adapter": 2,
     "renderer": 1,
     "log": 1,
@@ -407,7 +409,7 @@ def test_event_registry_matches_requirement_table() -> None:
 
 
 def test_producer_distribution() -> None:
-    """产出者分布：内核 35 · 总线 1 · host 2 · 输入适配器 2 · 渲染器 1 · 日志/指标/成就各 1。"""
+    """产出者分布：内核 34 · 总线 1 · host 3 · 输入适配器 2 · 渲染器 1 · 日志/指标/成就各 1。"""
     counts: dict[str, int] = {}
     for spec in EVENT_TYPES.values():
         counts[spec.producer] = counts.get(spec.producer, 0) + 1
@@ -888,7 +890,7 @@ def test_no_arg_is_nullable_in_v1() -> None:
 # `test_snapshot_types_reference_shared_constants` 单独钉住。
 # ---------------------------------------------------------------------------
 
-#: 21 个顶层快照字段（字段名 → 类型）。
+#: 22 个顶层快照字段（字段名 → 类型）。
 EXPECTED_SNAPSHOT_FIELDS: dict[str, str] = {
     "version": "int",
     "rule": "str",
@@ -908,6 +910,7 @@ EXPECTED_SNAPSHOT_FIELDS: dict[str, str] = {
     "piecesPlaced": "int",
     "grounded": "bool",
     "lockTimer": "int",
+    "gravityTimer": "int",
     "extensions": "tuple[tuple[str, int | float | str | bool | None], ...]",
     "extensionFingerprint": "str",
     "rngState": "tuple[int, ...] | None",
@@ -985,8 +988,8 @@ def _snapshot_leaf_paths() -> set[str]:
 
 
 def test_snapshot_field_count() -> None:
-    """顶层 21 · `board` 子字段 5 · `Active` 子字段 4（需求 §8.3）。"""
-    assert len(SNAPSHOT_FIELDS) == 21
+    """顶层 22 · `board` 子字段 5 · `Active` 子字段 4（需求 §8.3）。"""
+    assert len(SNAPSHOT_FIELDS) == 22
     assert len(BOARD_FIELDS) == 5
     assert len(ACTIVE_FIELDS) == 4
 
@@ -1823,3 +1826,284 @@ def test_package_all_matches_actual_exports() -> None:
     }
     public = {n for n in dir(contracts_pkg) if not n.startswith("_") and n not in submodule_names}
     assert public == set(exported), "包级公开名与 __all__ 不一致"
+
+
+# ---------------------------------------------------------------------------
+# S15 补全：契约面新守的三块
+#
+# ① `state:changed` 的负载是**快照的投影**——宿主在帧末发它（§1.4.4.1 ③），
+#    这条契约面要有牙齿：快照字段改名 / 改型 → 红；
+# ② 禁浮点（B-7 / ADR-025）**只约束 `args`**，事件负载不受约束；
+# ③ 快照 = 内核状态全集（契约清单第 15 项）：内核加字段 → 快照必须同步加字段，
+#    这条纪律**能反过来守**（契约表自己的注释就是这么写的）。
+#
+# 前两块是**补上没守的面**，第三块是把 S4 标注为"人检"的第 15 项落成机检。
+# ---------------------------------------------------------------------------
+
+#: `state:changed` 的负载字段 → 它投影的快照字段路径。
+#:
+#: 转录自需求 §8.1 的「轻量摘要（不含整张棋盘）」与契约 `state:changed` 的声明：
+#: 12 个字段是快照的**同名投影**，只有 `activeType` 是**类型投影**（快照的
+#: `active` 可空 → 事件侧给 `str | None`）。
+EXPECTED_STATE_CHANGED_PROJECTION: dict[str, str] = {
+    "version": "version",
+    "rule": "rule",
+    "phase": "phase",
+    "score": "score",
+    "lines": "lines",
+    "level": "level",
+    "combo": "combo",
+    "b2b": "b2b",
+    "piecesPlaced": "piecesPlaced",
+    "activeType": "active.pieceType",
+    "hold": "hold",
+    "holdUsed": "holdUsed",
+    "next": "next",
+}
+
+#: `state:changed` 的负载字段顺序（**顺序进基线**，重排 = 哈希全变）。
+EXPECTED_STATE_CHANGED_ORDER: tuple[str, ...] = (
+    "version",
+    "rule",
+    "phase",
+    "score",
+    "lines",
+    "level",
+    "combo",
+    "b2b",
+    "piecesPlaced",
+    "activeType",
+    "hold",
+    "holdUsed",
+    "next",
+)
+
+
+#: 内核字段名（snake_case）→ 契约映射表里的写法（camelCase），反之亦然。
+#:
+#: 契约表的 `kernel_field` 用的是**快照那侧的命名**（`ghostDelta` / `holdUsed`），
+#: 内核的 dataclass 字段是 snake_case（`ghost_delta` / `hold_used`）——同一套
+#: 命名体系的两种拼法，这里做一次机械转换，不另抄一份名单。
+def _snake_to_camel(name: str) -> str:
+    """内核字段名（snake_case）→ 契约映射表里的写法（camelCase）。"""
+    head, *rest = name.split("_")
+    return head + "".join(part.capitalize() for part in rest)
+
+
+def _camel_to_snake(name: str) -> str:
+    """契约映射表里的写法（camelCase）→ 内核字段名（snake_case）。
+
+    与 `_snake_to_camel` 是同一套命名体系的反向转换——**机械规则，不抄名单**。
+    """
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+#: 内核**单独持有**、不在 `KernelState` 里的状态字段（**从契约推导**）。
+#:
+#: **不手写名单**（批次 C 审查的发现 C19）：这里原来写死
+#: `frozenset({"ruleId", "frame"})`——手写名单会和契约分叉（契约再点名一个状态外
+#: 字段，这里不会跟着改，守卫就守不住了）。现在由契约说了算：映射表里那些
+#: **不在 `KernelState` 的 dataclass 字段里**的根名，就是「状态外字段」。
+#:
+#: 推出来的结果是 `{ruleId, frame, rngInstance}`：`ruleId` = `self._rule_id`、
+#: `frame` = `self._frame`（内核用**普通属性**持有的两条状态），`rngInstance` 是
+#: **派生**那条（随机源实例本体，契约声明它不进快照、只带走可序列化状态）。
+KERNEL_ATTRIBUTES_OUTSIDE_STATE: frozenset[str] = frozenset(
+    {entry.kernel_field.split(".")[0] for entry in KERNEL_STATE_TO_SNAPSHOT}
+    - {_snake_to_camel(field.name) for field in dataclasses.fields(KernelState)}
+)
+
+
+def test_event_registry_order_matches_the_requirement_table() -> None:
+    """事件注册表的枚举顺序 = 需求 §8.1 的表格顺序。
+
+    **顺序进基线**（契约清单第 12 项：字段级哈希）——重排会让基线全变，却不
+    改变任何字段的语义：这种改动**必须**是显式的，不该悄悄发生。
+    """
+    assert tuple(EVENT_TYPES) == tuple(EXPECTED_EVENTS)
+
+
+def test_command_registry_order_matches_the_requirement_table() -> None:
+    """命令注册表的枚举顺序 = 需求 §8.2 的表格顺序（同上：顺序进基线）。"""
+    assert COMMAND_TYPES == tuple(EXPECTED_COMMAND_ARGS)
+
+
+def test_state_changed_payload_is_a_projection_of_the_snapshot() -> None:
+    """`state:changed` 的每个字段都投影一个快照字段——**同名同类型**。
+
+    宿主在帧末发这条事件（plan-M0.md §1.4.4.1 ③），负载整份都是内核状态。
+    所以契约面必须保证"事件字段 ↔ 快照字段"的对应关系：快照字段改名或改型，
+    这里当场变红——**否则宿主会照着旧契约发出一条与快照对不上的事件**。
+    """
+    spec = EVENT_TYPES["state:changed"]
+    payload = {field.name: field.type for field in spec.payload}
+    assert set(payload) == set(EXPECTED_STATE_CHANGED_PROJECTION), "字段集合对不上"
+    for name, snapshot_path in EXPECTED_STATE_CHANGED_PROJECTION.items():
+        if name == "activeType":
+            # 类型投影：快照的 `active` 可空 → 事件侧给 `str | None`。
+            assert payload[name] == "str | None", name
+            assert ACTIVE_FIELDS["pieceType"].type == "str"
+            continue
+        field = SNAPSHOT_FIELDS[snapshot_path]
+        assert payload[name] == field.type, f"{name} 与快照 {snapshot_path} 的类型不一致"
+
+
+def test_state_changed_payload_field_order_is_locked() -> None:
+    """`state:changed` 的负载字段**顺序**也锁死。
+
+    `make_draft` 按**顺序**逐条校验负载字段（架构 §4.4：字段名与顺序照抄契约），
+    顺序错了当场报错——但那是在**运行期**；这里把它提到**契约期**。
+    """
+    assert tuple(field.name for field in EVENT_TYPES["state:changed"].payload) == (
+        EXPECTED_STATE_CHANGED_ORDER
+    )
+
+
+def test_state_changed_does_not_carry_the_whole_board() -> None:
+    """需求 §8.1：`state:changed` 是**轻量摘要（不含整张棋盘）**。
+
+    整张棋盘走快照（`state:changed` + 快照是渲染器的两条入口，需求 §7）——
+    事件负载里再塞一份棋盘，事件流会被每帧拖大。
+
+    **判据用共享常量**（批次 C 审查的发现 C20）：原来只认 `tuple[tuple[int` 这一
+    种**字符串拼法**，棋盘若被声明成别的形状就绕过去了。`BOARD_CELLS` 是契约里
+    棋盘格子数组的类型串、`BOARD_VIEW` 是它的只读视图——声明侧引用这两个常量，
+    这里就拿它们当判据（架构 §4.4 末条：引用处一律用常量，不复制字面量）。
+    """
+    fields = EVENT_TYPES["state:changed"].payload
+    names = {field.name for field in fields}
+    assert "board" not in names, names
+    for field in fields:
+        assert field.type != BOARD_CELLS, f"{field.name} 带着整张棋盘"
+        assert field.type != BOARD_VIEW, f"{field.name} 带着棋盘视图"
+
+
+def test_float_is_forbidden_in_args_but_allowed_in_event_payloads() -> None:
+    """禁浮点**只约束 `args`**（B-7 / ADR-025）——事件负载不受这条约束。
+
+    `args` 参与重放（JSON 里 `1.0` 与 `1` 不可区分）；事件负载不参与，所以
+    `metric:sampled` 的聚合值带小数、`rng:next` 的取值可能是浮点。**口径不同是
+    对的**：这条断言守住"只约束 args"这个范围——哪天有人把浮点全局禁掉（连事件
+    负载也不许带），这里会红。
+    """
+    assert "float" not in ARGS_VALUE
+    assert "float" not in ARGS
+    for name, spec in COMMANDS.items():
+        for arg in spec.args:
+            assert "float" not in arg.type, f"{name}.{arg.name}"
+    with_float = {
+        name
+        for name, spec in EVENT_TYPES.items()
+        if any("float" in field.type for field in spec.payload)
+    }
+    assert with_float == {
+        "kernel:system:installed",
+        "log:entry",
+        "metric:sampled",
+        "rng:next",
+    }
+    assert "float" in JSON_VALUE, "事件负载的取值域里应当有浮点"
+
+
+def test_every_kernel_state_field_is_mapped_to_the_snapshot() -> None:
+    """内核**状态**的每个字段都在快照映射表里（快照 = 内核状态全集）。
+
+    契约清单第 15 项原本是"人检"——这里落成机检：内核往 `KernelState` 里加一个
+    字段而没同步加快照字段，这里当场变红（FR-10.2：存档恢复缺一块，回放就废了）。
+
+    **「状态」在本仓库指什么**（批次 C 审查的发现 C19）：内核的**游戏状态**住在
+    `KernelState` 这个 dataclass 里；契约另外点名了几个**普通属性**
+    （`ruleId` = `self._rule_id`、`frame` = `self._frame`），由
+    `test_every_contract_declared_state_field_exists_in_the_kernel` 单独守。
+    其余普通属性（`_seed` / `_step_ms` / `_mode` / `_piece_types` / `_rules` …）是
+    **配置**——整局不变，存档也不需要它们。
+
+    **内核文件里多出一个字段**由冻结区哈希基线兜着（S17 生成）：内核是冻结区，
+    内容一变就红——那是"多一个字段"唯一真正响得起来的机制。
+    """
+    mapped = {entry.kernel_field.split(".")[0] for entry in KERNEL_STATE_TO_SNAPSHOT}
+    for field in dataclasses.fields(KernelState):
+        camel = _snake_to_camel(field.name)
+        assert camel in mapped, f"内核状态字段 {field.name}（{camel}）没进快照映射表"
+
+
+def test_every_contract_declared_state_field_exists_in_the_kernel() -> None:
+    """契约点名的每个状态字段，在内核里**真的存在**——**普通属性也算**。
+
+    原来的守卫只遍历 `dataclasses.fields(KernelState)`，**普通属性没覆盖**：
+    `ruleId` 与 `frame` 恰恰是内核用普通属性（`self._rule_id` / `self._frame`）
+    持有的，两条都在契约的映射表里，却没人查它们在内核侧是不是真的存在。
+
+    **解析规则是机械的**（不手写名单）：契约侧的 camelCase 名 → snake_case →
+    内核的 `_` 私有属性。`derived` 的那几条（结构指纹 / 扩展摘要 / 随机源状态）是
+    **算出来的**，不指向某个字段，跳过。
+    """
+    kernel = Kernel(seed=0, piece_types=PIECE_TYPES)
+    plain = set(vars(kernel))
+    dataclass_names = {_snake_to_camel(field.name) for field in dataclasses.fields(KernelState)}
+
+    for entry in KERNEL_STATE_TO_SNAPSHOT:
+        if entry.derived:
+            continue
+        root = entry.kernel_field.split(".")[0]
+        if root in dataclass_names:
+            continue
+        attribute = f"_{_camel_to_snake(root)}"
+        assert attribute in plain, f"契约点名的状态字段 {root} 在内核里没有对应属性 {attribute}"
+
+
+def test_every_kernel_attribute_that_reaches_the_snapshot_is_contract_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """凡是**进了快照**的内核属性，都必须是契约声明过的。
+
+    **哪些属性进了快照**：用 `__getattribute__` 探针记录 `snapshot()` 实际读了哪些
+    普通属性——**机器推导**，不手写名单（批次 C 审查的发现 C19）。
+
+    判据：读到的每个属性都要能对上契约——要么是 `KERNEL_STATE_TO_SNAPSHOT` 点名的
+    状态字段，要么是已声明结构（`board` / `active`）的成员，要么就是装
+    `KernelState` 的那个属性。**对不上，就是快照带了契约没声明的东西**。
+    """
+    kernel = Kernel(seed=0, piece_types=PIECE_TYPES)
+    reads: set[str] = set()
+    original = Kernel.__getattribute__
+
+    def spy(self: Kernel, name: str) -> object:
+        reads.add(name)
+        return original(self, name)
+
+    monkeypatch.setattr(Kernel, "__getattribute__", spy)
+    kernel.snapshot()
+    monkeypatch.undo()
+
+    attributes = vars(kernel)
+    plain_reads = {name for name in reads if name in attributes}
+    assert plain_reads, "探针一个普通属性都没读到——这条守卫等于没跑"
+
+    state_holder = next(
+        name for name, value in attributes.items() if isinstance(value, KernelState)
+    )
+    declared_roots = {entry.kernel_field.split(".")[0] for entry in KERNEL_STATE_TO_SNAPSHOT}
+    struct_members = set(BOARD_FIELDS) | set(ACTIVE_FIELDS)
+
+    for name in sorted(plain_reads):
+        if name == state_holder:
+            continue
+        camel = _snake_to_camel(name.lstrip("_"))
+        assert camel in declared_roots or camel in struct_members, (
+            f"内核属性 {name} 进了快照，但契约没声明它（快照带了契约之外的东西）"
+        )
+
+
+def test_every_mapped_kernel_field_exists_in_the_kernel() -> None:
+    """映射表里的每个内核字段**都真实存在**——不许指着一个不存在的字段。
+
+    反方向的那条纪律：映射表写错了名字（手滑），快照就会少一块或多一块，而
+    **两边都"看起来有声明"**——不交叉核对就发现不了。
+    """
+    known = {_snake_to_camel(field.name) for field in dataclasses.fields(KernelState)}
+    known |= KERNEL_ATTRIBUTES_OUTSIDE_STATE
+    known |= set(RUNTIME_ONLY_STATE)
+    for entry in KERNEL_STATE_TO_SNAPSHOT:
+        root = entry.kernel_field.split(".")[0]
+        assert root in known, f"映射表指着内核没有的字段：{entry.kernel_field}"

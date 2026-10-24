@@ -4,19 +4,35 @@
 
 批次 A 落在本层的只有**时钟源**（S7 口径 2）：真实 / 虚拟是同一接口的两种
 实现，所以**放在同一个文件**——拆到两层就是两处维护同一对签名。
-装配层与帧循环随 S14 补上，**不提前实现别的阶段的事**。
+
+批次 C（S14）补上**装配层**与**无头帧循环**：`assemble()` 把内核、总线与
+时钟拼成一件成品，`HeadlessLoop` 跑「命令轮次循环 → 帧推进五步 → 帧末拉
+快照」的固定三段。命令行入口在 `host/cli.py`（**不**从包级导出——`main` 这
+个名字太泛，入口按 `tetris_kernel.host.cli:main` 走）。
 """
 
+from .assembly import (
+    Assembly,
+    assemble,
+)
 from .clock import (
     DEFAULT_STEP_MS,
     Clock,
     RealClock,
     VirtualClock,
 )
+from .loop import (
+    HeadlessLoop,
+    RunReport,
+)
 
 __all__ = [
     "DEFAULT_STEP_MS",
+    "Assembly",
     "Clock",
+    "HeadlessLoop",
     "RealClock",
+    "RunReport",
     "VirtualClock",
+    "assemble",
 ]
