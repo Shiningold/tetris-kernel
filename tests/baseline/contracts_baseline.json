@@ -256,7 +256,7 @@
     "event/state:changed/next": "798a5e371cc23b411023b60b3a6a7cb2",
     "event/state:changed/phase": "5a6c14ef9c18b31e1053d4c2cc0c1dd7",
     "event/state:changed/piecesPlaced": "ff67e782c8d5caca2e4137303bf54dbd",
-    "event/state:changed/producer": "3d6675cde25173ae6386edbcc2d4c795",
+    "event/state:changed/producer": "40bcdc6f6befdede7813e6017ef8354f",
     "event/state:changed/rule": "5a6c14ef9c18b31e1053d4c2cc0c1dd7",
     "event/state:changed/score": "ff67e782c8d5caca2e4137303bf54dbd",
     "event/state:changed/version": "ff67e782c8d5caca2e4137303bf54dbd",
