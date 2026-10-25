@@ -8,7 +8,8 @@ M0 只保证**接口定稿 + 最小实现**（架构 §7.3 · spec-M0.md §7.5�
 - `scan_clears` 整行 / 整列满即消，产出带**轴 + 索引 + 格子清单**的组；
 - `classify_placement` 给 T-Spin 标记 + 计分类别键（**一档 T-Spin**）；
 - `score_clear` 基础分值 + 连击奖励；
-- `shape_cells` 标准 7 种方块 × 4 朝向；`kick_offsets` **恒等偏移**。
+- `shape_cells` 标准 7 种方块 × 4 朝向；`kick_offsets` **标准踢墙表**
+  （SRS + 180° 扩展，ADR-068）。
 
 **标准踢墙表逐条验证、T-Spin 三类全对、完整计分表是 M1**（spec-M0.md §7.5
 与 M1 开门判据）——这里一次做完，M1 的判据就失去意义了。
@@ -77,6 +78,7 @@ from .tables import (
     DIFFICULT_CLASS_KEYS,
     GRAVITY_INTERVAL_FRAMES,
     GRAVITY_VECTORS,
+    KICK_GROUP_BY_PIECE,
     KICK_TABLE,
     ROTATION_COUNT,
     SCORE_TABLE,
@@ -348,7 +350,7 @@ def shape_cells(
     """
     axis_table = SHAPE_TABLE.get(ctx.axis)
     if not axis_table:
-        raise ValueError(f"重力轴 {ctx.axis!r} 没有形状表（M0 只提供 down 轴）")
+        raise ValueError(f"重力轴 {ctx.axis!r} 没有形状表（M1 只提供 down 轴，其余属 M4-A5）")
     piece_table = axis_table.get(pieceType)
     if piece_table is None:
         raise ValueError(f"未知方块类型 {pieceType!r}")
@@ -366,19 +368,27 @@ def kick_offsets(
 ) -> tuple[tuple[int, int], ...]:
     """取踢墙表：旋转时的候选偏移（含 180°）。
 
-    M0 是**恒等偏移的最小表**：唯一候选是 `(0, 0)`。标准踢墙表逐条验证是
-    **M1 的开门判据**（plan-M0.md S13 常见坑）。
+    **M1 起是标准踢墙表**（SRS 权威表 + 180° 扩展表，ADR-068）：候选按
+    **优先级**排列，**第一个能落下的就用它**，全部落不下 → 旋转被拒
+    （命令仍被接受，另发受阻事件，ADR-043）。
 
-    `pieceType` 在 M0 用不上（恒等偏移与方块无关）；M1 补标准表时 I / O 会
-    各有偏移，届时的表结构会多一层方块类型。
+    **表的第三层是踢墙组**（`"I"` / `"JLSTZ"` / `"O"`）——方块类型 → 组的
+    映射由规则集提供（`tables.KICK_GROUP_BY_PIECE`）：J / L / S / T / Z
+    共用一套，I 独立一套，O 不踢墙。
+
+    **坐标是本项目那套**（x 右正、**y 下正**）——权威表的 y 上正，落地时
+    **y 分量取反**（换算关系写在 `tables.py` 的注释里）。
     """
     axis_table = KICK_TABLE.get(ctx.axis)
     if not axis_table:
-        raise ValueError(f"重力轴 {ctx.axis!r} 没有踢墙表（M0 只提供 down 轴）")
-    offsets = axis_table.get((fromRotation % ROTATION_COUNT, toRotation % ROTATION_COUNT))
-    if offsets is None:
+        raise ValueError(f"重力轴 {ctx.axis!r} 没有踢墙表（M1 只提供 down 轴，其余属 M4-A5）")
+    by_group = axis_table.get((fromRotation % ROTATION_COUNT, toRotation % ROTATION_COUNT))
+    if by_group is None:
         raise ValueError(f"没有从朝向 {fromRotation} 到朝向 {toRotation} 的踢墙偏移")
-    return offsets
+    group = KICK_GROUP_BY_PIECE.get(pieceType)
+    if group is None:
+        raise ValueError(f"未知方块类型 {pieceType!r}")
+    return by_group[group]
 
 
 def _is_tspin(

@@ -445,13 +445,33 @@ def test_shape_cells_without_axis_table() -> None:
         standard.shape_cells(_ctx("left"), "T", 0)
 
 
-def test_kick_offsets_is_identity_table() -> None:
-    """最小踢墙表：恒等偏移（含 180° 的转向）。"""
+def test_kick_offsets_follow_the_piece_kick_group() -> None:
+    """踢墙表按**踢墙组**取：J/L/S/T/Z 共用一套 · I 独立一套 · O 不踢墙。
+
+    M1 起踢墙表是标准表（SRS + 180° 扩展，ADR-068），表结构多了一层
+    **踢墙组**——M0 的"恒等偏移最小表"已经退场。
+    """
     for piece_type in tables.PIECE_TYPES:
+        group = tables.KICK_GROUP_BY_PIECE[piece_type]
         for from_rotation in tables.ROTATIONS:
             for to_rotation in tables.ROTATIONS:
                 offsets = standard.kick_offsets(CTX_DOWN, piece_type, from_rotation, to_rotation)
-                assert offsets == ((0, 0),)
+                expected = tables.KICK_TABLE["down"][(from_rotation, to_rotation)][group]
+                assert offsets == expected, (
+                    f"方块 {piece_type!r} 从 {from_rotation} 到 {to_rotation} 的偏移取错了组"
+                )
+
+    # **O 不踢墙**（SRS 里 O 旋转不位移）：任何转向都只有恒等偏移。
+    for from_rotation in tables.ROTATIONS:
+        for to_rotation in tables.ROTATIONS:
+            offsets = standard.kick_offsets(CTX_DOWN, "O", from_rotation, to_rotation)
+            assert offsets == ((0, 0),)
+
+
+def test_kick_offsets_rejects_unknown_piece() -> None:
+    """未知方块类型当场报错——不返回空偏移糊弄过去。"""
+    with pytest.raises(ValueError):
+        standard.kick_offsets(CTX_DOWN, "X", 0, 1)
 
 
 def test_kick_offsets_without_axis_table() -> None:
