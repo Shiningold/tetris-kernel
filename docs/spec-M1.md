@@ -360,7 +360,7 @@ KICK_TABLE[轴][(fromRotation, toRotation)][踢墙组] -> tuple[tuple[int, int],
 
 ### 7.4 计分（**完整表 · 与手算一致**）
 
-**基础分**（guideline 口径）：
+**基础分**（**项目口径** · 与官方 guideline 有**三处偏离**，逐条见 **ADR-069**）：
 
 | 类别 | 分值 |
 | --- | --- |
