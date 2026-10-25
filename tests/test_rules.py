@@ -115,6 +115,7 @@ def test_signature_checker_can_actually_fail() -> None:
         scan_clears=standard.scan_clears,
         classify_placement=standard.classify_placement,
         score_clear=standard.score_clear,
+        soft_drop_score=standard.soft_drop_score,
         shape_cells=bad_shape_cells,
         kick_offsets=standard.kick_offsets,
     )
@@ -127,8 +128,20 @@ def test_signature_checker_reports_missing_interface() -> None:
     """少一条接口必须被报出来。"""
     incomplete = SimpleNamespace(wrap_cell=standard.wrap_cell)
     problems = interface.signature_mismatches(incomplete)
-    assert len(problems) == 7
+    assert len(problems) == 8
     assert all("缺少这条接口" in problem for problem in problems)
+
+
+def test_standard_soft_drop_score_is_one_point_per_cell() -> None:
+    """标准规则的软降得分：**每实际下移一格加 1 分**。
+
+    `distance` 是本次**实际下移**的格数——被墙挡住就是 0，加 0 分。
+
+    这条口径在 M1 开工前就定死了（plan-M1.md §1.4.4 的预验定约定）：内核
+    原先写死的 `+1` 在 S11 迁到这里，**换规则集就能改软降得分**（G4-1）。
+    """
+    assert standard.soft_drop_score(CTX_DOWN, 0) == 0
+    assert standard.soft_drop_score(CTX_DOWN, 3) == 3
 
 
 def test_wrap_cell_is_identity() -> None:

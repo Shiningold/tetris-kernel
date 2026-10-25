@@ -38,7 +38,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import BOARD_CELLS, INT_TUPLE, NEXT_QUEUE, SCALAR_MAP, VECTOR2
+from .types import (
+    BOARD_CELLS,
+    INT_TUPLE,
+    NEXT_QUEUE,
+    PHASE_LITERAL,
+    SCALAR_MAP,
+    VECTOR2,
+)
 
 # ---------------------------------------------------------------------------
 # 声明结构
@@ -172,7 +179,14 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
             "三件套一起归，见内核的 `reset` 口径），版本号跟着一起归",
         ),
         "rule": _field("rule", "str", "规则集标识，用于区分标准玩法与变体；录像与存档均须携带"),
-        "phase": _field("phase", "str", "生命周期状态：待开始 / 运行 / 暂停 / 结束"),
+        "phase": _field(
+            "phase",
+            PHASE_LITERAL,
+            "生命周期状态：not_started / running / paused / game_over"
+            "（**散文写英文标识符**——取值是给机器用的，散文是给人读的；"
+            "两套写法混在一格里才叫'两套写法'。内核运行时本来就是这四个值，"
+            "这条只动声明面，不动行为）",
+        ),
         "frame": _field("frame", "int", "逻辑帧号（宿主逻辑帧，暂停期照走）"),
         "board": _field("board", "Board", "棋盘子结构，成员见 BOARD_FIELDS"),
         "active": _field(

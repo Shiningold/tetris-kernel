@@ -70,7 +70,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import CELLS, INT_TUPLE
+from .types import (
+    CELLS,
+    INT_TUPLE,
+    PHASE_GAME_OVER,
+    PHASE_NOT_STARTED,
+    PHASE_PAUSED,
+    literal_enum,
+)
 
 # ---------------------------------------------------------------------------
 # 声明结构
@@ -132,11 +139,14 @@ class CommandSpec:
 # ---------------------------------------------------------------------------
 
 #: 拒绝原因枚举（v1 定死，**只增不改**，需求 §8.2）。顺序 = 需求分类表的顺序。
+#:
+#: **生命周期那三个值由 `types.PHASE_*` 派生**——门禁原因**就是三个状态名本身**
+#: （架构 §7.3.1「门禁三值从状态派生」），抄第二份字面量表，两处分叉时无人报警。
 REJECT_REASONS: tuple[str, ...] = (
     # 生命周期门禁
-    "not_started",
-    "paused",
-    "game_over",
+    PHASE_NOT_STARTED,
+    PHASE_PAUSED,
+    PHASE_GAME_OVER,
     # 配额
     "quota_exceeded",
     # 参数
@@ -155,7 +165,7 @@ REJECT_REASONS: tuple[str, ...] = (
 #: 拒绝原因的分类（需求 §8.2 的「类」列）。键 = 分类代号，值 = 该类的取值。
 REJECT_REASON_CATEGORIES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "lifecycle": ("not_started", "paused", "game_over"),
+        "lifecycle": (PHASE_NOT_STARTED, PHASE_PAUSED, PHASE_GAME_OVER),
         "quota": ("quota_exceeded",),
         "parameter": ("invalid_argument", "level_out_of_range", "out_of_bounds"),
         "state": ("illegal_transition", "no_active_piece", "hold_already_used"),
@@ -176,7 +186,10 @@ REJECT_REASON_CATEGORY_LABELS: Mapping[str, str] = MappingProxyType(
 
 #: 生命周期门禁的三值（需求 §8.2 的门禁注）。**受门禁约束的命令必须三个全带**，
 #: 不受门禁约束的一个都不能带——这条不变式由测试守着。
-LIFECYCLE_REJECT_REASONS: tuple[str, ...] = ("not_started", "paused", "game_over")
+#:
+#: **由 `types.PHASE_*` 派生**：门禁三值就是三个状态名（架构 §7.3.1），
+#: 不另抄一份字面量表。
+LIFECYCLE_REJECT_REASONS: tuple[str, ...] = (PHASE_NOT_STARTED, PHASE_PAUSED, PHASE_GAME_OVER)
 
 _REASON_INDEX: Mapping[str, int] = MappingProxyType(
     {name: index for index, name in enumerate(REJECT_REASONS)}
@@ -423,13 +436,20 @@ COMMANDS: Mapping[str, CommandSpec] = MappingProxyType(dict(_COMMAND_SPECS))
 #: 命令类型名的稳定序列（枚举顺序 = 需求 §8.2 的表格顺序）。
 COMMAND_TYPES: tuple[str, ...] = tuple(name for name, _ in _COMMAND_SPECS)
 
+#: 命令名的**类型串**（形态 11 · 由 `COMMAND_TYPES` 派生）。
+#:
+#: **由注册表派生，不另抄一份名单**——手抄的那份与 `COMMANDS` 静默分叉时，
+#: 基线显示全绿，而实际允许的命令名已经变了。事件侧的 `commandType` 字段
+#: 引用它（`events.py`），取值域因此在类型串里看得见。
+COMMAND_TYPE_LITERAL: str = literal_enum(COMMAND_TYPES)
+
 #: 事件侧承载**命令名**的负载字段：`(事件类型, 字段名)`。
 #:
 #: 这些字段的取值域 = `COMMAND_TYPES`——命令集"封闭且可枚举"（FR-2.1）在
-#: 事件侧的落点。**事件负载的类型语言里没有字面量枚举形态**（`types.py` 的
-#: 封闭文法现有 10 形，仍没有"枚举"这一形），所以取值域只能这样声明：声明这
-#: 张表，再断言"凡是承载命令名的字段都在表里、且类型一致"。**运行时的取值域
-#: 校验归 S9/S11**——派发了表外的命令名，内核要拒。
+#: 事件侧的落点。**取值域写进类型串**（形态 11 · `COMMAND_TYPE_LITERAL`），
+#: 基线才看得见它变过；这张表则声明"哪些字段承载命令名"，两边配合：字段的
+#: **类型**由类型串说，字段的**位置**由这张表说。
+#: **运行时的取值域校验归 S9/S11**——派发了表外的命令名，内核要拒。
 #:
 #: 声明放在命令侧而不是事件侧：命令集是命令面的东西，事件侧只负责承载。
 COMMAND_TYPE_FIELDS: tuple[tuple[str, str], ...] = (

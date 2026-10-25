@@ -3,7 +3,7 @@
 当前覆盖：事件注册表（44 条）、命名空间、产出者分布、信封与元数据声明、
 命令规格（16 条）与拒绝原因枚举（12 值）、快照字段声明（21 顶层 + board 5
 子字段 + active 4 子字段）、坐标系约定、M0 内核状态清单、PlacementInfo、
-规则接口签名（8 条）与四个中性交换结构、命名结构注册表、类型文法回验与
+规则接口签名（9 条）与四个中性交换结构、命名结构注册表、类型文法回验与
 公共叶子纯净度。
 """
 
@@ -13,21 +13,26 @@ import ast
 import dataclasses
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 import tetris_kernel.contracts as contracts_pkg
+import tetris_kernel.rules as rules_pkg
 from tetris_kernel.contracts import (
     ACTIVE_FIELDS,
     ARGS,
     ARGS_VALUE,
+    AXIS_LITERAL,
     AXIS_VALUES,
     BOARD_CELLS,
     BOARD_FIELDS,
     BOARD_VIEW,
     CELLS,
+    CLEAR_AXIS_LITERAL,
     CLEAR_AXIS_VALUES,
     COMMAND_TYPE_FIELDS,
+    COMMAND_TYPE_LITERAL,
     COMMAND_TYPES,
     COMMANDS,
     CONTRACT_VERSION,
@@ -42,6 +47,8 @@ from tetris_kernel.contracts import (
     METADATA_KEYS,
     NAMED_STRUCTS,
     NEXT_QUEUE,
+    PHASE_LITERAL,
+    PHASE_VALUES,
     PRODUCER_LABELS,
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
@@ -65,8 +72,35 @@ from tetris_kernel.contracts import (
     is_lifecycle_gated,
     namespace_of,
 )
+from tetris_kernel.contracts.types import Phase, literal_enum
+from tetris_kernel.host.assembly import assemble
+from tetris_kernel.kernel.commands import Command
 from tetris_kernel.kernel.core import Kernel, KernelState
+from tetris_kernel.rules.standard import STANDARD_RULESET
 from tetris_kernel.rules.tables import PIECE_TYPES
+
+# ---------------------------------------------------------------------------
+# 取值域收口：四条（+事件侧同域）字段的类型串，**独立转录**一份做交叉核对。
+#
+# 转录的是「取值域收口后契约里该写什么」，不是「实现产出了什么」——两者相等
+# 才有意义。**逐字相等**：不是"包含某个词"。
+# ---------------------------------------------------------------------------
+
+#: 生命周期取值的类型串（四个取值按契约的枚举顺序）。
+EXPECTED_PHASE_LITERAL = "Literal['not_started', 'running', 'paused', 'game_over']"
+
+#: 重力方向的类型串。
+EXPECTED_AXIS_LITERAL = "Literal['down', 'left', 'right', 'up']"
+
+#: 消行轴的类型串。
+EXPECTED_CLEAR_AXIS_LITERAL = "Literal['row', 'column']"
+
+#: 命令名的类型串（16 个命令名按需求 §8.2 的表格顺序）。
+EXPECTED_COMMAND_TYPE_LITERAL = (
+    "Literal['start', 'pause', 'resume', 'reset', 'moveLeft', 'moveRight', "
+    "'softDrop', 'hardDrop', 'rotateCW', 'rotateCCW', 'rotate180', 'hold', "
+    "'tick', 'setLevel', 'injectGarbage', 'writeCells']"
+)
 
 # ---------------------------------------------------------------------------
 # 需求 §8.1 的事件目录，独立转录一份做交叉核对。
@@ -181,7 +215,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         "actual": "int",
     },
     "command:received": {
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
         "source": "str",
         "args": (
             "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
@@ -189,7 +223,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         ),
     },
     "command:accepted": {
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
         "commandSeq": "int",
         "args": (
             "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
@@ -197,7 +231,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         ),
     },
     "command:rejected": {
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
         "reason": "str",
         "args": (
             "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
@@ -214,10 +248,10 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         "seed": "int",
     },
     "game:paused": {
-        "phase": "str",
+        "phase": EXPECTED_PHASE_LITERAL,
     },
     "game:resumed": {
-        "phase": "str",
+        "phase": EXPECTED_PHASE_LITERAL,
     },
     "game:over": {
         "score": "int",
@@ -244,7 +278,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
     },
     "input:intent": {
         "action": "str",
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
     },
     "rng:next": {
         "value": "float | int",
@@ -350,7 +384,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
     "state:changed": {
         "version": "int",
         "rule": "str",
-        "phase": "str",
+        "phase": EXPECTED_PHASE_LITERAL,
         "score": "int",
         "lines": "int",
         "level": "int",
@@ -833,13 +867,13 @@ def test_lifecycle_gate_is_explicit() -> None:
 def test_command_type_fields_carry_command_names() -> None:
     """事件侧承载命令名的字段：**都在 `COMMAND_TYPE_FIELDS` 里，且类型一致**。
 
-    事件负载的类型语言里没有字面量枚举形态，所以取值域（= `COMMAND_TYPES`）
-    只能这样落地：声明 + 断言「凡是承载命令名的字段都在表里」。
+    取值域**写进类型串**了（形态 11）——字段的类型就是命令名的字面量枚举，
+    基线因此看得见命令集变没变（M1 取值域收口）。
     """
     for event_type, field_name in COMMAND_TYPE_FIELDS:
         spec = EVENT_TYPES[event_type]
         field = next(f for f in spec.payload if f.name == field_name)
-        assert field.type == "str", f"{event_type}.{field_name}"
+        assert field.type == EXPECTED_COMMAND_TYPE_LITERAL, f"{event_type}.{field_name}"
     listed = set(COMMAND_TYPE_FIELDS)
     actual = {
         (event_type, field.name)
@@ -894,7 +928,7 @@ def test_no_arg_is_nullable_in_v1() -> None:
 EXPECTED_SNAPSHOT_FIELDS: dict[str, str] = {
     "version": "int",
     "rule": "str",
-    "phase": "str",
+    "phase": EXPECTED_PHASE_LITERAL,
     "frame": "int",
     "board": "Board",
     "active": "Active | None",
@@ -1199,7 +1233,7 @@ def test_placement_cells_uses_cells_coordinate_constant() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S5：规则接口签名（架构 §7.3.1 · 8 条）与中性交换结构
+# S5：规则接口签名（架构 §7.3.1 · 9 条）与中性交换结构
 #
 # 架构 §7.3.1 的签名表，独立转录一份做交叉核对。转录的是「架构写了什么」，
 # 不是「声明写了什么」——拿声明自证，机检就只是证明自己没写错。
@@ -1233,6 +1267,10 @@ EXPECTED_RULE_SIGNATURES: dict[str, tuple[tuple[tuple[str, str], ...], str]] = {
         ),
         "ScoreDelta",
     ),
+    "soft_drop_score": (
+        (("ctx", "RuleContext"), ("distance", "int")),
+        "int",
+    ),
     "shape_cells": (
         (("ctx", "RuleContext"), ("pieceType", "str"), ("rotation", "int")),
         "tuple[tuple[int, int], ...]",
@@ -1248,7 +1286,8 @@ EXPECTED_RULE_SIGNATURES: dict[str, tuple[tuple[tuple[str, str], ...], str]] = {
     ),
 }
 
-#: 签名在架构 §7.3.1 表格里的顺序。
+#: 签名在架构 §7.3.1 表格里的顺序（**第 9 条紧跟 `score_clear` 之后**——
+#: 计分组连着排；顺序进基线，重排 = major 变更）。
 EXPECTED_RULE_SIGNATURE_ORDER = (
     "wrap_cell",
     "gravity_vector",
@@ -1256,17 +1295,18 @@ EXPECTED_RULE_SIGNATURE_ORDER = (
     "scan_clears",
     "classify_placement",
     "score_clear",
+    "soft_drop_score",
     "shape_cells",
     "kick_offsets",
 )
 
-#: 8 条签名按能力分组：四项接口（边界 / 重力 / 消行 / 计分）+ 两张表
+#: 9 条签名按能力分组：四项接口（边界 / 重力 / 消行 / 计分）+ 两张表
 #: （形状 / 踢墙）。FR-4.9：规则模块按这四项分别可插拔，**不另开第五项**。
 EXPECTED_SIGNATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "边界（拓扑）": ("wrap_cell",),
     "重力": ("gravity_vector", "gravity_interval"),
     "消行": ("scan_clears", "classify_placement"),
-    "计分": ("score_clear",),
+    "计分": ("score_clear", "soft_drop_score"),
     "形状": ("shape_cells",),
     "踢墙": ("kick_offsets",),
 }
@@ -1275,7 +1315,7 @@ EXPECTED_SIGNATURE_GROUPS: dict[str, tuple[str, ...]] = {
 EXPECTED_EXCHANGE_STRUCTURE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
     "PlacementClass": (("tSpin", "str"), ("classKey", "str")),
     "ClearGroup": (
-        ("axis", "str"),
+        ("axis", EXPECTED_CLEAR_AXIS_LITERAL),
         ("index", "int"),
         ("cells", "tuple[tuple[int, int], ...]"),
         ("classification", "PlacementClass | None"),
@@ -1295,11 +1335,36 @@ EXPECTED_EXCHANGE_STRUCTURE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
-def test_rule_signature_count_is_eight() -> None:
-    """规则接口签名 = **8 条**（四项接口 + 形状表 / 踢墙表，架构 §7.3.1）。"""
-    assert len(RULE_SIGNATURES) == 8
-    assert len(RULE_SIGNATURE_NAMES) == 8
-    assert len(set(RULE_SIGNATURE_NAMES)) == 8
+def test_rule_signature_count_is_nine() -> None:
+    """规则接口签名 = **9 条**（四项接口 + 形状表 / 踢墙表 + M1 的软降计分）。
+
+    **条数进基线**（结构性计数键 `count/ruleSignature`）：整条新增一条签名只
+    产生新键，按"新增键放行"的口径会一路绿灯——比改参数更大的接口变更反而
+    更难被发现。
+    """
+    assert len(RULE_SIGNATURES) == 9
+    assert len(RULE_SIGNATURE_NAMES) == 9
+    assert len(set(RULE_SIGNATURE_NAMES)) == 9
+
+
+def test_soft_drop_score_is_its_own_signature() -> None:
+    """第 9 条 `soft_drop_score` 的**参数名与类型**逐条钉死。
+
+    **为什么是独立一条签名**，而不是给 `score_clear` 加参数：消行结算在锁定
+    时调一次，软降发生在放置途中，**时机与频率都不同**；软降距离是**单次
+    命令的参数**，塞进跨帧的 `RuleContext` 会多一个"每帧重置"的瞬时量。
+
+    **落位 = 紧跟 `score_clear` 之后**（计分组连着排）：声明顺序进基线，
+    后补的插中间 = 已有键的顺序变了 = 撞红。
+    """
+    signature = RULE_SIGNATURES["soft_drop_score"]
+    assert tuple((param.name, param.type) for param in signature.params) == (
+        ("ctx", "RuleContext"),
+        ("distance", "int"),
+    )
+    assert signature.returns == "int"
+    order = RULE_SIGNATURE_NAMES
+    assert order.index("soft_drop_score") == order.index("score_clear") + 1
 
 
 def test_rule_signatures_match_architecture_table() -> None:
@@ -1320,7 +1385,7 @@ def test_rule_signature_order_matches_architecture_table() -> None:
 
 
 def test_rule_signatures_cover_four_capabilities_and_two_tables() -> None:
-    """8 条 = 四项接口 + 两张表，**不另开第五项**（FR-4.9）。"""
+    """9 条 = 四项接口 + 两张表 + 软降计分，**不另开第五项**（FR-4.9）。"""
     grouped = tuple(name for group in EXPECTED_SIGNATURE_GROUPS.values() for name in group)
     assert sorted(grouped) == sorted(RULE_SIGNATURE_NAMES)
     assert len(grouped) == len(set(grouped)), "同一条签名被分到了两个能力下"
@@ -1376,7 +1441,7 @@ def test_rule_context_fields_match_architecture() -> None:
         ("frame", "int"),
         ("level", "int"),
         ("piecesPlaced", "int"),
-        ("axis", "str"),
+        ("axis", EXPECTED_AXIS_LITERAL),
         ("stepMs", "int"),
     )
 
@@ -1452,6 +1517,64 @@ def test_contract_level_domains_are_enforced_at_construction() -> None:
     assert ClearGroup(axis="row", index=3, cells=()).index == 3
     with pytest.raises(ValueError):
         ClearGroup(axis="diagonal", index=3, cells=())
+
+
+def test_value_domains_are_written_into_the_type_strings() -> None:
+    """**取值域写进类型串**（M1 取值域收口）：**逐字相等**，不是"包含某个词"。
+
+    收口的四条字段——快照 `phase` · `RuleContext.axis` · `ClearGroup.axis` ·
+    事件 `commandType`——类型串必须与上面那份**独立转录**逐字相等。
+
+    为什么是"逐字"：类型串进基线哈希（架构 §4.4 末条），取值域变了而类型串
+    没变，基线就看不见——**基线绿不能证明取值域没被偷偷改宽**。
+    """
+    assert SNAPSHOT_FIELDS["phase"].type == EXPECTED_PHASE_LITERAL
+    assert NAMED_STRUCTS["RuleContext"]["axis"] == EXPECTED_AXIS_LITERAL
+    assert NAMED_STRUCTS["ClearGroup"]["axis"] == EXPECTED_CLEAR_AXIS_LITERAL
+    for event_type, field_name in COMMAND_TYPE_FIELDS:
+        spec = EVENT_TYPES[event_type]
+        field = next(f for f in spec.payload if f.name == field_name)
+        assert field.type == EXPECTED_COMMAND_TYPE_LITERAL, event_type
+
+
+def test_the_type_strings_are_derived_from_the_value_domains() -> None:
+    """类型串**由取值域派生**，不是手抄的第二份名单。
+
+    `literal_enum(AXIS_VALUES)` 与 `AXIS_VALUES` 不可能分叉——手写类型串 +
+    另抄一份取值域，两处静默分叉时基线显示全绿，而实际的值域已经变了。
+    """
+    assert AXIS_LITERAL == literal_enum(AXIS_VALUES)
+    assert CLEAR_AXIS_LITERAL == literal_enum(CLEAR_AXIS_VALUES)
+    assert PHASE_LITERAL == literal_enum(PHASE_VALUES)
+    assert COMMAND_TYPE_LITERAL == literal_enum(COMMAND_TYPES)
+
+
+def test_the_phase_type_alias_matches_the_phase_values() -> None:
+    """生命周期的**取值类型**（typing 形态）与**取值域元组**是同一份词汇。
+
+    契约层一个地方写了值（`PHASE_*` 常量），另一个地方写类型（`Phase` 别名）
+    ——两份分叉时，内核的状态机会用着 A 的类型、契约声明着 B 的取值域。
+
+    **注意 `get_args` 的陷阱**：PEP 695 的 `type` 别名是 `TypeAliasType`，
+    `get_args(别名)` 返回**空元组**（不报错）——要取成员得先拆出
+    `别名.__value__`（PEP 695 定义的属性）。这里写死拆法，免得以后有人
+    直接 `get_args(Phase)` 拿到空元组还以为"成员为空"。
+    """
+    assert get_args(Phase.__value__) == PHASE_VALUES
+
+
+def test_the_rule_set_defined_fields_stay_narrow() -> None:
+    """**内核只透传的字段不许收口**——钉死会把变体挡在门外。
+
+    判据（架构 §7.3.1）：内核要解读的 → 契约层钉死；内核只透传的 → 规则集
+    定义。`tSpin` / `classKey` 是规则集自己的词汇，方块类型（`hold` / `next`）
+    与规则集标识（`rule`）同理——收口它们等于告诉变体"你的词汇只能是这样"。
+    """
+    assert NAMED_STRUCTS["PlacementClass"]["tSpin"] == "str"
+    assert NAMED_STRUCTS["PlacementClass"]["classKey"] == "str"
+    assert SNAPSHOT_FIELDS["hold"].type == "str | None"
+    assert SNAPSHOT_FIELDS["next"].type == NEXT_QUEUE
+    assert SNAPSHOT_FIELDS["rule"].type == "str"
 
 
 def test_rule_set_defined_fields_name_real_fields() -> None:
@@ -1576,8 +1699,8 @@ def _parse_type(text: str) -> set[str]:
             raise _GrammarError(f"{text!r} 位置 {pos}：期待 {ch!r}")
         pos += 1
 
-    def parse_atom() -> str:
-        """解析一个原子（标量 / None / 命名结构 / 元组），返回其种类。"""
+    def parse_atom(*, allow_literal: bool = True) -> str:
+        """解析一个原子（标量 / None / 命名结构 / 元组 / 字面量枚举），返回其种类。"""
         nonlocal pos
         skip_ws()
         if text.startswith("None", pos):
@@ -1594,6 +1717,13 @@ def _parse_type(text: str) -> set[str]:
         if word == "Sequence":
             parse_sequence()
             return "sequence"
+        if word == "Literal":
+            if not allow_literal:
+                raise _GrammarError(
+                    f"{text!r}：形态 11（字面量枚举）只能出现在叶子位置，不许嵌进容器形态"
+                )
+            parse_literal()
+            return "literal"
         if word in _SCALAR_NAMES:
             forms.add("1")
             return word
@@ -1602,16 +1732,52 @@ def _parse_type(text: str) -> set[str]:
             return word
         raise _GrammarError(f"{text!r}：未知类型名 {word!r}")
 
-    def parse_union() -> list[str]:
+    def parse_literal() -> None:
+        """解析 `Literal["a", "b"]`（形态 11：成员 ≥ 1 个字符串字面量）。
+
+        **单双引号都收**：引号风格是排版（PEP 563 存注解时编译器统一重加成
+        单引号，源码里手写的可能是双引号）。
+        """
+        nonlocal pos
+        if pos >= n or text[pos] != "[":
+            raise _GrammarError(f"{text!r}：Literal 后必须是 [")
+        pos += 1
+        members: list[str] = []
+        while True:
+            skip_ws()
+            if pos >= n or text[pos] not in ("'", '"'):
+                raise _GrammarError(f"{text!r} 位置 {pos}：期待字符串字面量")
+            quote = text[pos]
+            pos += 1
+            start = pos
+            while pos < n and text[pos] != quote:
+                pos += 2 if text[pos] == "\\" else 1
+            if pos >= n:
+                raise _GrammarError(f"{text!r}：字符串字面量没有闭合")
+            members.append(text[start:pos])
+            pos += 1
+            skip_ws()
+            if pos < n and text[pos] == ",":
+                pos += 1
+                continue
+            break
+        expect("]")
+        if not members:
+            raise _GrammarError(f"{text!r}：字面量枚举至少要有一个成员")
+        if len(set(members)) != len(members):
+            raise _GrammarError(f"{text!r}：字面量枚举的成员互不相同")
+        forms.add("11")
+
+    def parse_union(*, allow_literal: bool = True) -> list[str]:
         """解析 `T1 | T2 | ...`，返回成员种类列表（单原子也算长度 1 的联合）。"""
         nonlocal pos
-        members = [parse_atom()]
+        members = [parse_atom(allow_literal=allow_literal)]
         while True:
             save = pos
             skip_ws()
             if pos < n and text[pos] == "|":
                 pos += 1
-                members.append(parse_atom())
+                members.append(parse_atom(allow_literal=allow_literal))
             else:
                 pos = save
                 return members
@@ -1628,7 +1794,8 @@ def _parse_type(text: str) -> set[str]:
             expect("]")
             forms.add("8")
             return
-        elements = [parse_union()]
+        # **容器形态的元素位不是叶子位置**——形态 11 不许嵌进来（文法附加规则 6）。
+        elements = [parse_union(allow_literal=False)]
         skip_ws()
         if pos < n and text[pos] == ",":
             pos += 1
@@ -1641,7 +1808,7 @@ def _parse_type(text: str) -> set[str]:
                 forms.add("5")
                 return
             while True:  # 形态 4 / 6 / 7：定长元组，元素可为联合或嵌套元组
-                elements.append(parse_union())
+                elements.append(parse_union(allow_literal=False))
                 save = pos
                 skip_ws()
                 if pos < n and text[pos] == ",":
@@ -1660,7 +1827,7 @@ def _parse_type(text: str) -> set[str]:
         if pos >= n or text[pos] != "[":
             raise _GrammarError(f"{text!r}：Sequence 后必须是 [")
         pos += 1
-        parse_union()
+        parse_union(allow_literal=False)
         expect("]")
         forms.add("10")
 
@@ -1778,7 +1945,9 @@ def test_grammar_rejects_unknown_forms() -> None:
 # ---------------------------------------------------------------------------
 
 #: `contracts/` 允许的绝对导入白名单——全是标准库。相对导入（包内）放行。
-_ALLOWED_CONTRACTS_IMPORTS = frozenset({"__future__", "collections.abc", "dataclasses", "types"})
+_ALLOWED_CONTRACTS_IMPORTS = frozenset(
+    {"__future__", "collections.abc", "dataclasses", "types", "typing"}
+)
 
 
 def test_contracts_public_leaf_purity() -> None:
@@ -2107,3 +2276,157 @@ def test_every_mapped_kernel_field_exists_in_the_kernel() -> None:
     for entry in KERNEL_STATE_TO_SNAPSHOT:
         root = entry.kernel_field.split(".")[0]
         assert root in known, f"映射表指着内核没有的字段：{entry.kernel_field}"
+
+
+# ---------------------------------------------------------------------------
+# S4：`RuleContext.stepMs` 的语义（ADR-067）——宿主逻辑步长 · 规则集只透传不用
+# ---------------------------------------------------------------------------
+
+#: 允许出现生命周期四个取值的**唯一**位置：`contracts/types.py` 的四个常量。
+_PHASE_CONSTANT_NAMES = frozenset(
+    {"PHASE_NOT_STARTED", "PHASE_RUNNING", "PHASE_PAUSED", "PHASE_GAME_OVER"}
+)
+
+
+def _ignored_string_constants(tree: ast.AST) -> set[int]:
+    """**不算抄写**的字符串常量：docstring 与注解里的那些。
+
+    散文（docstring）与类型串（注解）说的是"这几个值叫什么"，不是"运行时
+    用哪个"——它们不是取值表。机器检查只看**代码里真正落下的字面量**。
+    """
+    ignored: set[int] = set()
+
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list) or not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            ignored.add(id(first.value))
+
+    annotations: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+        elif isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns:
+            annotations.append(node.returns)
+    for annotation in annotations:
+        for sub in ast.walk(annotation):
+            if isinstance(sub, ast.Constant):
+                ignored.add(id(sub))
+
+    return ignored
+
+
+def _phase_literal_allowances(tree: ast.AST, path: Path) -> set[int]:
+    """`contracts/types.py` 里**允许**出现这四个值的位置：四个常量与 `Phase` 别名。
+
+    唯一来源内部也不许乱抄——别名与常量之外再写一遍，就是第二份取值表。
+    """
+    if path.parent.name != "contracts" or path.name != "types.py":
+        return set()
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.TypeAlias):
+            # `type Phase = Literal[...]`——别名与常量是同一份词汇。
+            if isinstance(node.name, ast.Name) and node.name.id == "Phase":
+                for sub in ast.walk(node.value):
+                    if isinstance(sub, ast.Constant):
+                        allowed.add(id(sub))
+            continue
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id in _PHASE_CONSTANT_NAMES
+            for target in targets
+        ):
+            continue
+        for sub in ast.walk(value):
+            if isinstance(sub, ast.Constant):
+                allowed.add(id(sub))
+    return allowed
+
+
+def test_step_ms_is_the_step_the_host_gave_the_kernel() -> None:
+    """宿主给 16，规则集在 `ctx` 里看到的就是 16（ADR-067 的「谁算 / 给谁用」）。
+
+    **走宿主装配层那条真链路**：宿主给步长 → 时钟源带着它 → 内核把它递进
+    `ctx`。绕开宿主直接造内核，只验了「内核会搬运」，没验「谁算」那一半。
+    """
+    seen: list[int] = []
+
+    def spy_interval(ctx: RuleContext) -> int:
+        seen.append(ctx.stepMs)
+        return STANDARD_RULESET.gravity_interval(ctx)
+
+    assembly = assemble(
+        seed=0,
+        step_ms=16,
+        rule_set=dataclasses.replace(STANDARD_RULESET, gravity_interval=spy_interval),
+    )
+    # 宿主这一侧：时钟源带着这个步长（架构 §5.3）。
+    assert assembly.clock.step_ms() == 16
+
+    kernel = assembly.kernel
+    kernel.execute(Command("start", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    for _ in kernel.advance_frame():
+        pass
+
+    assert seen, "规则集一次都没被调用——这条守卫等于没跑"
+    assert set(seen) == {16}, f"规则集看到的步长不是宿主给的 16：{seen}"
+
+
+def test_the_rule_sets_never_read_the_step_ms() -> None:
+    """规则集**只透传不用**——`rules/` 里不得读 `ctx.stepMs`（ADR-067）。
+
+    「透传不用」是这条口径的一部分：标准玩法的重力间隔用逻辑帧数
+    （`gravity_interval(ctx)` 返回帧数），不看毫秒。将来若有变体要按毫秒
+    调手感，那是变体自己的事——但**仓里的规则集**不许悄悄用。
+    """
+    rules_dir = Path(rules_pkg.__file__).parent
+    offenders: list[str] = []
+    for path in sorted(rules_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "stepMs":
+                offenders.append(f"{path.name}:{node.lineno}（属性访问）")
+            elif isinstance(node, ast.Constant) and node.value == "stepMs":
+                offenders.append(f"{path.name}:{node.lineno}（字符串）")
+    assert not offenders, f"规则集读了 ctx.stepMs（透传不用）：{offenders}"
+
+
+def test_the_phase_values_are_written_down_in_one_place_only() -> None:
+    """生命周期四个取值**只有一处字面量表**：`contracts/types.py`（ADR-067 连带）。
+
+    契约层与内核层都**不得再抄一遍**这四个值的字面量——抄第二份，两处分叉
+    时无人报警（取值域收口把词汇表钉在契约层，正是为了这个）。
+
+    **docstring 与注解不算**：散文与类型串说的是"这几个值叫什么"，不是取值
+    表本身。`contracts/types.py` 内部也只允许四个常量与 `Phase` 别名。
+    """
+    src_root = Path(contracts_pkg.__file__).parent.parent
+    offenders: list[str] = []
+    for folder in ("contracts", "kernel"):
+        for path in sorted((src_root / folder).glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            ignored = _ignored_string_constants(tree) | _phase_literal_allowances(tree, path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                    continue
+                if node.value not in PHASE_VALUES or id(node) in ignored:
+                    continue
+                offenders.append(f"{folder}/{path.name}:{node.lineno} {node.value!r}")
+    assert not offenders, f"生命周期取值被抄了第二份：{offenders}"

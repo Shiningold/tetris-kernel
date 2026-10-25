@@ -2,8 +2,8 @@
 
 ## 这份解析器以文法表为准
 
-文法表在 `tetris_kernel.contracts.types` 的模块 docstring 里（十种形态 +
-五条附加规则）。**这里的实现按那张表重写**，不是抄测试里的回验解析器——
+文法表在 `tetris_kernel.contracts.types` 的模块 docstring 里（十一种形态 +
+六条附加规则）。**这里的实现按那张表重写**，不是抄测试里的回验解析器——
 测试里那份是回验工具，两份实现可以各写各的，但**规格书只有一份**。
 
 ## 为什么基线脚本需要解析器
@@ -13,6 +13,21 @@
 `BOARD_FIELDS` 那张表。展开就得先解析——所以解析器是基线脚本的必需件，
 顺带把"文法表里没有的形态"当场挡掉：**看着在基线里、实际没被哈希**的失效模式，
 就是从认不出的串开始的。
+
+## 形态 11（字面量枚举）与"叶子位置"
+
+`Literal["a", "b"]` 是 M1 新增的形态 11：**取值域写进类型串**，基线才看得见
+取值域变了（架构 §7.3.1 末条）。
+
+文法附加规则第 6 条把它限定在**叶子位置**——整条类型串本身、联合的一个成员、
+或命名结构的一个成员类型；**不许嵌进容器形态**（`tuple[Literal["a"], ...]`）。
+实现方式是把"允许形态 11"作为**解析上下文**往下传：容器形态的元素位解析
+时关掉它。
+
+**成员转义规则只有一份**：解析器渲染规范化声明时调用契约层的
+`escape_literal_member`（`contracts/types.py`）——生成器与解析器各写一份转义
+规则的后果是"生成器产出的串解析器读不懂"，而那不报错，只是基线里多了些
+看不懂的差异。
 
 ## 规范化（canonicalization）做什么
 
@@ -37,10 +52,15 @@ canonicalize("Board", NAMED_STRUCTS)
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from _toolkit import blake2b_hex
+from _toolkit import SRC_ROOT, blake2b_hex
+
+sys.path.insert(0, str(SRC_ROOT))
+
+from tetris_kernel.contracts.types import escape_literal_member  # noqa: E402
 
 #: 形态 1：标量类型名。
 SCALAR_TYPES = frozenset({"int", "str", "bool", "float"})
@@ -106,6 +126,20 @@ class SequenceType:
 
 
 @dataclass(frozen=True)
+class LiteralType:
+    """形态 11：字面量枚举 `Literal["a", "b"]`。
+
+    `members` 是**成员的取值**（已解转义），不是源文本——规范化时要按
+    契约层的转义规则重新渲染。
+
+    **成员互不相同**（文法附加规则第 6 条）：重复成员是静默的笔误，且会让
+    两个语义相同的取值域派生出两种类型串（假 major 变更）。
+    """
+
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class UnionType:
     """形态 2 / 3：联合。**成员顺序照原样保留**（顺序进基线哈希）。"""
 
@@ -113,7 +147,7 @@ class UnionType:
 
 
 #: 语法树节点的并集。
-TypeNode = Scalar | NoneType | NamedStruct | TupleType | SequenceType | UnionType
+TypeNode = Scalar | NoneType | NamedStruct | TupleType | SequenceType | LiteralType | UnionType
 
 #: 命名结构注册表：结构名 → 成员表（成员名 → 类型串）。
 StructTable = Mapping[str, Mapping[str, str]]
@@ -165,6 +199,42 @@ class _Parser:
             raise GrammarError(f"{self._text!r} 位置 {self._pos}：期待类型名")
         return self._text[start : self._pos]
 
+    def _take_string(self) -> str:
+        """取一个字符串字面量（形态 11 的成员）。
+
+        **单双引号都收**：引号风格是**排版**——PEP 563 存注解时编译器会把内嵌
+        的字符串字面量统一重加成单引号，而源码里手写的可能是双引号。基线哈希
+        的是规范化后的串（统一渲染成单引号），两种拼写哈希相同。
+
+        **转义只认两种**：`\\`（反斜杠）与**当前引号本身**——与契约层的
+        `escape_literal_member` 互为逆运算（生成器只会产出这两种转义）。
+        别的转义写法一律报错：文法表是封闭的，"尽量解析"会让不合规的声明
+        悄悄进基线。
+        """
+        self._skip_spaces()
+        if self._pos >= len(self._text) or self._text[self._pos] not in ("'", '"'):
+            raise GrammarError(f"{self._text!r} 位置 {self._pos}：期待字符串字面量")
+        quote = self._text[self._pos]
+        self._pos += 1
+        chars: list[str] = []
+        while True:
+            if self._pos >= len(self._text):
+                raise GrammarError(f"{self._text!r}：字符串字面量没有闭合")
+            char = self._text[self._pos]
+            self._pos += 1
+            if char == quote:
+                return "".join(chars)
+            if char != "\\":
+                chars.append(char)
+                continue
+            if self._pos >= len(self._text):
+                raise GrammarError(f"{self._text!r}：转义符后没有字符")
+            escaped = self._text[self._pos]
+            self._pos += 1
+            if escaped not in (quote, "\\"):
+                raise GrammarError(f"{self._text!r}：不支持的转义 \\{escaped}")
+            chars.append(escaped)
+
     # -- 语法 -------------------------------------------------------------
 
     def parse(self) -> TypeNode:
@@ -173,19 +243,25 @@ class _Parser:
             raise GrammarError(f"{self._text!r} 位置 {self._pos}：有解析不掉的尾巴")
         return node
 
-    def _parse_union(self) -> TypeNode:
-        members = [self._parse_atom()]
+    def _parse_union(self, *, allow_literal: bool = True) -> TypeNode:
+        members = [self._parse_atom(allow_literal=allow_literal)]
         while self._peek() == "|":
             self._pos += 1
-            members.append(self._parse_atom())
+            members.append(self._parse_atom(allow_literal=allow_literal))
         if len(members) == 1:
             return members[0]
         return UnionType(tuple(members))
 
-    def _parse_atom(self) -> TypeNode:
+    def _parse_atom(self, *, allow_literal: bool = True) -> TypeNode:
         word = self._take_word()
         if word == "None":
             return NoneType()
+        if word == "Literal":
+            if not allow_literal:
+                raise GrammarError(
+                    f"{self._text!r}：形态 11（字面量枚举）只能出现在叶子位置，不许嵌进容器形态"
+                )
+            return self._parse_literal()
         if word == "tuple":
             return self._parse_tuple()
         if word == "Sequence":
@@ -196,13 +272,27 @@ class _Parser:
             return NamedStruct(word)
         raise GrammarError(f"{self._text!r}：未知类型名 {word!r}")
 
+    def _parse_literal(self) -> LiteralType:
+        """形态 11：`Literal["a", "b"]`——成员 ≥ 1 个字符串字面量，互不相同。"""
+        self._expect("[")
+        members: list[str] = []
+        while True:
+            members.append(self._take_string())
+            if self._peek() != ",":
+                break
+            self._pos += 1
+        self._expect("]")
+        if len(set(members)) != len(members):
+            raise GrammarError(f"{self._text!r}：字面量枚举的成员互不相同")
+        return LiteralType(tuple(members))
+
     def _parse_tuple(self) -> TupleType:
         self._expect("[")
         if self._text.startswith("...", self._pos):
             self._pos += 3
             self._expect("]")
             return TupleType(recursive=True)
-        elements = [self._parse_union()]
+        elements = [self._parse_union(allow_literal=False)]
         if self._peek() == ",":
             self._pos += 1
             self._skip_spaces()
@@ -213,7 +303,7 @@ class _Parser:
                 self._expect("]")
                 return TupleType(tuple(elements), variadic=True)
             while True:
-                elements.append(self._parse_union())
+                elements.append(self._parse_union(allow_literal=False))
                 if self._peek() != ",":
                     break
                 self._pos += 1
@@ -224,7 +314,7 @@ class _Parser:
 
     def _parse_sequence(self) -> SequenceType:
         self._expect("[")
-        element = self._parse_union()
+        element = self._parse_union(allow_literal=False)
         self._expect("]")
         return SequenceType(element)
 
@@ -261,6 +351,9 @@ class _Renderer:
             return f"tuple[{', '.join(parts)}]"
         if isinstance(node, SequenceType):
             return f"Sequence[{self.render(node.element, depth + 1)}]"
+        if isinstance(node, LiteralType):
+            members = ", ".join(f"'{escape_literal_member(value)}'" for value in node.members)
+            return f"Literal[{members}]"
         if isinstance(node, UnionType):
             return " | ".join(self.render(member, depth + 1) for member in node.members)
         raise GrammarError(f"不认识的语法树节点：{node!r}")

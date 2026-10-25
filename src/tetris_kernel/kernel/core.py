@@ -60,6 +60,7 @@ from dataclasses import dataclass, field, replace
 from ..contracts.commands import COMMANDS, CommandSpec
 from ..contracts.placement import PlacementInfo
 from ..contracts.rules import RuleContext, ScoreState
+from ..contracts.types import Phase
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from . import frame
@@ -221,7 +222,7 @@ class KernelState:
     """内核持有的状态（字段与契约 `KERNEL_STATE_TO_SNAPSHOT` 一一对应）。"""
 
     version: int = 0
-    phase: str = PHASE_NOT_STARTED
+    phase: Phase = PHASE_NOT_STARTED
     board: list[list[int]] = field(default_factory=list[list[int]])
     active: ActivePiece | None = None
     ghost_delta: tuple[int, int] = (0, 0)
@@ -646,11 +647,15 @@ class Kernel:
         phase = self._state.phase
         if phase == PHASE_RUNNING:
             return None
+        # 门禁三值**就是三个状态名本身**——契约层已把它们声明成同一份词汇
+        # （`contracts/commands.py` 的 `LIFECYCLE_REJECT_REASONS` 由
+        # `contracts/types.py` 的 `PHASE_*` 派生）。这里引用常量而不是再抄一遍
+        # 字面量：抄第二份，两处分叉时无人报警。
         if phase == PHASE_PAUSED:
-            return "paused"
+            return PHASE_PAUSED
         if phase == PHASE_GAME_OVER:
-            return "game_over"
-        return "not_started"
+            return PHASE_GAME_OVER
+        return PHASE_NOT_STARTED
 
     def _received_draft(self, command: Command) -> EventDraft:
         """`command:received`（出队执行前发）。"""

@@ -33,8 +33,29 @@ T-Spin 判定需要 `PlacementInfo` · 交换结构放 `contracts/` 不放 `rule
 kernel 的任何 dataclass**（架构 §7.3）。否则 `kernel > rules` 契约第一天就红，
 然后大概率被加豁免——契约就废了。
 
-## T-Spin 分类怎么到达计分
+## 第 9 条签名：`soft_drop_score`（M1 新增）
 
+M0 把软降得分写死在核心里（`kernel/core.py` 的 `+1`）——**换规则集就改不了软降
+得分**，撞 G4-1（M4 落地变体时内核文件必须零差异）。所以 M1 把它**归规则集**：
+
+```
+soft_drop_score(ctx: RuleContext, distance: int) -> int
+```
+
+**为什么是独立一条签名，而不是给 `score_clear` 加参数**：
+
+- **时机与频率都不同**：`score_clear` 只在**锁定结算**时调用一次，软降发生在
+  **放置途中**（每条软降命令一次）。塞进 `score_clear` 会让"消行结算"背上
+  "移动计分"的语义——两件事混成一件，计分表就说不清了。
+- **不是 `RuleContext` 的字段**：`RuleContext` 描述的是**跨帧的运行时上下文**
+  （帧号 / 等级 / 已放置数 / 轴 / 步长），而软降距离是**单次命令的参数**。
+  塞进上下文会让它多一个"每帧都要重置"的瞬时量。
+- **参数名与顺序进基线**：声明顺序紧跟 `score_clear` 之后（计分组连着排），
+  **不得重排**——重排就是已有键的哈希变化 = major 变更。
+
+**M1 的标准规则集实现它**（`distance × 1`），内核在 S11 改为调用它。
+
+## T-Spin 分类怎么到达计分
 `classify_placement` 的结果（`PlacementClass`）必须到达 `score_clear`——否则
 计分模块看不见 T-Spin，T-Spin 的分值就没法算（FR-4.6 的计分表）。
 
@@ -70,10 +91,11 @@ kernel 的任何 dataclass**（架构 §7.3）。否则 `kernel > rules` 契约�
   这两个字段登记在 `RULE_SET_DEFINED_FIELDS` 里——**取值归属必须表态**，
   不表态的字段不许悄悄长出来。
 
-**取值域常量不进基线**（架构 §4.4 末条），所以词汇表的变更由**契约层测试**
-拦（转录表逐条相等），不是基线。要让基线也看见取值域，得把取值域写进类型串
-（字面量枚举形态）——那是**取值域统一收口**（`PROGRESS.md` 待办）的活，
-不在本阶段。
+**取值域现在写进类型串了**（M1 · 取值域统一收口）：`RuleContext.axis` 与
+`ClearGroup.axis` 的类型串是**字面量枚举**（形态 11），由 `AXIS_VALUES` /
+`CLEAR_AXIS_VALUES` 派生（`AXIS_LITERAL` / `CLEAR_AXIS_LITERAL`）。
+**取值域常量本身不进基线**（架构 §4.4 末条）——进基线的是**引用处展开后的
+类型串**：常量改了而引用处没跟着改，基线就会红（这正是要的效果）。
 """
 
 from __future__ import annotations
@@ -81,8 +103,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Literal
 
-from .types import BOARD_VIEW, COORD_CELLS, VECTOR2
+from .types import BOARD_VIEW, COORD_CELLS, VECTOR2, literal_enum
 
 # ---------------------------------------------------------------------------
 # 取值域
@@ -101,6 +124,19 @@ AXIS_VALUES: tuple[str, ...] = ("down", "left", "right", "up")
 #: 维度，"轴"这一维在数据上表达不出来，M4 的变体 A 就没法落地。
 #: **内核也要解读这个字段**（消的是行还是列），所以同样在构造时校验。
 CLEAR_AXIS_VALUES: tuple[str, ...] = ("row", "column")
+
+#: 重力方向的**类型串**（形态 11 · 由 `AXIS_VALUES` 派生）。
+#:
+#: **取值域写进类型串**，基线才看得见它变过（架构 §7.3.1 末条）。类型串由
+#: 取值域派生（`literal_enum`），**不手写**——手写类型串 + 另抄一份取值域，
+#: 两处静默分叉时基线显示全绿，而实际的值域已经变了。
+#:
+#: `RuleContext.axis` 的注解**逐字**等于这个常量（契约层测试钉住这一条），
+#: 这样"类型串"与"运行时校验用的取值域"指向同一份词汇。
+AXIS_LITERAL: str = literal_enum(AXIS_VALUES)
+
+#: 消行轴的**类型串**（形态 11 · 由 `CLEAR_AXIS_VALUES` 派生）。
+CLEAR_AXIS_LITERAL: str = literal_enum(CLEAR_AXIS_VALUES)
 
 #: 取值域**由规则集定义**（契约层不钉死）的字段：`(结构名, 字段名)` → 说明。
 #:
@@ -146,11 +182,16 @@ class RuleContext:
     - `piecesPlaced`：已放置方块数。
     - `axis`：重力方向，取值域 `AXIS_VALUES`（`down` / `left` / `right` / `up`），
       **构造时校验**。
-    - `stepMs`：步进时长（毫秒）。**语义待定**——架构 §7.3.1 只给了字段名与
-      类型（`stepMs: int`），没说它是谁算、给谁用：事件侧的
-      `progress:level-changed.gravityInterval` 是**逻辑帧数**，`gravity_interval(ctx)`
-      也返回逻辑帧数，毫秒这条线在契约里没有第二个落点。**实现期（M1 / S13）
-      按 major 变更流程定**，不要在实现期临时发明一个含义。
+    - `stepMs`：**宿主逻辑步长（毫秒）**（架构 §7.3.1 · ADR-067）。
+
+      **谁算**：**宿主**——时钟源在宿主层（真实时钟 / 虚拟时钟，架构 §5.3），
+      内核不读墙钟；宿主把它当**固定步长**递进来（逻辑时间 = 帧号 × 步长，
+      与事件 `clock:tick` 的负载同一口径）。
+      **给谁用**：**规则集**（经 `ctx` 递到规则集手里）。
+
+      **规则集只透传不用**：标准玩法的重力间隔用**逻辑帧数**
+      （`gravity_interval(ctx)` 返回帧数），不看毫秒——将来若有变体按毫秒
+      调手感，那是变体自己的事，契约层不替它决定。
 
     字段顺序即声明顺序（进基线，不得重排）。
     """
@@ -158,7 +199,11 @@ class RuleContext:
     frame: int
     level: int
     piecesPlaced: int
-    axis: str
+    # **取值域写进注解**：契约的类型串是字面量枚举（`AXIS_LITERAL`），注解要跟
+    # 它**逐字相等**（内核的导入期契约对齐自检就是这么比的）——注解存下来是
+    # 什么样子，取决于 PEP 563：编译器会把内嵌的字符串字面量统一重加成
+    # **单引号**，所以 `Literal['down', ...]` 才是存下来的那一串。
+    axis: Literal["down", "left", "right", "up"]
     stepMs: int
 
     def __post_init__(self) -> None:
@@ -216,7 +261,7 @@ class ClearGroup:
     计分与事件负载才有素材。
     """
 
-    axis: str
+    axis: Literal["row", "column"]
     index: int
     cells: tuple[tuple[int, int], ...]
     classification: PlacementClass | None = None
@@ -382,6 +427,25 @@ _RULE_SIGNATURES: tuple[tuple[str, RuleSignature], ...] = (
         ),
     ),
     (
+        "soft_drop_score",
+        RuleSignature(
+            name="soft_drop_score",
+            params=(
+                RuleParam("ctx", "RuleContext", "运行时上下文"),
+                RuleParam(
+                    "distance",
+                    "int",
+                    "本次软降实际下移的格数（被墙挡住则为 0）",
+                ),
+            ),
+            returns="int",
+            doc="软降得分：本次软降应加的分。**独立一条签名**，不是 `score_clear` "
+            "的参数——消行结算在锁定时调一次，软降发生在放置途中，"
+            "**时机与频率都不同**（塞进 `score_clear` 会让「消行结算」背上"
+            "「移动计分」的语义）。",
+        ),
+    ),
+    (
         "shape_cells",
         RuleSignature(
             name="shape_cells",
@@ -413,9 +477,11 @@ _RULE_SIGNATURES: tuple[tuple[str, RuleSignature], ...] = (
     ),
 )
 
-#: 规则接口签名注册表：键 = 签名名，值 = 该签名的声明。**8 条，M0 定稿**。
+#: 规则接口签名注册表：键 = 签名名，值 = 该签名的声明。**9 条**（M0 定稿 8 条
+#: + M1 新增第 9 条 `soft_drop_score`）。
 #:
-#: 顺序 = 架构 §7.3.1 表格的顺序。
+#: 顺序 = 架构 §7.3.1 表格的顺序；**第 9 条紧跟 `score_clear` 之后**
+#: （计分组连着排）。顺序进基线，**不得重排**。
 RULE_SIGNATURES: Mapping[str, RuleSignature] = MappingProxyType(dict(_RULE_SIGNATURES))
 
 #: 签名名的稳定序列（枚举顺序 = 架构 §7.3.1 表格顺序）。

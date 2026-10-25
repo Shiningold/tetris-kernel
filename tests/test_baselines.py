@@ -65,18 +65,30 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 _measure_frame_cost = importlib.import_module("measure_frame_cost")
 
 
+def _run_tool_bytes(relative_path: str, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """跑 `tools/` 下的一个脚本，返回**原始字节**的结果（不按本地代码页解码）。
+
+    **什么时候用它**：要断言"工具点了哪一条的名"的时候。中文提示在 Windows
+    管道下是 GBK（批次 C 审查 C14 的同款编码坑），而按 GBK 解码 UTF-8 字节时
+    **双字节字符的尾字节会吞掉后面那个 ASCII 字符**——键名 `command/…` 的头
+    一个字母就是这样被吃掉的，断言"输出里有这个键"于是时灵时不灵。键名本身
+    是 ASCII，**原始字节里它一定是连续的**，按字节查就稳。
+    """
+    return subprocess.run(
+        [sys.executable, str(REPO_ROOT / relative_path), *args],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _run_tool(relative_path: str, *args: str) -> subprocess.CompletedProcess[str]:
     """跑 `tools/` 下的一个脚本，返回解码好的结果。
 
     **按本机首选编码解码**（Windows 上管道走本地代码页，本机是 GBK）——用 UTF-8
     硬解会把中文提示变成乱码，报错信息本身报错。
     """
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / relative_path), *args],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        check=False,
-    )
+    result = _run_tool_bytes(relative_path, *args)
     encoding = locale.getpreferredencoding(False)
     return subprocess.CompletedProcess(
         args=result.args,
@@ -483,3 +495,206 @@ def test_the_frozen_baseline_rejects_a_tampered_file_count(tmp_path: Path) -> No
     assert result.returncode != 0, (
         f"基线自述的文件数被改了，工具却放行了：\n{result.stdout}\n{result.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 跨文件期望清单（第二层防线 · M1-S5）
+# ---------------------------------------------------------------------------
+#
+# **M0-1 的原题**：基线少一条契约、**同时**把自述块里的条数改成新条数——基线
+# 仍然自洽，工具照样放行（少掉的那条落进"新增键放行"那一支）。第一层（自述块）
+# 挡不住，因为**计数键与被计数的条目在同一个文件里**。
+#
+# **第二层**：期望值移出基线文件，另立一份期望清单，两份**逐条**相等。守的是
+# "**只改一处**"——两份都在仓内，同时改两份仍能骗过工具（残余上限写实）。
+
+#: 跨文件期望清单（**期望值不在基线文件里**）。
+CONTRACT_EXPECTED = REPO_ROOT / "tests" / "baseline" / "contracts_expected.json"
+
+
+def test_the_contract_expected_list_mirrors_the_baseline_entry_for_entry() -> None:
+    """期望清单与基线**逐条相等**——键集与哈希都要一样。
+
+    **独立转录**：这里把两份文件的条目直接读出来比对，不采信工具自己算的
+    退出码（退出码是被测代码自己算的，它说"通过"pytest 就没话说）。
+    """
+    assert CONTRACT_EXPECTED.exists(), f"期望清单不存在：{CONTRACT_EXPECTED}"
+
+    baseline = _read_json(CONTRACT_BASELINE)
+    expected = _read_json(CONTRACT_EXPECTED)
+
+    assert set(expected["entries"]) == set(baseline["entries"]), (
+        "两份清单的键集不相等——基线与期望清单必须逐条相等"
+    )
+    assert expected["entries"] == baseline["entries"], (
+        "两份清单的哈希不相等——基线与期望清单必须逐条相等"
+    )
+
+
+def _consistent_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """造一对**与当前声明完全一致**的清单文件（基线 + 期望清单）。
+
+    **为什么要在临时目录里另造**：仓里的基线此刻还没按 M1-C1 / M1-C2 刷新，
+    它与当前声明本来就对不上——直接拿它做反向验证，红项会被「基线 vs 当前声明」
+    那一层盖住，测的就不是跨文件那一层了。临时这一对是干净的：**只有跨文件
+    自证能红**。
+    """
+    baseline = tmp_path / "contracts_baseline.json"
+    expected = tmp_path / "contracts_expected.json"
+
+    generated = _run_tool(
+        "tools/contract_baseline.py",
+        "--update-baseline",
+        "--baseline",
+        str(baseline),
+        "--reason",
+        "反向验证用：造一份与当前声明一致的基线",
+    )
+    assert generated.returncode == 0, (
+        f"造不出与当前声明一致的基线：\n{generated.stdout}\n{generated.stderr}"
+    )
+
+    mirrored = _run_tool(
+        "tools/contract_baseline.py",
+        "--update-expected",
+        "--baseline",
+        str(baseline),
+        "--expected",
+        str(expected),
+        "--reason",
+        "反向验证用：造一份与基线一致的期望清单",
+    )
+    assert mirrored.returncode == 0, (
+        f"造不出与基线一致的期望清单：\n{mirrored.stdout}\n{mirrored.stderr}"
+    )
+
+    return baseline, expected
+
+
+def test_the_two_lists_agree_when_nothing_is_tampered(tmp_path: Path) -> None:
+    """两份清单**一致**时校验通过（正向：不许把跨文件自证写成恒红）。"""
+    baseline, expected = _consistent_pair(tmp_path)
+
+    result = _run_tool(
+        "tools/contract_baseline.py",
+        "--baseline",
+        str(baseline),
+        "--expected",
+        str(expected),
+    )
+
+    assert result.returncode == 0, f"两份清单一致，工具却报红：\n{result.stdout}\n{result.stderr}"
+
+
+def test_the_contract_baseline_rejects_a_baseline_with_one_entry_removed_and_the_count_synced(
+    tmp_path: Path,
+) -> None:
+    """M0-1 的原题：基线**少一条**并**同步改 `meta.entryCount`** 时必须报红。
+
+    **M0 时它是绿的**：自述块与实际条数对得上，工具就放行——少掉的那条落进
+    「新增键放行」那一支，「只增不改」那一刻静默退化成「只查已有键」。
+
+    **为什么红的是跨文件那一层**：临时这一对清单原本与当前声明**完全一致**
+    （`test_the_two_lists_agree_when_nothing_is_tampered` 断言它绿）——基线自述
+    块、基线 vs 当前声明两层都是绿的，唯一起变化的是两份清单不再相等。
+    """
+    baseline, expected = _consistent_pair(tmp_path)
+
+    document = _read_json(baseline)
+    entries = document["entries"]
+    removed = sorted(entries)[0]
+    del entries[removed]
+    # **同步改条数**——这是原题的关键：自述块照样自洽。
+    document["meta"]["entryCount"] = len(entries)
+    broken = _write_json(tmp_path / "broken_baseline.json", document)
+
+    result = _run_tool_bytes(
+        "tools/contract_baseline.py",
+        "--baseline",
+        str(broken),
+        "--expected",
+        str(expected),
+    )
+
+    raw = result.stdout + result.stderr
+    assert result.returncode != 0, f"基线少了 {removed} 条并同步改了条数，工具却放行了：\n{raw!r}"
+    assert removed.encode("ascii") in raw, "工具报红了但没点名少掉的那一条"
+
+
+def test_the_contract_baseline_rejects_an_expected_list_with_one_entry_removed(
+    tmp_path: Path,
+) -> None:
+    """**期望清单**少一条（并同步改条数）时也必须报红——反方向同样要拦。
+
+    只改期望清单而不改基线，两份对不上 → 红。**双向都拦**：不然"只改一份"
+    可以挑软的那一侧下手。
+    """
+    baseline, expected = _consistent_pair(tmp_path)
+
+    document = _read_json(expected)
+    entries = document["entries"]
+    removed = sorted(entries)[0]
+    del entries[removed]
+    document["meta"]["entryCount"] = len(entries)
+    broken = _write_json(tmp_path / "broken_expected.json", document)
+
+    result = _run_tool_bytes(
+        "tools/contract_baseline.py",
+        "--baseline",
+        str(baseline),
+        "--expected",
+        str(broken),
+    )
+
+    raw = result.stdout + result.stderr
+    assert result.returncode != 0, (
+        f"期望清单少了 {removed} 条并同步改了条数，工具却放行了：\n{raw!r}"
+    )
+    assert removed.encode("ascii") in raw, "工具报红了但没点名少掉的那一条"
+
+
+def test_the_contract_baseline_rejects_a_digest_that_differs_between_the_two_lists(
+    tmp_path: Path,
+) -> None:
+    """两份清单**同一条的哈希不一样**时必须报红（条数一样也不行）。"""
+    baseline, expected = _consistent_pair(tmp_path)
+
+    document = _read_json(expected)
+    entries = document["entries"]
+    changed = sorted(entries)[0]
+    entries[changed] = "0" * 32
+    broken = _write_json(tmp_path / "broken_expected.json", document)
+
+    result = _run_tool_bytes(
+        "tools/contract_baseline.py",
+        "--baseline",
+        str(baseline),
+        "--expected",
+        str(broken),
+    )
+
+    raw = result.stdout + result.stderr
+    assert result.returncode != 0, (
+        f"期望清单里 {changed} 的哈希与基线不一样，工具却放行了：\n{raw!r}"
+    )
+    assert changed.encode("ascii") in raw, "工具报红了但没点名对不上的那一条"
+
+
+def test_the_contract_expected_list_refresh_requires_a_reason(tmp_path: Path) -> None:
+    """期望清单刷新**不带 `--reason`** 时必须拒绝，且不落盘。
+
+    与基线刷新同一套纪律：**"要求改了没人拦"和"没有要求"是同一种失守**。
+    """
+    target = tmp_path / "contracts_expected.json"
+
+    result = _run_tool(
+        "tools/contract_baseline.py",
+        "--update-expected",
+        "--expected",
+        str(target),
+    )
+
+    assert result.returncode != 0, (
+        f"刷新期望清单没带 --reason，工具却放行了：\n{result.stdout}\n{result.stderr}"
+    )
+    assert not target.exists(), "没带 --reason 却把期望清单写出来了"

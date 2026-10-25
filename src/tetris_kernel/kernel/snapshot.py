@@ -43,7 +43,7 @@ import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 from ..contracts.snapshot import (
     ACTIVE_FIELDS,
@@ -51,7 +51,14 @@ from ..contracts.snapshot import (
     SNAPSHOT_FIELDS,
     FieldSpec,
 )
-from ..contracts.types import BOARD_CELLS, INT_TUPLE, NEXT_QUEUE, SCALAR_MAP, VECTOR2
+from ..contracts.types import (
+    BOARD_CELLS,
+    INT_TUPLE,
+    NEXT_QUEUE,
+    SCALAR_MAP,
+    VECTOR2,
+    Phase,
+)
 from .fingerprint import blake2b_hex, tlv_digest
 
 # ---------------------------------------------------------------------------
@@ -187,7 +194,13 @@ class Snapshot:
 
     version: int
     rule: str
-    phase: str
+    # **取值域写进注解**：契约层的 `phase` 类型串是字面量枚举（`PHASE_LITERAL`），
+    # 这里**逐字**写同一串——导入期的契约对齐自检会拿它与契约声明逐字比对，
+    # 对不上当场报错（契约改了、注解没跟着改，就是这样被抓住的）。
+    #
+    # 注解存下来的样子由 PEP 563 决定（编译器把内嵌的字符串字面量统一重加成
+    # 单引号），契约那一侧的类型串用的是同一个规范拼写。
+    phase: Literal["not_started", "running", "paused", "game_over"]
     frame: int
     board: Board
     active: Active | None
@@ -411,7 +424,7 @@ def build_snapshot(
     *,
     version: int,
     rule: str,
-    phase: str,
+    phase: Phase,
     frame: int,
     board: Board,
     active: Active | None,

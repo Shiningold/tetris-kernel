@@ -1,8 +1,8 @@
-"""规则接口的 8 条签名（架构 §7.3.1 · ADR-061 · M0 定稿）。
+"""规则接口的 9 条签名（架构 §7.3.1 · ADR-061 · M0 定稿 8 条 + M1 新增软降计分）。
 
 ## 这个模块是什么
 
-规则集的**类型契约**：8 条接口各一个 `Protocol`——规则集只要结构上满足就能被
+规则集的**类型契约**：9 条接口各一个 `Protocol`——规则集只要结构上满足就能被
 内核注入，换规则集不需要改内核（FR-4.9）。
 
 签名的**权威声明**在 `contracts/rules.py` 的 `RULE_SIGNATURES`（进基线）；
@@ -45,7 +45,7 @@ from ..contracts.rules import (
 )
 
 # ---------------------------------------------------------------------------
-# 8 条接口：每条一个 Protocol
+# 9 条接口：每条一个 Protocol
 # ---------------------------------------------------------------------------
 
 
@@ -54,7 +54,7 @@ class RuleInterface(Protocol):
 
     **存在的理由只有一个**：`Protocol` 不能当类型实参用（pyright 的
     `reportInvalidTypeForm`），而注册表 `RULE_INTERFACES` 需要一个
-    "接口类的类型"来标注值。所以给 8 条 Protocol 垫一个空协议基类：
+    "接口类的类型"来标注值。所以给 9 条 Protocol 垫一个空协议基类：
     协议本身仍是**结构化**的（实现者不需要继承任何东西），这个基类只为
     标注服务。
     """
@@ -115,6 +115,19 @@ class ScoreClear(RuleInterface, Protocol):
         ...
 
 
+class SoftDropScore(RuleInterface, Protocol):
+    """软降计分：本次软降应加的分（M1 新增的第 9 条签名）。
+
+    **独立一条签名**，不是 `score_clear` 的参数——消行结算在锁定时调一次，
+    软降发生在放置途中，时机与频率都不同（详见 `contracts/rules.py` 的
+    「第 9 条签名」一节）。
+    """
+
+    def __call__(self, ctx: RuleContext, distance: int) -> int:
+        """按本次软降的下移格数给分。"""
+        ...
+
+
 class ShapeCells(RuleInterface, Protocol):
     """形状表：方块在当前重力轴下的占位格子。"""
 
@@ -152,6 +165,7 @@ RULE_INTERFACES: Mapping[str, type] = MappingProxyType(
         "scan_clears": ScanClears,
         "classify_placement": ClassifyPlacement,
         "score_clear": ScoreClear,
+        "soft_drop_score": SoftDropScore,
         "shape_cells": ShapeCells,
         "kick_offsets": KickOffsets,
     }
@@ -159,7 +173,7 @@ RULE_INTERFACES: Mapping[str, type] = MappingProxyType(
 
 
 class RuleSet(RuleInterface, Protocol):
-    """一个规则集：8 条接口的整体替换入口（FR-4.9）。
+    """一个规则集：9 条接口的整体替换入口（FR-4.9）。
 
     **只读**：内核拿到规则集只调用，不改它——规则集不可变、无状态
     （架构 §7.3.1 纪律 1）。属性声明成只读属性，是为了让冻结的规则集
@@ -197,6 +211,11 @@ class RuleSet(RuleInterface, Protocol):
         ...
 
     @property
+    def soft_drop_score(self) -> SoftDropScore:
+        """软降计分（M1 新增的第 9 条签名）。"""
+        ...
+
+    @property
     def shape_cells(self) -> ShapeCells:
         """形状表。"""
         ...
@@ -215,7 +234,7 @@ class RuleSet(RuleInterface, Protocol):
 def signature_mismatches(rule_set: object) -> tuple[str, ...]:
     """比对规则集的实现与冻结签名（`contracts/rules.py` 的 `RULE_SIGNATURES`）。
 
-    返回问题清单，**空元组 = 8 条全对**。每条问题是一句中文说明，直接可读。
+    返回问题清单，**空元组 = 9 条全对**。每条问题是一句中文说明，直接可读。
 
     **只比参数名与参数个数**：类型是注解层的事，契约基线已经钉住声明；
     这里再抄一份类型判据就是第二份真相（架构 §4.4 末条）。
@@ -255,6 +274,7 @@ __all__ = [
     "ScanClears",
     "ScoreClear",
     "ShapeCells",
+    "SoftDropScore",
     "WrapCell",
     "signature_mismatches",
 ]
