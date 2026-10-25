@@ -49,6 +49,7 @@ import importlib
 import inspect
 import json
 import locale
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -815,6 +816,49 @@ def test_m1_soft_drop_score_the_kernel_source_holds_no_hardcoded_value() -> None
             if isinstance(constant, ast.Constant) and isinstance(constant.value, int):
                 offenders.append(ast.unparse(node))
     assert not offenders, f"内核把软降的分值写死了：{offenders}——软降得分必须归规则集"
+
+
+# ---------------------------------------------------------------------------
+# 元守卫：§5.2 的九个入口必须都还活着
+# ---------------------------------------------------------------------------
+
+#: §5.2 的复跑命令在 plan 里的形态（`` `pytest -k <命中名>` ``）。
+_ENTRY_POINT_PATTERN = re.compile(r"`pytest -k ([a-z0-9_]+)`")
+
+
+def _collect_test_names() -> list[str]:
+    """`tests/` 下所有测试函数的**名字**（按 AST 取，不靠正则扫全文）。"""
+    names: list[str] = []
+    for path in sorted((REPO_ROOT / "tests").rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names.extend(
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test_")
+        )
+    return names
+
+
+def test_m1_gates_every_section_5_2_entry_point_selects_a_test() -> None:
+    """§5.2 的**九个复跑命令**都要**选得到用例**。
+
+    **为什么要有这条守卫**：§5.2 说「这九个命令是『门还在不在』的**唯一入口**」。
+    实测发现**其中两个从来没绑定过任何用例**（G1-2 的 `m1_tables_transcription`
+    与 G1-3 的 `m1_tspin_five_tiers`）——`pytest -k` 选到 **0 条**，而 **pytest
+    对"一条都没选到"照样退出 0**（它只在"选中了、但有失败"时才非 0）→ **门从
+    入口上消失了**，而且**没人会发现**。
+
+    **这条守卫读的是 plan §5.2 的表**：表里的命中名 → 扫 `tests/` 下的用例名
+    → 每一条都要**至少命中一个**。**表改了守卫跟着改**，两边不会各走各的。
+    """
+    plan = (REPO_ROOT / "docs" / "plan-M1.md").read_text(encoding="utf-8")
+    names = _ENTRY_POINT_PATTERN.findall(plan)
+    assert len(names) == 9, f"§5.2 的复跑命令应当是九条，实为 {names}"
+
+    test_names = _collect_test_names()
+    unbound = [name for name in names if not any(name in test for test in test_names)]
+    assert not unbound, f"这些入口选不到任何用例：{unbound}"
 
 
 # ---------------------------------------------------------------------------
