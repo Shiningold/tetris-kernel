@@ -18,6 +18,7 @@ from typing import get_args
 import pytest
 
 import tetris_kernel.contracts as contracts_pkg
+import tetris_kernel.rules as rules_pkg
 from tetris_kernel.contracts import (
     ACTIVE_FIELDS,
     ARGS,
@@ -72,7 +73,10 @@ from tetris_kernel.contracts import (
     namespace_of,
 )
 from tetris_kernel.contracts.types import Phase, literal_enum
+from tetris_kernel.host.assembly import assemble
+from tetris_kernel.kernel.commands import Command
 from tetris_kernel.kernel.core import Kernel, KernelState
+from tetris_kernel.rules.standard import STANDARD_RULESET
 from tetris_kernel.rules.tables import PIECE_TYPES
 
 # ---------------------------------------------------------------------------
@@ -2275,7 +2279,7 @@ def test_every_mapped_kernel_field_exists_in_the_kernel() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 生命周期取值只写一处：契约层是唯一来源（内核不得抄第二份字面量表）
+# S4：`RuleContext.stepMs` 的语义（ADR-067）——宿主逻辑步长 · 规则集只透传不用
 # ---------------------------------------------------------------------------
 
 #: 允许出现生命周期四个取值的**唯一**位置：`contracts/types.py` 的四个常量。
@@ -2353,6 +2357,55 @@ def _phase_literal_allowances(tree: ast.AST, path: Path) -> set[int]:
             if isinstance(sub, ast.Constant):
                 allowed.add(id(sub))
     return allowed
+
+
+def test_step_ms_is_the_step_the_host_gave_the_kernel() -> None:
+    """宿主给 16，规则集在 `ctx` 里看到的就是 16（ADR-067 的「谁算 / 给谁用」）。
+
+    **走宿主装配层那条真链路**：宿主给步长 → 时钟源带着它 → 内核把它递进
+    `ctx`。绕开宿主直接造内核，只验了「内核会搬运」，没验「谁算」那一半。
+    """
+    seen: list[int] = []
+
+    def spy_interval(ctx: RuleContext) -> int:
+        seen.append(ctx.stepMs)
+        return STANDARD_RULESET.gravity_interval(ctx)
+
+    assembly = assemble(
+        seed=0,
+        step_ms=16,
+        rule_set=dataclasses.replace(STANDARD_RULESET, gravity_interval=spy_interval),
+    )
+    # 宿主这一侧：时钟源带着这个步长（架构 §5.3）。
+    assert assembly.clock.step_ms() == 16
+
+    kernel = assembly.kernel
+    kernel.execute(Command("start", source="test"))
+    kernel.execute(Command("tick", source="test"))
+    for _ in kernel.advance_frame():
+        pass
+
+    assert seen, "规则集一次都没被调用——这条守卫等于没跑"
+    assert set(seen) == {16}, f"规则集看到的步长不是宿主给的 16：{seen}"
+
+
+def test_the_rule_sets_never_read_the_step_ms() -> None:
+    """规则集**只透传不用**——`rules/` 里不得读 `ctx.stepMs`（ADR-067）。
+
+    「透传不用」是这条口径的一部分：标准玩法的重力间隔用逻辑帧数
+    （`gravity_interval(ctx)` 返回帧数），不看毫秒。将来若有变体要按毫秒
+    调手感，那是变体自己的事——但**仓里的规则集**不许悄悄用。
+    """
+    rules_dir = Path(rules_pkg.__file__).parent
+    offenders: list[str] = []
+    for path in sorted(rules_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "stepMs":
+                offenders.append(f"{path.name}:{node.lineno}（属性访问）")
+            elif isinstance(node, ast.Constant) and node.value == "stepMs":
+                offenders.append(f"{path.name}:{node.lineno}（字符串）")
+    assert not offenders, f"规则集读了 ctx.stepMs（透传不用）：{offenders}"
 
 
 def test_the_phase_values_are_written_down_in_one_place_only() -> None:
