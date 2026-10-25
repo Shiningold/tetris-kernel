@@ -25,7 +25,7 @@ r"""契约层共用的类型取值域。
 | # | 形态 | 写法 | 例 |
 | --- | --- | --- | --- |
 | 1 | 标量 | `int` · `str` · `bool` · `float` | `int` |
-| 2 | 联合 | `T1 \| T2`（成员 ≥ 2；成员可为形态 1–9 的任意组合） | `float \| int` |
+| 2 | 联合 | `T1 \| T2`（成员 ≥ 2；成员可为形态 1–11 的任意组合） | `float \| int` |
 | 3 | 可空 | `T \| None`（联合恰两项，`None` 是末项） | `str \| None` |
 | 4 | 定长元组 | `tuple[T1, T2]` | `tuple[int, int]` |
 | 5 | 变长元组 | `tuple[T, ...]` | `tuple[str, ...]` |
@@ -34,11 +34,16 @@ r"""契约层共用的类型取值域。
 | 8 | 递归元组 | `tuple[...]` | `tuple[...]` |
 | 9 | 命名结构 | `Board` · `Active`（大写开头的标识符） | `Board` |
 | 10 | 只读序列 | `Sequence[T]`（T 为形态 1–10，可再嵌套） | `Sequence[Sequence[int]]` |
+| 11 | 字面量枚举 | `Literal["a", "b"]`（成员 ≥ 1 个字符串字面量） | `Literal["down", "up"]` |
 
 **取值域也是形态 2**：像 `ARGS_VALUE` / `JSON_VALUE` 这样的取值域是"标量 + 元组
 形态"的联合，**不是新的形态**。
 
-**五条附加规则**：
+**形态 11 是另一回事**：它承载的是**单个字段**的取值域（生命周期 · 重力轴 ·
+消行轴 · 命令名）——**把取值域写进类型串，基线才看得见它变了**（架构 §7.3.1
+「取值域归谁定」末条：取值域常量不进基线，光有常量等于没有取值域）。
+
+**六条附加规则**：
 
 1. **形态 2 与 3 分开**：`float | int` 是联合，`str | None` 是可空。`None` 表示
    JSON null，**可以作为联合的普通成员**（与其它成员并列，如
@@ -74,9 +79,21 @@ r"""契约层共用的类型取值域。
    （`types.BOARD_VIEW` 与 `Sequence[ClearGroup]`），**引用处三处**：
    `scan_clears` / `classify_placement` 的 `board` 参数与 `score_clear` 的
    `groups`。
+6. **形态 11 只出现在叶子位置**：整条类型串本身、联合的一个成员、或命名结构的
+   一个成员类型——**不许嵌进容器形态**（`tuple[Literal["a"], ...]` 与
+   `Sequence[Literal["a"]]` 一律不合规）。形态 11 内部**只有字符串字面量**，
+   不参与任何形态的嵌套；**成员互不相同**（重复成员是静默的笔误，还会让两个
+   语义相同的取值域派生出两种类型串 → 假 major 变更）。
+   **字符串字面量只认 `\\` 与 `\"` 两种转义**（成员内容里出现反斜杠或双引号
+   时必须转义）。
+   **用 `Literal[...]` 而不是自造语法**：它是 Python 生态里这个概念的既有名字，
+   `typing.get_origin` / `get_args` 认得，读代码的人不用查本项目的私有文法。
+   **这是 M1 唯一的一次文法扩展**（`PROGRESS.md`：别分两次改文法）——将来要新
+   形态，一次改到位。
 
 **联合的成员顺序不参与语义，但一经写入不得重排**——它会进基线哈希，重排
-等于"已有键的哈希变化"。
+等于"已有键的哈希变化"。**形态 11 的成员顺序同理**：它进的是同一份哈希，
+重排 = 哈希变 = major 变更。
 """
 
 from __future__ import annotations
@@ -138,6 +155,54 @@ VECTOR2 = "tuple[int, int]"
 #: 热路径。规则签名的 `board` 参数引用它。
 BOARD_VIEW = "Sequence[Sequence[int]]"
 
+# ---------------------------------------------------------------------------
+# 形态 11：字面量枚举（取值域写进类型串）
+# ---------------------------------------------------------------------------
+
+
+def escape_literal_member(value: str) -> str:
+    """转义一个字面量枚举成员的**内容**（不含两侧的双引号）。
+
+    **只认两种转义**：`\\`（反斜杠）与 `\"`（双引号）——成员内容里出现这两种
+    字符时必须转义，否则解析器会在成员边界上读错。
+
+    **这是公开的**：文法解析器（`tools/contract_grammar.py`）渲染规范化声明时
+    要用**同一份**转义规则。**转义规则只写一处**——生成器与解析器各写一份的
+    后果是"生成器产出的串解析器读不懂"，或"同一取值域派生出两种写法"，
+    而这两种失效模式都不报错，只是基线里多了些看不懂的差异。
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def literal_enum(values: tuple[str, ...]) -> str:
+    """由**取值域元组**派生字面量枚举的类型串（形态 11）。
+
+    **类型串由取值域派生，不是手写**：`literal_enum(AXIS_VALUES)` 与
+    `AXIS_VALUES` 不可能分叉——手写类型串 + 另抄一份取值域，两处静默分叉时
+    基线显示全绿，而实际的值域已经变了（架构 §4.4 末条）。
+
+    - **成员 ≥ 1 个**：空取值域不是合法声明；
+    - **成员互不相同**：重复成员是静默的笔误，且会让两个语义相同的取值域
+      派生出两种类型串（假 major 变更）。
+    """
+    if not values:
+        raise ValueError("字面量枚举至少要有一个成员")
+    if len(set(values)) != len(values):
+        raise ValueError(f"字面量枚举的成员互不相同，收到 {values!r}")
+    members = ", ".join(f'"{escape_literal_member(value)}"' for value in values)
+    return f"Literal[{members}]"
+
+
+#: 生命周期取值域（快照 `phase` 的取值域）。
+#:
+#: **内核要解读这个字段**（阶段决定门禁与推进许可），所以取值域归**契约层**
+#: 钉死（架构 §7.3.1「取值域归谁定」）。内核的 `PHASE_*` 常量**由它派生**
+#: ——抄第二份字面量表，两处分叉时无人报警。
+PHASE_VALUES: tuple[str, ...] = ("not_started", "running", "paused", "game_over")
+
+#: 生命周期取值域的类型串（**由 `PHASE_VALUES` 派生**，不手写）。
+PHASE_LITERAL: str = literal_enum(PHASE_VALUES)
+
 __all__ = [
     "ARGS",
     "ARGS_VALUE",
@@ -148,6 +213,10 @@ __all__ = [
     "INT_TUPLE",
     "JSON_VALUE",
     "NEXT_QUEUE",
+    "PHASE_LITERAL",
+    "PHASE_VALUES",
     "SCALAR_MAP",
     "VECTOR2",
+    "escape_literal_member",
+    "literal_enum",
 ]

@@ -72,6 +72,8 @@ from .types import (
     INT_TUPLE,
     JSON_VALUE,
     NEXT_QUEUE,
+    PHASE_LITERAL,
+    PHASE_VALUES,
     SCALAR_MAP,
     VECTOR2,
 )
@@ -101,6 +103,8 @@ __all__ = [
     "METADATA_KEYS",
     "NAMED_STRUCTS",
     "NEXT_QUEUE",
+    "PHASE_LITERAL",
+    "PHASE_VALUES",
     "PRODUCER_LABELS",
     "REJECT_REASONS",
     "REJECT_REASON_CATEGORIES",
