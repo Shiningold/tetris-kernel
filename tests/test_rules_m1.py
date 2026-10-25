@@ -141,7 +141,7 @@ def _implementation_shape_table() -> dict[str, dict[int, tuple[tuple[int, int], 
 # ---------------------------------------------------------------------------
 
 
-def test_shape_table_matches_independent_transcription_entry_by_entry() -> None:
+def test_m1_tables_transcription_shape_table_matches_entry_by_entry() -> None:
     """形状表与独立转录表**逐条相等**——不是"抽查若干条"。
 
     **逐条**：每种方块的每个朝向都单独比，**顺序也要对**（坐标元组的
@@ -161,7 +161,7 @@ def test_shape_table_matches_independent_transcription_entry_by_entry() -> None:
             )
 
 
-def test_shape_table_has_28_entries() -> None:
+def test_m1_tables_transcription_shape_table_has_28_entries() -> None:
     """形状表覆盖 **7 种方块 × 4 朝向 = 28 条**，一条不多一条不少。"""
     implementation = _implementation_shape_table()
     assert len(implementation) == 7
@@ -173,14 +173,14 @@ def test_shape_table_has_28_entries() -> None:
             assert len(set(cells)) == 4, f"方块 {piece!r} 朝向 {rotation} 有重复格"
 
 
-def test_shape_table_only_fills_the_down_axis() -> None:
+def test_m1_tables_transcription_shape_table_only_fills_down_axis() -> None:
     """**其余三个轴留空**——填了会抢走 M4-A5 的判据（表随重力方向变换）。"""
     for axis in ("left", "right", "up"):
         assert tables.SHAPE_TABLE[axis] == {}, f"{axis} 轴不该有形状表（M4-A5 的活）"
     assert set(tables.SHAPE_TABLE) == {"down", "left", "right", "up"}
 
 
-def test_shape_table_is_frozen_inside_and_out() -> None:
+def test_m1_tables_transcription_shape_table_is_frozen() -> None:
     """表**内外都冻**——只冻外层等于没冻。
 
     M0 的教训：外层是 `MappingProxyType`、内层是普通 `dict` 时，任何拿到
@@ -314,7 +314,7 @@ _CELLS_UP = ((2, 0), (1, 1), (2, 1), (3, 1))
 _CELLS_RIGHT = ((2, 1), (2, 2), (3, 2), (2, 3))
 
 
-def test_tspin_grades_cover_all_five_levels() -> None:
+def test_m1_tspin_five_tiers_grades_cover_all_five_levels() -> None:
     """**五档各有用例**：`none` / `tspin` / `mini` / `single` / `double` / `triple`。
 
     每张棋盘都能一眼看出为什么是这一档（贴头 / 背头两对角占没占，写在
@@ -356,7 +356,7 @@ def test_tspin_grades_cover_all_five_levels() -> None:
     assert (result.tSpin, result.classKey) == ("mini", "tspin-single")
 
 
-def test_tspin_mini_needs_no_kick() -> None:
+def test_m1_tspin_five_tiers_mini_needs_no_kick() -> None:
     """**踢过墙的 Mini 不是 Mini**——踢墙就不是「原地转进去」。
 
     `kickIndex` 为 0（第一个候选 `(0, 0)`）与 `None`（压根没踢）都算没踢。
@@ -380,7 +380,7 @@ def test_tspin_mini_needs_no_kick() -> None:
     )
 
 
-def test_tspin_mini_boundary_is_the_head_corners() -> None:
+def test_m1_tspin_five_tiers_mini_boundary_is_head_corners() -> None:
     """**边界用例**：贴头两角都占 → 完整（头被夹住）；只占一个 → Mini。
 
     这一条是「前两角 / 后两角」口径的机器守卫——**换个朝向也成立**
@@ -415,7 +415,7 @@ def test_tspin_mini_boundary_is_the_head_corners() -> None:
     assert result.tSpin == "mini"
 
 
-def test_not_a_tspin_when_only_two_corners_are_occupied() -> None:
+def test_m1_tspin_five_tiers_not_when_two_corners_occupied() -> None:
     """**占位只有两角 → 不是 T-Spin**（门槛是「至少三个」）。"""
     board = [
         [0, 1, 0, 0],
@@ -427,7 +427,7 @@ def test_not_a_tspin_when_only_two_corners_are_occupied() -> None:
     assert (result.tSpin, result.classKey) == ("none", "none")
 
 
-def test_not_a_tspin_when_the_last_move_was_not_a_rotation() -> None:
+def test_m1_tspin_five_tiers_not_when_last_move_not_rotation() -> None:
     """**最后一手不是旋转 → 不是 T-Spin**（必要条件之一）。
 
     平移进来的 T 摆得再像 T-Spin 也不算——**旋转**才是 T-Spin 的定义。
@@ -439,7 +439,7 @@ def test_not_a_tspin_when_the_last_move_was_not_a_rotation() -> None:
     assert (result.tSpin, result.classKey) == ("none", "none")
 
 
-def test_not_a_tspin_for_a_non_t_piece() -> None:
+def test_m1_tspin_five_tiers_not_for_a_non_t_piece() -> None:
     """**不是 T 一律 `none`**（必要条件之一）。"""
     board = _board_from_art(_BOARD_ART["tspin_up"])
     placement = PlacementInfo(
@@ -454,7 +454,7 @@ def test_not_a_tspin_for_a_non_t_piece() -> None:
     assert (result.tSpin, result.classKey) == ("none", "none")
 
 
-def test_placed_cells_do_not_count_as_walls() -> None:
+def test_m1_tspin_five_tiers_placed_cells_do_not_count_as_walls() -> None:
     """**本次放置的格子自己不算墙**——方块自己的格子排除在占位统计外。
 
     **探针做法**：把一个外框角**塞进 `placement.cells`**（真实内核不会这么
@@ -474,7 +474,7 @@ def test_placed_cells_do_not_count_as_walls() -> None:
     assert (result.tSpin, result.classKey) == ("none", "none")
 
 
-def test_classify_placement_is_pure() -> None:
+def test_m1_tspin_five_tiers_classify_placement_is_pure() -> None:
     """**纯函数性**：同 `ctx` + 同 `placement` 两次结果相同，且不改棋盘。"""
     board = _board_from_art(_BOARD_ART["tspin_up"])
     snapshot = [row[:] for row in board]
@@ -559,14 +559,14 @@ def _groups(class_key: str, lines: int) -> tuple[ClearGroup, ...]:
     )
 
 
-def test_score_table_matches_independent_transcription() -> None:
+def test_m1_scoring_table_score_table_matches_transcription() -> None:
     """计分表与**独立转录表**逐条相等（10 个键一个不多一个不少）。"""
     assert dict(tables.SCORE_TABLE) == _EXPECTED_BASE_SCORE
     assert set(tables.SCORE_TABLE) == set(_EXPECTED_BASE_SCORE)
     assert set(tables.CLASS_KEYS) == set(_EXPECTED_BASE_SCORE)
 
 
-def test_base_score_per_class_key_is_hand_checked() -> None:
+def test_m1_scoring_table_base_score_per_class_key_is_hand_checked() -> None:
     """**逐项手算**：每个类别键的基础分（期望值独立转录，不调实现算）。"""
     for class_key, expected in _EXPECTED_BASE_SCORE.items():
         lines = _LINES_BY_CLASS_KEY[class_key]
@@ -585,7 +585,7 @@ def test_base_score_per_class_key_is_hand_checked() -> None:
         assert delta.linesDelta == lines, class_key
 
 
-def test_b2b_chain_trajectory() -> None:
+def test_m1_scoring_table_b2b_chain_trajectory() -> None:
     """**B2B 链**：难消 → 难消 → 普通消行，逐手断言 `b2b` 的变化轨迹。
 
     **入链那一跳不吃倍率**——上一手不在链里（`prev.b2b` 为 `False`），
@@ -610,7 +610,7 @@ def test_b2b_chain_trajectory() -> None:
     assert third.scoreDelta == 100 + tables.COMBO_BONUS * 2
 
 
-def test_b2b_multiplier_never_breaks_the_integer_type() -> None:
+def test_m1_scoring_table_b2b_multiplier_keeps_integer_type() -> None:
     """**B2B ×3/2 不许破 `int`**（`scoreDelta` 的类型是 `int`）。
 
     基础分全是 100 的倍数 → 乘完仍是整数。**写成浮点 1.5 就破类型了**。
@@ -625,7 +625,7 @@ def test_b2b_multiplier_never_breaks_the_integer_type() -> None:
     assert delta.scoreDelta == 1800
 
 
-def test_empty_groups_break_combo_and_b2b() -> None:
+def test_m1_scoring_table_empty_groups_break_combo_and_b2b() -> None:
     """**落空**（空组）→ `combo == 0` 且 `b2b is False`。
 
     落空由**内核每次锁定后都调 `score_clear`（含空组）**表达——内核不自己
@@ -644,7 +644,7 @@ def test_empty_groups_break_combo_and_b2b() -> None:
     assert delta.state.level == 2
 
 
-def test_level_rises_every_ten_lines() -> None:
+def test_m1_scoring_table_level_rises_every_ten_lines() -> None:
     """**每消 10 行升 1 级**；一次消多行也能**跨档**。
 
     9 行时消 4 行 → 13 行 → **2 级**（不是"本次消行数 // 10"那种写法——
@@ -678,7 +678,7 @@ def test_rule_set_implements_all_nine_signatures() -> None:
         assert hasattr(standard, name), f"标准实现缺少接口 {name}"
 
 
-def test_soft_drop_score_is_one_point_per_cell() -> None:
+def test_m1_soft_drop_score_is_one_point_per_cell() -> None:
     """**软降计分归规则集**：每实际下移一格加 1 分（被墙挡住 = 0 分）。
 
     `distance` 是本次**实际下移**的格数——被墙挡住时是 0，加 0 分。
@@ -800,13 +800,13 @@ def _assert_kick_table_matches(
             )
 
 
-def test_kick_table_matches_independent_transcription_entry_by_entry() -> None:
+def test_m1_tables_transcription_kick_table_matches_entry_by_entry() -> None:
     """踢墙表与独立转录表**逐条相等**（16 种转向 × 3 个踢墙组）。"""
     down = {key: dict(value) for key, value in tables.KICK_TABLE["down"].items()}
     _assert_kick_table_matches(down)
 
 
-def test_kick_table_covers_all_sixteen_transitions_and_three_groups() -> None:
+def test_m1_tables_transcription_kick_table_covers_all_transitions() -> None:
     """**表结构断言**：16 种转向 × 3 个组，一条不缺。
 
     16 种转向 = 顺时针 4 种 · 180° 4 种 · 逆时针 4 种 · 同向 4 种。
@@ -825,14 +825,14 @@ def test_kick_table_covers_all_sixteen_transitions_and_three_groups() -> None:
                 assert offsets[0] == (0, 0), "第一个候选必须是恒等偏移（不位移）"
 
 
-def test_o_group_never_kicks() -> None:
+def test_m1_tables_transcription_o_group_never_kicks() -> None:
     """**O 组只有 `(0, 0)`**——SRS 里 O 旋转不位移。"""
     down = tables.KICK_TABLE["down"]
     for (from_rotation, to_rotation), groups in down.items():
         assert groups["O"] == ((0, 0),), f"{from_rotation} → {to_rotation} 的 O 组不该有偏移"
 
 
-def test_kick_table_is_frozen_inside_and_out() -> None:
+def test_m1_tables_transcription_kick_table_is_frozen() -> None:
     """踢墙表**内外都冻**——只冻外层等于没冻。"""
     assert isinstance(tables.KICK_TABLE, MappingProxyType)
     down = tables.KICK_TABLE["down"]

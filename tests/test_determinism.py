@@ -33,7 +33,7 @@ from hypothesis import strategies as st
 
 from tetris_kernel.contracts.commands import COMMAND_TYPES
 from tetris_kernel.kernel.commands import Args, Command
-from tetris_kernel.kernel.core import Kernel
+from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.snapshot import Snapshot
 from tetris_kernel.rules.tables import PIECE_TYPES
@@ -51,13 +51,18 @@ COMMAND_LIFECYCLE_EVENTS = frozenset({"command:received", "command:accepted", "c
 #:
 #: 顺序有意为之：开局 → 操作 → 落地 → 推进（锁定一块）→ 换块 → 暂存 → 推进 →
 #: 参数类命令 → 再推进。每条 `tick` 之后**完整消费**帧推进的五步。
+#:
+#: **硬降之后那一串 tick 是 31 条不是 1 条**：M1 起有 **30 帧的锁定延迟**
+#: （spec §7.5，硬降也一样——"方块落地后开始计时"没有例外），硬降只是把方块
+#: 按到地板上，**要等延迟到期才锁定**。M0 是落即锁，推进一帧就锁上了——
+#: 那时候这串命令里只需要 1 条 tick。
 COMMAND_SEQUENCE: tuple[tuple[str, Args], ...] = (
     ("start", ()),
     ("moveLeft", ()),
     ("rotateCW", ()),
     ("softDrop", ()),
     ("hardDrop", ()),
-    ("tick", ()),
+    *(("tick", ()) for _ in range(LOCK_DELAY_FRAMES + 1)),
     ("moveRight", ()),
     ("rotateCCW", ()),
     ("hold", ()),

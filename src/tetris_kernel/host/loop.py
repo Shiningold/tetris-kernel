@@ -40,6 +40,7 @@ from dataclasses import dataclass
 
 from ..kernel.commands import Command
 from ..kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
+from ..kernel.lifecycle import PHASE_GAME_OVER
 from ..kernel.snapshot import Snapshot
 from .assembly import Assembly
 
@@ -55,7 +56,19 @@ class RunReport:
     - `events`：总线上发出过的**事件数**（含构造时那两条初始事件）；
     - `fingerprint`：最终棋盘的**结构指纹**（`board.structureFingerprint`）；
     - `score` / `lines` / `piecesPlaced`：最终计分与统计；
-    - `phase`：最终的生命周期状态。
+    - `phase`：最终的生命周期状态；
+    - `combo` / `b2b` / `level`：**结算三项**（M1 · spec §7.8）——连击 · 背面
+      连击链 · 等级。
+
+    **M1 只加字段，不改已有字段的含义**（plan-M1.md S12 段）：前 7 项是 M0 的
+    口径，一字未动；新加的三项排在**末尾**——**按关键字构造的既有调用方不受
+    影响**。
+
+    **按位置构造会报 `TypeError`**：三个新字段**没有默认值**（`dataclasses.fields`
+    实测：`default` 全是 `MISSING`），所以 `RunReport(1, 2, "fp", 0, 0, 0, "running")`
+    会缺 3 个必填参数。**这是有意的**——结算三项若给默认值（`0` / `False` / `1`），
+    漏传的调用方会拿到**静默错的结算值**，比一声 `TypeError` 难查得多。
+    仓内唯一构造点用**关键字**，不受影响（批次 C 审查报告 M-1）。
     """
 
     frames: int
@@ -65,6 +78,9 @@ class RunReport:
     lines: int
     piecesPlaced: int
     phase: str
+    combo: int
+    b2b: bool
+    level: int
 
 
 class HeadlessLoop:
@@ -132,10 +148,17 @@ class HeadlessLoop:
         self._run_frame_body()
         return bus.last_seq - before
 
-    def run_frames(self, frames: int) -> RunReport:
+    def run_frames(self, frames: int, *, until_game_over: bool = False) -> RunReport:
         """跑满 `frames` 帧，返回运行报告。
 
         **局结束也不提前退出**：帧号照走，推进许可不再授予（§1.4.4.1 ②）。
+
+        `until_game_over=True` 时**在局结束时停帧**（M1 · spec §7.8）：宿主
+        **不再派发后面的 tick**，所以后面的帧根本没开始。
+
+        **「停帧」停的是宿主，不是内核的帧号语义**：内核每收到一条 tick 就把
+        帧号 +1（ADR-022），那是**内核的事**——宿主少派发 tick，帧号自然就
+        少涨。**不许改成"局结束就停帧号"**（那是内核的语义，M0 的既有行为）。
 
         **负帧数直接报错**：负数会让 `range()` 变成空循环，悄悄返回一份"跑了 0
         帧"的报告——那是调用方的 bug，API 层也要挡（CLI 层同样挡，两处口径一致）。
@@ -144,6 +167,8 @@ class HeadlessLoop:
             raise ValueError(f"frames 不能为负，实为 {frames}")
         for _ in range(frames):
             self.run_frame()
+            if until_game_over and self.snapshot().phase == PHASE_GAME_OVER:
+                break
         snapshot = self.snapshot()
         return RunReport(
             frames=self._frames,
@@ -153,6 +178,9 @@ class HeadlessLoop:
             lines=snapshot.lines,
             piecesPlaced=snapshot.piecesPlaced,
             phase=snapshot.phase,
+            combo=snapshot.combo,
+            b2b=snapshot.b2b,
+            level=snapshot.level,
         )
 
     def snapshot(self) -> Snapshot:
