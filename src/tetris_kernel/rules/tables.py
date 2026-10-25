@@ -411,23 +411,37 @@ CLEAR_NAMES: Mapping[int, str] = MappingProxyType(
     {1: "single", 2: "double", 3: "triple", 4: "tetris"}
 )
 
-#: 计分表：`classKey` → 基础分值（**项目口径**，spec §7.4 · ADR-069）。
+#: 计分表：`classKey` → 基础分值（**项目口径**，spec §7.4 · ADR-069 · ADR-070）。
 #:
 #: 键是 `classKey` 的取值域（规则集定义的词汇，见模块 docstring）。
 #:
-#: **不是 guideline 的原值**：本项目的 T-Spin 计分与官方 guideline 有**三处
-#: 偏离**（ADR-069 逐条列了）——**不冒充 guideline**，与 180° 踢墙表「不冒充
-#: SRS 正统」同一把尺子（ADR-068）。**偏离的来由见 spec §7.3 / §7.4**。
+#: **不是 guideline 的原值**：本项目的 T-Spin 计分与官方 guideline 有**两处
+#: 偏离**（**ADR-069 · ADR-070** 逐条列了）——**不冒充 guideline**，与 180°
+#: 踢墙表「不冒充 SRS 正统」同一把尺子（ADR-068）。**偏离的来由见 spec §7.3 /
+#: §7.4**。
+#:
+#: **偏离一（分值）**：**Mini 消了行按完整 T-Spin 计**（800 / 1200 / 1600），
+#: guideline 是 200 / 400 / Impossible——M1 拍板定的口径。
+#:
+#: **偏离二（B2B 语义）**：**0 行的 T-Spin 会断 B2B 链**（它走「落空」分支 →
+#: `b2b = False`），guideline 明写「0 行的 T-Spin 不断链」。**根因与下面
+#: `tspin-none` / `tspin-mini` 送不到计分是同一条**：分类挂在消行组上，0 行的
+#: 放置没有组可挂。**投递路径要改冻结签名**，留到后续里程碑。
 #:
 #: **基础分全是 100 的倍数**——这一条是 B2B 倍率"整数不破"的前提
-#: （800 × 3/2 = 1200 · 1200 × 3/2 = 1800 · 1600 × 3/2 = 2400）。
+#: （800 × 3/2 = 1200 · 1200 × 3/2 = 1800 · 1600 × 3/2 = 2400 · 100 × 3/2 = 150）。
 #:
 #: - 普通消行：单 100 / 双 300 / 三 500 / 四 800；
 #: - T-Spin 消行：单 800 / 双 1200 / 三 1600；
-#: - T-Spin Mini（不消行）400；
-#: - T-Spin 不消行（非 Mini）0。
+#: - T-Spin Mini（不消行）**100**；
+#: - T-Spin 不消行（非 Mini）**400**。
 #:
-#: **后两档当前送不到计分**：分类挂在**消行组**上，而**消 0 行的放置根本没有
+#: **0 行的两档是 guideline 原值**（Tetris Wiki `T-Spin` §Scoring 的表：
+#: Mini 0 行 = 100 / T-Spin 0 行 = 400）——**ADR-070 摆正**：原先这里是
+#: Mini 400 / T-Spin 0，那是**照 spec 抄错的**（guideline 里 Mini 0 行是 100，
+#: 400 是 T-Spin 那一列的 0 行值）。
+#:
+#: **这两档当前送不到计分**：分类挂在**消行组**上，而**消 0 行的放置根本没有
 #: 组**——内核这时调的是 `score_clear((), …)`（落空）。表里备齐是为了口径完整，
 #: **投递路径要改冻结签名**，留到后续里程碑（见 `PROGRESS.md` 的待办）。
 SCORE_TABLE: Mapping[str, int] = MappingProxyType(
@@ -437,8 +451,8 @@ SCORE_TABLE: Mapping[str, int] = MappingProxyType(
         "double": 300,
         "triple": 500,
         "tetris": 800,
-        "tspin-none": 0,
-        "tspin-mini": 400,
+        "tspin-none": 400,
+        "tspin-mini": 100,
         "tspin-single": 800,
         "tspin-double": 1200,
         "tspin-triple": 1600,

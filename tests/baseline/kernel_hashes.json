@@ -1,19 +1,19 @@
 {
   "files": {
-    "kernel/__init__.py": "1a06c083a3ed5c689e11cccef35290cc",
+    "kernel/__init__.py": "62887ef2fd8d8df8596de30be0400936",
     "kernel/commands.py": "5374985c6fbd0752fc7496992caec106",
-    "kernel/core.py": "40fc85c443ebb947b4aba1a5bcc32654",
+    "kernel/core.py": "7864c6cb833d86b2c09527adca30cb8b",
     "kernel/drafts.py": "dba1bc77c075212d6d939b7e45946718",
     "kernel/fingerprint.py": "fdb5035c42b06111fe0f8ed421d80ee0",
     "kernel/frame.py": "00fc7096637ae524a581da029ebf850f",
-    "kernel/lifecycle.py": "1ebcc1b144cda69923a57ad4120b427f",
+    "kernel/lifecycle.py": "60393a7ae52fc26b72d036f46a3c45e1",
     "kernel/quota.py": "1064689401a7293410e65f02ce1a9514",
     "kernel/rng.py": "68311f21e04bd3a31e35b32a9dc96e34",
-    "kernel/snapshot.py": "99201798ed11c53b5db8846e9873ba44",
-    "rules/__init__.py": "fc59602029de1c4ad28e8e9980eba942",
-    "rules/interface.py": "c177b1cf50aacaf8b514b1feec93ec14",
-    "rules/standard.py": "5c57e6a5d9f1d69cc8051b6336829740",
-    "rules/tables.py": "cf15da1c49935280e9c70dc254e9d30d"
+    "kernel/snapshot.py": "b2e6274b8d6f894d2277d3dd3219da43",
+    "rules/__init__.py": "1ff70e8694d8d656c06eac29f3033ec5",
+    "rules/interface.py": "49abf4d5554e93c92db62279ae59d6b9",
+    "rules/standard.py": "6fa925089ed468f7e8579e9ae39bea16",
+    "rules/tables.py": "accc3220be3ae4280102ddf3e140a556"
   },
   "meta": {
     "fileCount": 14,

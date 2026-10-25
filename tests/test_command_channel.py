@@ -25,7 +25,7 @@ import pytest
 
 from tetris_kernel.contracts.commands import COMMAND_TYPES, COMMANDS
 from tetris_kernel.kernel.commands import Args, Command
-from tetris_kernel.kernel.core import Kernel, KernelInvariantError
+from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel, KernelInvariantError
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.rules.tables import PIECE_TYPES
 
@@ -402,10 +402,16 @@ def _kernel_with_a_broken_frame() -> Kernel:
     """
     kernel = _kernel_in_phase("running")
     kernel.execute(Command("hardDrop", source="test"))
-    kernel.execute(Command("tick", source="test"))
-    steps = kernel.advance_frame()
-    next(steps)  # 重力
-    next(steps)  # 锁定 → 活动方块被清空，出生步还没跑
+    # **M1 起锁定不是即时的**（spec §7.5：30 帧的锁定延迟，硬降也一样）——要
+    # 推进到**计时归零那一帧**，锁定步才把方块落盘（活动方块清空，出生步还没
+    # 跑）。M0 是推进一帧就锁定。
+    for _ in range(LOCK_DELAY_FRAMES + 2):
+        kernel.execute(Command("tick", source="test"))
+        steps = kernel.advance_frame()
+        next(steps)  # 重力
+        next(steps)  # 锁定
+        if kernel.snapshot().active is None:
+            break
     assert kernel.snapshot().active is None, "这一步之后不该有活动方块"
     return kernel
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import cast
 
 from tetris_kernel.kernel.commands import Args, Command
-from tetris_kernel.kernel.core import Kernel
+from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.rules.tables import GRAVITY_INTERVAL_FRAMES, PIECE_TYPES, SCORE_TABLE
 
@@ -99,6 +99,50 @@ def _advance(kernel: Kernel) -> list[list[EventDraft]]:
     return [list(step) for step in kernel.advance_frame()]
 
 
+def _advance_until_locked(
+    kernel: Kernel, *, limit: int = LOCK_DELAY_FRAMES + 5
+) -> list[list[EventDraft]]:
+    """推进到**方块真的锁定**为止，返回**锁定那一帧**的每一步事件。
+
+    **M1 起锁定不是即时的**（spec §7.5：30 帧的锁定延迟，**硬降也一样**——
+    "方块落地后开始计时"这句话没有例外），M0 是落即锁。所以凡是「推进一帧就
+    锁定」的旧写法，都要改成「推进到锁定为止」。
+
+    **只返回锁定那一帧**：锁定之后棋盘还会继续变（消行、塌落、出生），多跑
+    几帧就看不出「锁定那一刻」的盘面了。
+    """
+    for _ in range(limit):
+        kernel.execute(Command("tick", source="test"))
+        steps = _advance(kernel)
+        if any("piece:locked" in _types(tuple(step)) for step in steps):
+            return steps
+    raise AssertionError(f"{limit} 帧内没有等到锁定事件")
+
+
+def _advance_until_locked_with_boards(
+    kernel: Kernel, *, limit: int = LOCK_DELAY_FRAMES + 5
+) -> tuple[list[list[EventDraft]], list[list[list[int]]]]:
+    """推进到**方块真的锁定**为止，返回（该帧每步的事件，该帧每一步**当时的盘面**）。
+
+    **盘面必须在帧内取**：`piece:locked` 的订阅者读到的盘面**尚未消行**，而
+    帧跑完再读就只剩塌落之后的样子了——"锁定那一刻"的样子就看不到了。
+
+    **每步一盘**：步骤是**逐步产出**的（架构 §6.2），订阅者在**每一步**读到
+    的盘面各不相同（锁定步：格子已落、尚未消行；消行步：还没塌落；塌落步：
+    已经塌了）。所以这里按步存快照，而不是只存最后一帧的盘面。
+    """
+    for _ in range(limit):
+        kernel.execute(Command("tick", source="test"))
+        steps: list[list[EventDraft]] = []
+        boards: list[list[list[int]]] = []
+        for step in kernel.advance_frame():
+            steps.append(list(step))
+            boards.append([list(row) for row in kernel.snapshot().board.cells])
+        if any("piece:locked" in _types(tuple(step)) for step in steps):
+            return steps, boards
+    raise AssertionError(f"{limit} 帧内没有等到锁定事件")
+
+
 # ---------------------------------------------------------------------------
 # 验证 1：G0-4——命令入队不在本轮生效
 # ---------------------------------------------------------------------------
@@ -148,9 +192,8 @@ def test_tick_is_the_first_command_of_a_frame() -> None:
 def test_five_steps_have_a_fixed_relative_order() -> None:
     """五步的事件**相对次序**固定。"""
     kernel = _kernel_ready_to_clear()
-    kernel.execute(Command("tick", source="test"))
 
-    steps = _advance(kernel)
+    steps = _advance_until_locked(kernel)
     assert len(steps) == 5, f"帧推进必须正好五步，实际 {len(steps)}"
 
     events = [event_type for step in steps for event_type in _types(tuple(step))]
@@ -183,17 +226,15 @@ def test_combo_breaks_when_a_placement_clears_nothing() -> None:
     """
     kernel = _kernel_ready_to_clear()
 
-    # 第一帧：锁定 → 消 1 行 → 连击变 1。
-    kernel.execute(Command("tick", source="test"))
-    first = _advance(kernel)
+    # 第一块：锁定 → 消 1 行 → 连击变 1。
+    first = _advance_until_locked(kernel)
     assert kernel.snapshot().combo == 1
     first_events = [event_type for step in first for event_type in _types(tuple(step))]
     assert "score:combo-changed" in first_events, first_events
 
     # 下一块硬降到底但不消行 → 落空 → 连击断回 0。
     kernel.execute(Command("hardDrop", source="test"))
-    kernel.execute(Command("tick", source="test"))
-    second = _advance(kernel)
+    second = _advance_until_locked(kernel)
     assert kernel.snapshot().combo == 0
     second_events = [event_type for step in second for event_type in _types(tuple(step))]
     assert "score:combo-changed" in second_events, second_events
@@ -230,8 +271,7 @@ def test_combo_survives_a_frame_without_a_lock() -> None:
     """
     kernel = _kernel_ready_to_clear()
 
-    kernel.execute(Command("tick", source="test"))
-    _advance(kernel)
+    _advance_until_locked(kernel)
     assert kernel.snapshot().combo == 1, "消行后连击没有起来"
 
     # 下一帧**没有锁定**（新方块还在空中，够不着地板）→ 不是"落空"。
@@ -257,12 +297,11 @@ def test_a_clear_really_clears_the_row_and_collapses_the_board() -> None:
     # 标记格：放在被消行**上面**，塌落后它应该往下掉一格。
     kernel.execute(Command("writeCells", args=(("cells", ((0, 5, 1),)),), source="test"))
 
-    kernel.execute(Command("tick", source="test"))
-    locked_board: list[list[int]] | None = None
-    for step in kernel.advance_frame():
-        if "piece:locked" in _types(tuple(step)):
-            locked_board = [list(row) for row in kernel.snapshot().board.cells]
-    assert locked_board is not None, "这一帧没有锁定事件"
+    steps, boards = _advance_until_locked_with_boards(kernel)
+    lock_index = next(
+        index for index, step in enumerate(steps) if "piece:locked" in _types(tuple(step))
+    )
+    locked_board = boards[lock_index]
 
     bottom = HEIGHT - 1
     assert all(cell != 0 for cell in locked_board[bottom]), "锁定时那一行应该已经满了"
@@ -291,8 +330,7 @@ def test_scoring_follows_the_rule_set() -> None:
     kernel = _kernel_ready_to_clear()
 
     before = kernel.snapshot()
-    kernel.execute(Command("tick", source="test"))
-    _advance(kernel)
+    _advance_until_locked(kernel)
     after = kernel.snapshot()
 
     assert after.lines == before.lines + 1, "消行数没跟着涨"
@@ -408,22 +446,36 @@ def test_the_piece_falls_exactly_one_row_when_the_interval_expires() -> None:
     assert after.gravityTimer == GRAVITY_INTERVAL - 1, "落格后计时没有重置"
 
 
-def test_a_grounded_piece_locks_immediately_despite_the_interval() -> None:
-    """间隔**不拖慢锁定**：方块贴地那一帧就被锁定（M0 是落即锁）。"""
+def test_a_grounded_piece_locks_after_the_lock_delay_despite_the_interval() -> None:
+    """间隔**不拖慢锁定**：贴地的方块按**锁定延迟**锁定，不等重力间隔。
+
+    **M0 是落即锁**（贴地那一帧就被锁死），**M1 起换成 30 帧的锁定延迟**
+    （spec §7.5）——**意图不变**：锁定由"方块贴地"这件事触发，**不被重力
+    间隔拖慢**（标准 1 级的重力间隔是 60 帧，比锁定延迟 30 帧还长；锁定要是
+    被间隔拖住，这块方块得等 60 帧才锁）。
+
+    **M1 口径的落点**：锁定延迟在**落地那一帧起算**（那一帧**不消耗**计时），
+    之后 30 帧到期才锁定 → 从硬降到锁定**相隔 30 帧**（**含落地帧算进去共 31 帧**）。
+    """
     kernel = _running_kernel()
     kernel.execute(Command("hardDrop", source="test"))
-    kernel.execute(Command("tick", source="test"))
-    _advance(kernel)
 
-    assert kernel.snapshot().piecesPlaced == 1, "贴地的方块没有当场锁定"
+    frames = 0
+    while kernel.snapshot().piecesPlaced == 0:
+        kernel.execute(Command("tick", source="test"))
+        _advance(kernel)
+        frames += 1
+        assert frames <= GRAVITY_INTERVAL, "锁定被重力间隔拖慢了（间隔不该拖慢锁定）"
+
+    assert frames == LOCK_DELAY_FRAMES + 1, f"锁定帧数不对：{frames}"
+    assert kernel.snapshot().piecesPlaced == 1, "贴地的方块没有锁定"
 
 
 def test_a_newly_spawned_piece_restarts_the_gravity_timer() -> None:
     """锁定后补的新方块**先等满一个间隔**才落第一格。"""
     kernel = _running_kernel()
     kernel.execute(Command("hardDrop", source="test"))
-    kernel.execute(Command("tick", source="test"))
-    _advance(kernel)
+    _advance_until_locked(kernel)
 
     snapshot = kernel.snapshot()
     assert snapshot.piecesPlaced == 1
@@ -459,8 +511,7 @@ def test_hold_can_be_used_again_after_the_piece_locks() -> None:
     assert kernel.snapshot().holdUsed is True, "第一次暂存后额度没被占用"
 
     kernel.execute(Command("hardDrop", source="test"))
-    kernel.execute(Command("tick", source="test"))
-    _advance(kernel)
+    _advance_until_locked(kernel)
 
     assert kernel.snapshot().piecesPlaced == 1, "这一帧没有锁定方块"
     assert kernel.snapshot().holdUsed is False, "锁定后暂存额度没有复位"
@@ -499,18 +550,18 @@ def test_hold_denied_is_not_published_when_the_command_never_reaches_the_hold_lo
 def test_board_is_not_cleared_when_piece_locked_is_published() -> None:
     """`piece:locked` 的订阅者读到的棋盘**尚未消行**（step 化的意义所在）。"""
     kernel = _kernel_ready_to_clear()
-    kernel.execute(Command("tick", source="test"))
 
     bottom = HEIGHT - 1
+    steps, boards = _advance_until_locked_with_boards(kernel)
     locked_seen = False
-    for step in kernel.advance_frame():
+    for step, board in zip(steps, boards, strict=True):
         types = _types(tuple(step))
         if "piece:locked" in types:
             locked_seen = True
-            row = kernel.snapshot().board.cells[bottom]
+            row = board[bottom]
             assert all(cell != 0 for cell in row), "锁定时那一行还没满"
         if "board:lines-cleared" in types:
-            row = kernel.snapshot().board.cells[bottom]
+            row = board[bottom]
             assert all(cell != 0 for cell in row), "消行事件与塌落之间不该提前清掉"
     assert locked_seen, "这一帧没有锁定事件"
 
