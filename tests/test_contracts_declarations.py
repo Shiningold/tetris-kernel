@@ -13,6 +13,7 @@ import ast
 import dataclasses
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
@@ -21,13 +22,16 @@ from tetris_kernel.contracts import (
     ACTIVE_FIELDS,
     ARGS,
     ARGS_VALUE,
+    AXIS_LITERAL,
     AXIS_VALUES,
     BOARD_CELLS,
     BOARD_FIELDS,
     BOARD_VIEW,
     CELLS,
+    CLEAR_AXIS_LITERAL,
     CLEAR_AXIS_VALUES,
     COMMAND_TYPE_FIELDS,
+    COMMAND_TYPE_LITERAL,
     COMMAND_TYPES,
     COMMANDS,
     CONTRACT_VERSION,
@@ -42,6 +46,8 @@ from tetris_kernel.contracts import (
     METADATA_KEYS,
     NAMED_STRUCTS,
     NEXT_QUEUE,
+    PHASE_LITERAL,
+    PHASE_VALUES,
     PRODUCER_LABELS,
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
@@ -65,8 +71,32 @@ from tetris_kernel.contracts import (
     is_lifecycle_gated,
     namespace_of,
 )
+from tetris_kernel.contracts.types import Phase, literal_enum
 from tetris_kernel.kernel.core import Kernel, KernelState
 from tetris_kernel.rules.tables import PIECE_TYPES
+
+# ---------------------------------------------------------------------------
+# 取值域收口：四条（+事件侧同域）字段的类型串，**独立转录**一份做交叉核对。
+#
+# 转录的是「取值域收口后契约里该写什么」，不是「实现产出了什么」——两者相等
+# 才有意义。**逐字相等**：不是"包含某个词"。
+# ---------------------------------------------------------------------------
+
+#: 生命周期取值的类型串（四个取值按契约的枚举顺序）。
+EXPECTED_PHASE_LITERAL = "Literal['not_started', 'running', 'paused', 'game_over']"
+
+#: 重力方向的类型串。
+EXPECTED_AXIS_LITERAL = "Literal['down', 'left', 'right', 'up']"
+
+#: 消行轴的类型串。
+EXPECTED_CLEAR_AXIS_LITERAL = "Literal['row', 'column']"
+
+#: 命令名的类型串（16 个命令名按需求 §8.2 的表格顺序）。
+EXPECTED_COMMAND_TYPE_LITERAL = (
+    "Literal['start', 'pause', 'resume', 'reset', 'moveLeft', 'moveRight', "
+    "'softDrop', 'hardDrop', 'rotateCW', 'rotateCCW', 'rotate180', 'hold', "
+    "'tick', 'setLevel', 'injectGarbage', 'writeCells']"
+)
 
 # ---------------------------------------------------------------------------
 # 需求 §8.1 的事件目录，独立转录一份做交叉核对。
@@ -181,7 +211,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         "actual": "int",
     },
     "command:received": {
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
         "source": "str",
         "args": (
             "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
@@ -189,7 +219,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         ),
     },
     "command:accepted": {
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
         "commandSeq": "int",
         "args": (
             "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
@@ -197,7 +227,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         ),
     },
     "command:rejected": {
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
         "reason": "str",
         "args": (
             "tuple[tuple[str, int | str | bool | None | tuple[int, ...] "
@@ -214,10 +244,10 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         "seed": "int",
     },
     "game:paused": {
-        "phase": "str",
+        "phase": EXPECTED_PHASE_LITERAL,
     },
     "game:resumed": {
-        "phase": "str",
+        "phase": EXPECTED_PHASE_LITERAL,
     },
     "game:over": {
         "score": "int",
@@ -244,7 +274,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
     },
     "input:intent": {
         "action": "str",
-        "commandType": "str",
+        "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
     },
     "rng:next": {
         "value": "float | int",
@@ -350,7 +380,7 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
     "state:changed": {
         "version": "int",
         "rule": "str",
-        "phase": "str",
+        "phase": EXPECTED_PHASE_LITERAL,
         "score": "int",
         "lines": "int",
         "level": "int",
@@ -833,13 +863,13 @@ def test_lifecycle_gate_is_explicit() -> None:
 def test_command_type_fields_carry_command_names() -> None:
     """事件侧承载命令名的字段：**都在 `COMMAND_TYPE_FIELDS` 里，且类型一致**。
 
-    事件负载的类型语言里没有字面量枚举形态，所以取值域（= `COMMAND_TYPES`）
-    只能这样落地：声明 + 断言「凡是承载命令名的字段都在表里」。
+    取值域**写进类型串**了（形态 11）——字段的类型就是命令名的字面量枚举，
+    基线因此看得见命令集变没变（M1 取值域收口）。
     """
     for event_type, field_name in COMMAND_TYPE_FIELDS:
         spec = EVENT_TYPES[event_type]
         field = next(f for f in spec.payload if f.name == field_name)
-        assert field.type == "str", f"{event_type}.{field_name}"
+        assert field.type == EXPECTED_COMMAND_TYPE_LITERAL, f"{event_type}.{field_name}"
     listed = set(COMMAND_TYPE_FIELDS)
     actual = {
         (event_type, field.name)
@@ -894,7 +924,7 @@ def test_no_arg_is_nullable_in_v1() -> None:
 EXPECTED_SNAPSHOT_FIELDS: dict[str, str] = {
     "version": "int",
     "rule": "str",
-    "phase": "str",
+    "phase": EXPECTED_PHASE_LITERAL,
     "frame": "int",
     "board": "Board",
     "active": "Active | None",
@@ -1275,7 +1305,7 @@ EXPECTED_SIGNATURE_GROUPS: dict[str, tuple[str, ...]] = {
 EXPECTED_EXCHANGE_STRUCTURE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
     "PlacementClass": (("tSpin", "str"), ("classKey", "str")),
     "ClearGroup": (
-        ("axis", "str"),
+        ("axis", EXPECTED_CLEAR_AXIS_LITERAL),
         ("index", "int"),
         ("cells", "tuple[tuple[int, int], ...]"),
         ("classification", "PlacementClass | None"),
@@ -1376,7 +1406,7 @@ def test_rule_context_fields_match_architecture() -> None:
         ("frame", "int"),
         ("level", "int"),
         ("piecesPlaced", "int"),
-        ("axis", "str"),
+        ("axis", EXPECTED_AXIS_LITERAL),
         ("stepMs", "int"),
     )
 
@@ -1452,6 +1482,64 @@ def test_contract_level_domains_are_enforced_at_construction() -> None:
     assert ClearGroup(axis="row", index=3, cells=()).index == 3
     with pytest.raises(ValueError):
         ClearGroup(axis="diagonal", index=3, cells=())
+
+
+def test_value_domains_are_written_into_the_type_strings() -> None:
+    """**取值域写进类型串**（M1 取值域收口）：**逐字相等**，不是"包含某个词"。
+
+    收口的四条字段——快照 `phase` · `RuleContext.axis` · `ClearGroup.axis` ·
+    事件 `commandType`——类型串必须与上面那份**独立转录**逐字相等。
+
+    为什么是"逐字"：类型串进基线哈希（架构 §4.4 末条），取值域变了而类型串
+    没变，基线就看不见——**基线绿不能证明取值域没被偷偷改宽**。
+    """
+    assert SNAPSHOT_FIELDS["phase"].type == EXPECTED_PHASE_LITERAL
+    assert NAMED_STRUCTS["RuleContext"]["axis"] == EXPECTED_AXIS_LITERAL
+    assert NAMED_STRUCTS["ClearGroup"]["axis"] == EXPECTED_CLEAR_AXIS_LITERAL
+    for event_type, field_name in COMMAND_TYPE_FIELDS:
+        spec = EVENT_TYPES[event_type]
+        field = next(f for f in spec.payload if f.name == field_name)
+        assert field.type == EXPECTED_COMMAND_TYPE_LITERAL, event_type
+
+
+def test_the_type_strings_are_derived_from_the_value_domains() -> None:
+    """类型串**由取值域派生**，不是手抄的第二份名单。
+
+    `literal_enum(AXIS_VALUES)` 与 `AXIS_VALUES` 不可能分叉——手写类型串 +
+    另抄一份取值域，两处静默分叉时基线显示全绿，而实际的值域已经变了。
+    """
+    assert AXIS_LITERAL == literal_enum(AXIS_VALUES)
+    assert CLEAR_AXIS_LITERAL == literal_enum(CLEAR_AXIS_VALUES)
+    assert PHASE_LITERAL == literal_enum(PHASE_VALUES)
+    assert COMMAND_TYPE_LITERAL == literal_enum(COMMAND_TYPES)
+
+
+def test_the_phase_type_alias_matches_the_phase_values() -> None:
+    """生命周期的**取值类型**（typing 形态）与**取值域元组**是同一份词汇。
+
+    契约层一个地方写了值（`PHASE_*` 常量），另一个地方写类型（`Phase` 别名）
+    ——两份分叉时，内核的状态机会用着 A 的类型、契约声明着 B 的取值域。
+
+    **注意 `get_args` 的陷阱**：PEP 695 的 `type` 别名是 `TypeAliasType`，
+    `get_args(别名)` 返回**空元组**（不报错）——要取成员得先拆出
+    `别名.__value__`（PEP 695 定义的属性）。这里写死拆法，免得以后有人
+    直接 `get_args(Phase)` 拿到空元组还以为"成员为空"。
+    """
+    assert get_args(Phase.__value__) == PHASE_VALUES
+
+
+def test_the_rule_set_defined_fields_stay_narrow() -> None:
+    """**内核只透传的字段不许收口**——钉死会把变体挡在门外。
+
+    判据（架构 §7.3.1）：内核要解读的 → 契约层钉死；内核只透传的 → 规则集
+    定义。`tSpin` / `classKey` 是规则集自己的词汇，方块类型（`hold` / `next`）
+    与规则集标识（`rule`）同理——收口它们等于告诉变体"你的词汇只能是这样"。
+    """
+    assert NAMED_STRUCTS["PlacementClass"]["tSpin"] == "str"
+    assert NAMED_STRUCTS["PlacementClass"]["classKey"] == "str"
+    assert SNAPSHOT_FIELDS["hold"].type == "str | None"
+    assert SNAPSHOT_FIELDS["next"].type == NEXT_QUEUE
+    assert SNAPSHOT_FIELDS["rule"].type == "str"
 
 
 def test_rule_set_defined_fields_name_real_fields() -> None:
@@ -1576,8 +1664,8 @@ def _parse_type(text: str) -> set[str]:
             raise _GrammarError(f"{text!r} 位置 {pos}：期待 {ch!r}")
         pos += 1
 
-    def parse_atom() -> str:
-        """解析一个原子（标量 / None / 命名结构 / 元组），返回其种类。"""
+    def parse_atom(*, allow_literal: bool = True) -> str:
+        """解析一个原子（标量 / None / 命名结构 / 元组 / 字面量枚举），返回其种类。"""
         nonlocal pos
         skip_ws()
         if text.startswith("None", pos):
@@ -1594,6 +1682,13 @@ def _parse_type(text: str) -> set[str]:
         if word == "Sequence":
             parse_sequence()
             return "sequence"
+        if word == "Literal":
+            if not allow_literal:
+                raise _GrammarError(
+                    f"{text!r}：形态 11（字面量枚举）只能出现在叶子位置，不许嵌进容器形态"
+                )
+            parse_literal()
+            return "literal"
         if word in _SCALAR_NAMES:
             forms.add("1")
             return word
@@ -1602,16 +1697,52 @@ def _parse_type(text: str) -> set[str]:
             return word
         raise _GrammarError(f"{text!r}：未知类型名 {word!r}")
 
-    def parse_union() -> list[str]:
+    def parse_literal() -> None:
+        """解析 `Literal["a", "b"]`（形态 11：成员 ≥ 1 个字符串字面量）。
+
+        **单双引号都收**：引号风格是排版（PEP 563 存注解时编译器统一重加成
+        单引号，源码里手写的可能是双引号）。
+        """
+        nonlocal pos
+        if pos >= n or text[pos] != "[":
+            raise _GrammarError(f"{text!r}：Literal 后必须是 [")
+        pos += 1
+        members: list[str] = []
+        while True:
+            skip_ws()
+            if pos >= n or text[pos] not in ("'", '"'):
+                raise _GrammarError(f"{text!r} 位置 {pos}：期待字符串字面量")
+            quote = text[pos]
+            pos += 1
+            start = pos
+            while pos < n and text[pos] != quote:
+                pos += 2 if text[pos] == "\\" else 1
+            if pos >= n:
+                raise _GrammarError(f"{text!r}：字符串字面量没有闭合")
+            members.append(text[start:pos])
+            pos += 1
+            skip_ws()
+            if pos < n and text[pos] == ",":
+                pos += 1
+                continue
+            break
+        expect("]")
+        if not members:
+            raise _GrammarError(f"{text!r}：字面量枚举至少要有一个成员")
+        if len(set(members)) != len(members):
+            raise _GrammarError(f"{text!r}：字面量枚举的成员互不相同")
+        forms.add("11")
+
+    def parse_union(*, allow_literal: bool = True) -> list[str]:
         """解析 `T1 | T2 | ...`，返回成员种类列表（单原子也算长度 1 的联合）。"""
         nonlocal pos
-        members = [parse_atom()]
+        members = [parse_atom(allow_literal=allow_literal)]
         while True:
             save = pos
             skip_ws()
             if pos < n and text[pos] == "|":
                 pos += 1
-                members.append(parse_atom())
+                members.append(parse_atom(allow_literal=allow_literal))
             else:
                 pos = save
                 return members
@@ -1628,7 +1759,8 @@ def _parse_type(text: str) -> set[str]:
             expect("]")
             forms.add("8")
             return
-        elements = [parse_union()]
+        # **容器形态的元素位不是叶子位置**——形态 11 不许嵌进来（文法附加规则 6）。
+        elements = [parse_union(allow_literal=False)]
         skip_ws()
         if pos < n and text[pos] == ",":
             pos += 1
@@ -1641,7 +1773,7 @@ def _parse_type(text: str) -> set[str]:
                 forms.add("5")
                 return
             while True:  # 形态 4 / 6 / 7：定长元组，元素可为联合或嵌套元组
-                elements.append(parse_union())
+                elements.append(parse_union(allow_literal=False))
                 save = pos
                 skip_ws()
                 if pos < n and text[pos] == ",":
@@ -1660,7 +1792,7 @@ def _parse_type(text: str) -> set[str]:
         if pos >= n or text[pos] != "[":
             raise _GrammarError(f"{text!r}：Sequence 后必须是 [")
         pos += 1
-        parse_union()
+        parse_union(allow_literal=False)
         expect("]")
         forms.add("10")
 
@@ -1778,7 +1910,9 @@ def test_grammar_rejects_unknown_forms() -> None:
 # ---------------------------------------------------------------------------
 
 #: `contracts/` 允许的绝对导入白名单——全是标准库。相对导入（包内）放行。
-_ALLOWED_CONTRACTS_IMPORTS = frozenset({"__future__", "collections.abc", "dataclasses", "types"})
+_ALLOWED_CONTRACTS_IMPORTS = frozenset(
+    {"__future__", "collections.abc", "dataclasses", "types", "typing"}
+)
 
 
 def test_contracts_public_leaf_purity() -> None:

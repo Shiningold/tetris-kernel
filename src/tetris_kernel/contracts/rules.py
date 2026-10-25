@@ -70,10 +70,11 @@ kernel 的任何 dataclass**（架构 §7.3）。否则 `kernel > rules` 契约�
   这两个字段登记在 `RULE_SET_DEFINED_FIELDS` 里——**取值归属必须表态**，
   不表态的字段不许悄悄长出来。
 
-**取值域常量不进基线**（架构 §4.4 末条），所以词汇表的变更由**契约层测试**
-拦（转录表逐条相等），不是基线。要让基线也看见取值域，得把取值域写进类型串
-（字面量枚举形态）——那是**取值域统一收口**（`PROGRESS.md` 待办）的活，
-不在本阶段。
+**取值域现在写进类型串了**（M1 · 取值域统一收口）：`RuleContext.axis` 与
+`ClearGroup.axis` 的类型串是**字面量枚举**（形态 11），由 `AXIS_VALUES` /
+`CLEAR_AXIS_VALUES` 派生（`AXIS_LITERAL` / `CLEAR_AXIS_LITERAL`）。
+**取值域常量本身不进基线**（架构 §4.4 末条）——进基线的是**引用处展开后的
+类型串**：常量改了而引用处没跟着改，基线就会红（这正是要的效果）。
 """
 
 from __future__ import annotations
@@ -81,8 +82,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Literal
 
-from .types import BOARD_VIEW, COORD_CELLS, VECTOR2
+from .types import BOARD_VIEW, COORD_CELLS, VECTOR2, literal_enum
 
 # ---------------------------------------------------------------------------
 # 取值域
@@ -101,6 +103,19 @@ AXIS_VALUES: tuple[str, ...] = ("down", "left", "right", "up")
 #: 维度，"轴"这一维在数据上表达不出来，M4 的变体 A 就没法落地。
 #: **内核也要解读这个字段**（消的是行还是列），所以同样在构造时校验。
 CLEAR_AXIS_VALUES: tuple[str, ...] = ("row", "column")
+
+#: 重力方向的**类型串**（形态 11 · 由 `AXIS_VALUES` 派生）。
+#:
+#: **取值域写进类型串**，基线才看得见它变过（架构 §7.3.1 末条）。类型串由
+#: 取值域派生（`literal_enum`），**不手写**——手写类型串 + 另抄一份取值域，
+#: 两处静默分叉时基线显示全绿，而实际的值域已经变了。
+#:
+#: `RuleContext.axis` 的注解**逐字**等于这个常量（契约层测试钉住这一条），
+#: 这样"类型串"与"运行时校验用的取值域"指向同一份词汇。
+AXIS_LITERAL: str = literal_enum(AXIS_VALUES)
+
+#: 消行轴的**类型串**（形态 11 · 由 `CLEAR_AXIS_VALUES` 派生）。
+CLEAR_AXIS_LITERAL: str = literal_enum(CLEAR_AXIS_VALUES)
 
 #: 取值域**由规则集定义**（契约层不钉死）的字段：`(结构名, 字段名)` → 说明。
 #:
@@ -158,7 +173,11 @@ class RuleContext:
     frame: int
     level: int
     piecesPlaced: int
-    axis: str
+    # **取值域写进注解**：契约的类型串是字面量枚举（`AXIS_LITERAL`），注解要跟
+    # 它**逐字相等**（内核的导入期契约对齐自检就是这么比的）——注解存下来是
+    # 什么样子，取决于 PEP 563：编译器会把内嵌的字符串字面量统一重加成
+    # **单引号**，所以 `Literal['down', ...]` 才是存下来的那一串。
+    axis: Literal["down", "left", "right", "up"]
     stepMs: int
 
     def __post_init__(self) -> None:
@@ -216,7 +235,7 @@ class ClearGroup:
     计分与事件负载才有素材。
     """
 
-    axis: str
+    axis: Literal["row", "column"]
     index: int
     cells: tuple[tuple[int, int], ...]
     classification: PlacementClass | None = None

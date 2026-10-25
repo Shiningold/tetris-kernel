@@ -200,16 +200,21 @@ class _Parser:
         return self._text[start : self._pos]
 
     def _take_string(self) -> str:
-        """取一个双引号字符串字面量（形态 11 的成员）。
+        """取一个字符串字面量（形态 11 的成员）。
 
-        **只认两种转义**：`\\`（反斜杠）与 `\"`（双引号）——与契约层的
+        **单双引号都收**：引号风格是**排版**——PEP 563 存注解时编译器会把内嵌
+        的字符串字面量统一重加成单引号，而源码里手写的可能是双引号。基线哈希
+        的是规范化后的串（统一渲染成单引号），两种拼写哈希相同。
+
+        **转义只认两种**：`\\`（反斜杠）与**当前引号本身**——与契约层的
         `escape_literal_member` 互为逆运算（生成器只会产出这两种转义）。
         别的转义写法一律报错：文法表是封闭的，"尽量解析"会让不合规的声明
         悄悄进基线。
         """
         self._skip_spaces()
-        if self._pos >= len(self._text) or self._text[self._pos] != '"':
+        if self._pos >= len(self._text) or self._text[self._pos] not in ("'", '"'):
             raise GrammarError(f"{self._text!r} 位置 {self._pos}：期待字符串字面量")
+        quote = self._text[self._pos]
         self._pos += 1
         chars: list[str] = []
         while True:
@@ -217,7 +222,7 @@ class _Parser:
                 raise GrammarError(f"{self._text!r}：字符串字面量没有闭合")
             char = self._text[self._pos]
             self._pos += 1
-            if char == '"':
+            if char == quote:
                 return "".join(chars)
             if char != "\\":
                 chars.append(char)
@@ -226,7 +231,7 @@ class _Parser:
                 raise GrammarError(f"{self._text!r}：转义符后没有字符")
             escaped = self._text[self._pos]
             self._pos += 1
-            if escaped not in ('"', "\\"):
+            if escaped not in (quote, "\\"):
                 raise GrammarError(f"{self._text!r}：不支持的转义 \\{escaped}")
             chars.append(escaped)
 
@@ -347,7 +352,7 @@ class _Renderer:
         if isinstance(node, SequenceType):
             return f"Sequence[{self.render(node.element, depth + 1)}]"
         if isinstance(node, LiteralType):
-            members = ", ".join(f'"{escape_literal_member(value)}"' for value in node.members)
+            members = ", ".join(f"'{escape_literal_member(value)}'" for value in node.members)
             return f"Literal[{members}]"
         if isinstance(node, UnionType):
             return " | ".join(self.render(member, depth + 1) for member in node.members)

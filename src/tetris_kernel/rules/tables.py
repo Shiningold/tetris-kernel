@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Literal
 
 # ---------------------------------------------------------------------------
 # 方块与朝向
@@ -217,7 +218,12 @@ GRAVITY_INTERVAL_FRAMES: tuple[int, ...] = (60, 50, 40, 30, 20, 15, 10, 8, 6, 5)
 #:
 #: **两处 `axis` 是两套词汇**（`contracts/rules.py`）：`RuleContext.axis` 是重力
 #: 方向，这里是消行轴。标准玩法重力 `down` ↔ 消行 `row`；横向重力消列。
-CLEAR_AXIS_BY_GRAVITY: Mapping[str, str] = MappingProxyType(
+#:
+#: **值类型写准到 `Literal["row", "column"]`**：契约层已把消行轴的取值域钉进
+#: 类型串（`ClearGroup.axis` 的类型串），这张表的值就是那个取值域里的值——
+#: 写成 `Mapping[str, str]` 的话，`ClearGroup(axis=…)` 传不进那个字面量枚举
+#: （类型检查当场报错）。**把类型写准，不是加 ignore**（架构 §7.6 末条）。
+CLEAR_AXIS_BY_GRAVITY: Mapping[str, Literal["row", "column"]] = MappingProxyType(
     {
         "down": "row",
         "up": "row",

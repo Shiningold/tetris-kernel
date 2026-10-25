@@ -23,7 +23,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import ARGS, CELLS, COORD_CELLS, INT_TUPLE, JSON_VALUE, NEXT_QUEUE, SCALAR_MAP
+from .commands import COMMAND_TYPE_LITERAL
+from .types import (
+    ARGS,
+    CELLS,
+    COORD_CELLS,
+    INT_TUPLE,
+    JSON_VALUE,
+    NEXT_QUEUE,
+    PHASE_LITERAL,
+    SCALAR_MAP,
+)
 
 #: 契约版本号（契约清单第 13 项）。**版本升级 = major 变更**——
 #: 改了它，旧录像与旧存档一律不再兼容（架构 §5.5 / 需求 §8）。
@@ -179,7 +189,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "command",
             "kernel",
             (
-                PayloadField("commandType", "str", "命令类型"),
+                PayloadField("commandType", COMMAND_TYPE_LITERAL, "命令类型"),
                 PayloadField("source", "str", "命令来源标记，随事件透传"),
                 PayloadField("args", ARGS, "命令参数，不可变；只含 JSON 标量与元组，禁浮点"),
             ),
@@ -191,7 +201,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "command",
             "kernel",
             (
-                PayloadField("commandType", "str", "命令类型"),
+                PayloadField("commandType", COMMAND_TYPE_LITERAL, "命令类型"),
                 PayloadField("commandSeq", "int", "关联的帧内序号（只对被接受的命令编号）"),
                 PayloadField("args", ARGS, "命令参数，不可变；与 received 一致"),
             ),
@@ -203,7 +213,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "command",
             "kernel",
             (
-                PayloadField("commandType", "str", "命令类型"),
+                PayloadField("commandType", COMMAND_TYPE_LITERAL, "命令类型"),
                 PayloadField("reason", "str", "拒绝原因，取 12 值枚举之一"),
                 PayloadField("args", ARGS, "命令参数，不可变；拒绝不改状态但参数必须齐全"),
                 PayloadField("mergedCount", "int", "本次代表多少次同因拒绝，起始值 1"),
@@ -235,11 +245,11 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
     ),
     (
         "game:paused",
-        _spec("game", "kernel", (PayloadField("phase", "str", "当前生命周期状态"),)),
+        _spec("game", "kernel", (PayloadField("phase", PHASE_LITERAL, "当前生命周期状态"),)),
     ),
     (
         "game:resumed",
-        _spec("game", "kernel", (PayloadField("phase", "str", "当前生命周期状态"),)),
+        _spec("game", "kernel", (PayloadField("phase", PHASE_LITERAL, "当前生命周期状态"),)),
     ),
     (
         "game:over",
@@ -302,7 +312,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "input-adapter",
             (
                 PayloadField("action", "str", "翻译前的动作名"),
-                PayloadField("commandType", "str", "对应派发的命令类型"),
+                PayloadField("commandType", COMMAND_TYPE_LITERAL, "对应派发的命令类型"),
             ),
         ),
     ),
@@ -574,7 +584,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
                     "版本号跟着一起归）",
                 ),
                 PayloadField("rule", "str", "规则集标识，用于区分标准玩法与变体"),
-                PayloadField("phase", "str", "生命周期状态"),
+                PayloadField("phase", PHASE_LITERAL, "生命周期状态"),
                 PayloadField("score", "int", "当前分数"),
                 PayloadField("lines", "int", "累计消行数"),
                 PayloadField("level", "int", "当前等级"),

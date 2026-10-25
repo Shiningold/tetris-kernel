@@ -32,24 +32,29 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from ..contracts.types import (
+    PHASE_GAME_OVER,
+    PHASE_NOT_STARTED,
+    PHASE_PAUSED,
+    PHASE_RUNNING,
+    Phase,
+)
+
 # ---------------------------------------------------------------------------
 # 四态
 # ---------------------------------------------------------------------------
 
-#: 待开始。
-PHASE_NOT_STARTED = "not_started"
-
-#: 运行中。
-PHASE_RUNNING = "running"
-
-#: 暂停（内核级暂停）。
-PHASE_PAUSED = "paused"
-
-#: 结束。
-PHASE_GAME_OVER = "game_over"
-
-#: 四个状态的稳定序列。
-PHASES: tuple[str, ...] = (PHASE_NOT_STARTED, PHASE_RUNNING, PHASE_PAUSED, PHASE_GAME_OVER)
+#: 四个状态的稳定序列（**契约层是取值的唯一来源**——`contracts.types` 的
+#: `PHASE_VALUES` 与四个 `PHASE_*` 常量都在那里，内核不再抄第二份字面量表）。
+#:
+#: **取值域归契约层**（架构 §7.3.1）：内核要解读这个字段（阶段决定门禁与
+#: 推进许可），所以词汇表由契约钉死，域外的值不会从内核这一侧溜进来。
+PHASES: tuple[str, ...] = (
+    PHASE_NOT_STARTED,
+    PHASE_RUNNING,
+    PHASE_PAUSED,
+    PHASE_GAME_OVER,
+)
 
 # ---------------------------------------------------------------------------
 # 六种迁移
@@ -106,10 +111,10 @@ class Lifecycle:
 
     def __init__(self) -> None:
         """构造即"创建"：初始状态是 `not_started`。"""
-        self._phase = PHASE_NOT_STARTED
+        self._phase: Phase = PHASE_NOT_STARTED
 
     @property
-    def phase(self) -> str:
+    def phase(self) -> Phase:
         """当前状态。"""
         return self._phase
 

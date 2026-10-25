@@ -60,6 +60,7 @@ from dataclasses import dataclass, field, replace
 from ..contracts.commands import COMMANDS, CommandSpec
 from ..contracts.placement import PlacementInfo
 from ..contracts.rules import RuleContext, ScoreState
+from ..contracts.types import Phase
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from . import frame
@@ -221,7 +222,7 @@ class KernelState:
     """内核持有的状态（字段与契约 `KERNEL_STATE_TO_SNAPSHOT` 一一对应）。"""
 
     version: int = 0
-    phase: str = PHASE_NOT_STARTED
+    phase: Phase = PHASE_NOT_STARTED
     board: list[list[int]] = field(default_factory=list[list[int]])
     active: ActivePiece | None = None
     ghost_delta: tuple[int, int] = (0, 0)

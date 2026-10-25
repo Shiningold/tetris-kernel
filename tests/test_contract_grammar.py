@@ -1,4 +1,4 @@
-"""类型文法形态 11（字面量枚举）的用例（S1 · plan-M1.md S1）。
+"""类型文法形态 11（字面量枚举）的用例（S1 · plan-M1.md S1 · S2 收口订正）。
 
 ## 这份文件守什么
 
@@ -14,6 +14,18 @@
    `Literal[]` ——形态 11 的三个反面样例）；
 3. **既有类型串一条不落地仍然合规**（形态数从 10 变 11，**旧串不许被牵连**）。
 
+## 规范拼写是**单引号**（S2 收口时订正）
+
+PEP 563 把注解存成字符串，而编译器会把内嵌的字符串字面量**统一重加成单
+引号**——源码写 `Literal["a", "b"]`，注解存下来是 `Literal['a', 'b']`。
+
+而契约的类型串要跟注解**逐字相等**（内核的导入期契约对齐自检就是这么比
+的；取值域收口的验收也是"逐字等于生成器派生值"）——所以**规范拼写取单引
+号**：注解存下来的样子、生成器产出的样子、基线哈希的样子，三者是同一串。
+
+**双引号也能写**，那是**排版**：基线哈希的是规范化后的串（解析器统一渲染
+成单引号），两种拼写哈希相同。
+
 ## 为什么解析器用的是 `tools/` 那一份
 
 测试里另有一份回验解析器（`tests/test_contracts_declarations.py` 的
@@ -24,12 +36,6 @@
 "**文法表与解析器同时回验**"（plan-M0.md S5 踩过的坑：形态表写"T 为形态
 1–9"，示例自己的 `T` 就是形态 10）——文法表新加一形态，生产解析器必须当场
 认出来，而不是靠测试里的另一份实现替它兜着。
-
-## 类型串由取值域派生
-
-`literal_enum(AXIS_VALUES)` 与 `AXIS_VALUES` 不可能分叉——**手写类型串 +
-另抄一份取值域**，两处静默分叉时基线显示全绿，而实际的值域已经变了
-（架构 §4.4 末条）。所以"类型串 == 生成器派生值"是**逐字相等**的断言。
 """
 
 from __future__ import annotations
@@ -83,10 +89,10 @@ def _parse(type_text: str) -> str:
 def test_literal_enum_derives_the_type_string_from_the_values() -> None:
     """类型串是**派生**出来的，不是手写的。
 
-    `literal_enum(("a", "b"))` 的结果逐字等于 `Literal["a", "b"]`。
+    `literal_enum(("a", "b"))` 的结果逐字等于 `Literal['a', 'b']`。
     """
-    assert literal_enum(("a", "b")) == 'Literal["a", "b"]'
-    assert literal_enum(("a",)) == 'Literal["a"]'
+    assert literal_enum(("a", "b")) == "Literal['a', 'b']"
+    assert literal_enum(("a",)) == "Literal['a']"
 
 
 def test_literal_enum_keeps_the_order_of_the_values() -> None:
@@ -117,7 +123,7 @@ def test_phase_literal_is_derived_from_phase_values() -> None:
     """
     assert PHASE_VALUES == ("not_started", "running", "paused", "game_over")
     assert PHASE_LITERAL == literal_enum(PHASE_VALUES)
-    assert PHASE_LITERAL == ('Literal["not_started", "running", "paused", "game_over"]')
+    assert PHASE_LITERAL == "Literal['not_started', 'running', 'paused', 'game_over']"
 
 
 def test_the_generated_type_string_round_trips_through_the_parser() -> None:
@@ -140,17 +146,19 @@ def test_the_generated_type_string_round_trips_through_the_parser() -> None:
 @pytest.mark.parametrize(
     ("type_text", "expected"),
     [
-        ('Literal["a"]', 'Literal["a"]'),
-        ('Literal["a", "b"]', 'Literal["a", "b"]'),
+        ("Literal['a']", "Literal['a']"),
+        ("Literal['a', 'b']", "Literal['a', 'b']"),
         # 联合成员可以是形态 11 本身（文法附加规则第 6 条）。
-        ('Literal["a"] | None', 'Literal["a"] | None'),
-        ('None | Literal["a"]', 'None | Literal["a"]'),
+        ("Literal['a'] | None", "Literal['a'] | None"),
+        ("None | Literal['a']", "None | Literal['a']"),
         # 空白归一：排版变了不算声明变化。
-        ('Literal[ "a" , "b" ]', 'Literal["a", "b"]'),
+        ("Literal[ 'a' , 'b' ]", "Literal['a', 'b']"),
+        # 双引号是**排版**：规范化后与单引号版本同形。
+        ('Literal["a", "b"]', "Literal['a', 'b']"),
     ],
 )
 def test_the_grammar_accepts_the_legal_form_11_strings(type_text: str, expected: str) -> None:
-    """形态 11 的合法写法必须被解析器接受，并规范化成声明写法。"""
+    """形态 11 的合法写法必须被解析器接受，并规范化成规范拼写。"""
     assert _parse(type_text) == expected
 
 
@@ -176,11 +184,11 @@ def test_the_grammar_accepts_form_11_as_a_named_struct_member() -> None:
         ("Literal[down]", "标识符不是字符串字面量"),
         ('Literal["a", 1]', "成员不是字符串"),
         ("Literal[]", "空成员"),
-        ('Literal["a",]', "尾随逗号"),
-        ('Literal["a", "a"]', "成员重复"),
-        ('Literal["a', "引号没闭合"),
-        (r'Literal["a\nb"]', "不支持的转义"),
-        ('Literal["a"] int', "少个分隔符"),
+        ("Literal['a',]", "尾随逗号"),
+        ("Literal['a', 'a']", "成员重复"),
+        ("Literal['a", "引号没闭合"),
+        (r"Literal['a\nb']", "不支持的转义"),
+        ("Literal['a'] int", "少个分隔符"),
     ],
 )
 def test_the_grammar_rejects_the_illegal_form_11_strings(type_text: str, why: str) -> None:
@@ -200,11 +208,11 @@ def test_the_grammar_rejects_the_illegal_form_11_strings(type_text: str, why: st
 def test_the_grammar_rejects_form_11_inside_a_container() -> None:
     """形态 11 **只出现在叶子位置**——不许嵌进容器形态。
 
-    `tuple[Literal["a"], ...]` 与 `Sequence[Literal["a"]]` 一律不合规：
+    `tuple[Literal['a'], ...]` 与 `Sequence[Literal['a']]` 一律不合规：
     容器里的元素是"一堆同类型的东西"，而字面量枚举是**单个字段**的取值域
     （架构 §7.3.1 末条）。
     """
-    for bad in ('tuple[Literal["a"], ...]', 'Sequence[Literal["a"]]'):
+    for bad in ("tuple[Literal['a'], ...]", "Sequence[Literal['a']]"):
         with pytest.raises(GrammarError):
             _parse(bad)
 
@@ -233,10 +241,11 @@ def test_the_escape_rule_round_trips() -> None:
     各写一份的后果是"生成器产出的串解析器读不懂"，而那不报错，只是基线里
     多了些看不懂的差异。
     """
-    value = 'a"b\\c'
+    value = "a'b\\c"
     escaped = escape_literal_member(value)
-    assert escaped == 'a\\"b\\\\c'
-    assert _parse(f'Literal["{escaped}"]') == f'Literal["{escaped}"]'
+    assert escaped == "a\\'b\\\\c"
+    type_string = f"Literal['{escaped}']"
+    assert _parse(type_string) == type_string
 
 
 # ---------------------------------------------------------------------------
