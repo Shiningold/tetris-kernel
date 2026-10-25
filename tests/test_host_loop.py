@@ -39,15 +39,15 @@ from typing import cast
 import pytest
 
 from tetris_kernel.bus.envelope import Draft, Envelope, Metadata, metadata_value
-from tetris_kernel.host.assembly import assemble
+from tetris_kernel.host.assembly import Assembly, assemble
 from tetris_kernel.host.cli import main
 from tetris_kernel.host.clock import DEFAULT_STEP_MS, VirtualClock
 from tetris_kernel.host.loop import HeadlessLoop, RunReport
 from tetris_kernel.kernel.commands import Command
-from tetris_kernel.kernel.core import Kernel
+from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.frame import FrameContext, StepOutcome
-from tetris_kernel.kernel.lifecycle import PHASE_RUNNING, PHASES
+from tetris_kernel.kernel.lifecycle import PHASE_GAME_OVER, PHASE_RUNNING, PHASES
 from tetris_kernel.kernel.snapshot import Snapshot
 
 #: 固定种子（测试不依赖随机性）。
@@ -140,6 +140,11 @@ def test_the_game_really_progresses_and_the_frames_keep_going() -> None:
     for _ in range(40):
         assembly.kernel.submit(Command(type="hardDrop", source="test"))
         loop.run_frame()
+        # **锁定延迟 30 帧（spec §7.5）**：硬降只是把方块按到地板上，**照样要
+        # 等延迟到期才锁定**（M0 是落即锁，推进一帧就锁上了）——不补这段帧，
+        # 方块永远锁不上、棋盘永远填不满，这条用例顶不到「顶出 → 局结束」那条
+        # 路径，后面的断言就全成了空跑。
+        loop.run_frames(LOCK_DELAY_FRAMES + 1)
         if assembly.kernel.phase != PHASE_RUNNING:
             break
 
@@ -412,8 +417,9 @@ def test_state_changed_payload_matches_the_frame_end_snapshot_by_value() -> None
         4,
         {tuple(cell) for cell in cast("tuple[tuple[int, int], ...]", landing)},
     )
-    for _ in range(2):
-        loop.run_frame()
+    # **锁定延迟 30 帧（spec §7.5）**：硬降之后要等延迟到期方块才锁定，锁定
+    # 那一帧才消行——M0 是推进一帧就锁上并消行。
+    loop.run_frames(LOCK_DELAY_FRAMES + 1)
     # 消行之后暂存一下：hold / holdUsed 也得有非平凡取值。
     kernel.execute(Command("hold", source="test"))
     loop.run_frame()
@@ -530,7 +536,10 @@ def test_advance_frame_is_drained_when_publishing_raises(monkeypatch: pytest.Mon
         loop.run_frame()
 
     assert executed == list(FIVE_STEPS), "剩余步骤没有被耗尽——半帧状态残留了"
-    assert "piece:locked" in published, "排空阶段的剩余事件没有照发"
+    # **锁定步的事件**在 M1 起是 `piece:lock-delay-start`（spec §7.5 的锁定
+    # 延迟：方块落地先起算 30 帧，不当场锁定）——**要验的是「排空阶段的事件
+    # 照发」**，所以认锁定步发出的那条事件即可。
+    assert "piece:lock-delay-start" in published, "排空阶段的剩余事件没有照发"
 
 
 def test_advance_frame_is_fully_consumed_without_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -725,3 +734,207 @@ def test_placeholder_commands_run(command: str, capsys: pytest.CaptureFixture[st
     """占位子命令**要能跑、不许报错**。"""
     assert main([command]) == 0
     assert command in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 验证 6：M1 · 跑到顶出（spec §7.8 · plan-M1.md S12 段）
+# ---------------------------------------------------------------------------
+
+#: **小棋盘**（高 6 · 隐藏 2 → 可见 4 行）：顶出快得多。
+#:
+#: **为什么用小棋盘**：这些用例要验的是**宿主的停帧语义**，不是棋盘尺寸。
+#: 实测：默认棋盘一局约 **7500 帧（约 9 秒）**，小棋盘约 **450 帧（0.5 秒）**
+#: ——后者能把"跑到顶出"这条路径**测得很密**（默认棋盘只测得起一次）。
+SMALL_BOARD_HEIGHT = 6
+SMALL_HIDDEN_ROWS = 2
+
+#: 小棋盘上跑到顶出所需的帧数上限（**给足**：真跑不到顶出就是用例前提不成立）。
+FRAMES_TO_GAME_OVER = 5000
+
+#: **结算八项**（spec §7.8：分数 / 行数 / 方块数 / 连击 / B2B / 等级 / 最终
+#: 棋盘指纹 / 事件数）。
+SETTLEMENT_KEYS = (
+    "score",
+    "lines",
+    "piecesPlaced",
+    "combo",
+    "b2b",
+    "level",
+    "fingerprint",
+    "events",
+)
+
+
+def _small_loop() -> tuple[Assembly, HeadlessLoop]:
+    """小棋盘上的帧循环（**已开局**）。"""
+    assembly = assemble(
+        seed=SEED,
+        board_height=SMALL_BOARD_HEIGHT,
+        hidden_rows=SMALL_HIDDEN_ROWS,
+    )
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    return assembly, loop
+
+
+def test_run_frames_stops_at_the_game_over_when_asked() -> None:
+    """`until_game_over=True` → **跑到顶出就停帧**（spec §7.8）。
+
+    **停的是宿主**：宿主不再派发后面的 tick，所以后面的帧根本没开始。
+    """
+    _assembly, loop = _small_loop()
+
+    report = loop.run_frames(FRAMES_TO_GAME_OVER, until_game_over=True)
+
+    assert report.phase == PHASE_GAME_OVER, "没跑到顶出（用例前提不成立）"
+    assert report.frames < FRAMES_TO_GAME_OVER, "跑到顶出后没有停帧"
+
+
+def test_run_frames_without_the_flag_keeps_running_after_the_game_over() -> None:
+    """**不带 `until_game_over` 时，行为与 M0 逐字一致**：局结束也不提前退出。
+
+    **M0 的口径是"跑满帧数"**——局结束只是不再推进，宿主照跑（plan-M1.md S12
+    段的验证方案第 3 条）。
+    """
+    _assembly, loop = _small_loop()
+
+    report = loop.run_frames(FRAMES_TO_GAME_OVER)
+
+    assert report.phase == PHASE_GAME_OVER, "这一局没跑到顶出（用例前提不成立）"
+    assert report.frames == FRAMES_TO_GAME_OVER, "局结束后提前退出了（M0 的口径是跑满帧数）"
+
+
+def test_the_frame_counter_keeps_going_after_the_game_is_over() -> None:
+    """局结束后**帧号照走**（推进许可不再授予）——M0 的既有行为，M1 不许改。
+
+    **不许改成"局结束就停帧号"**（plan-M1.md S12 段的验证方案第 2 条）：帧号是
+    **宿主逻辑帧**，局结束不代表帧号停（架构 §6.1）。
+
+    推进许可不再授予 → **棋盘与分数不再变**；但帧号照涨。
+    """
+    assembly, loop = _small_loop()
+    loop.run_frames(FRAMES_TO_GAME_OVER)
+    assert loop.snapshot().phase == PHASE_GAME_OVER, "这一局没跑到顶出（用例前提不成立）"
+
+    frame_before = assembly.kernel.frame
+    board_before = loop.snapshot().board.cells
+    score_before = loop.snapshot().score
+
+    loop.run_frames(10)
+
+    assert assembly.kernel.frame == frame_before + 10, "局结束后帧号没有照走"
+    assert loop.snapshot().board.cells == board_before, "局结束后棋盘还在变"
+    assert loop.snapshot().score == score_before, "局结束后分数还在变"
+
+
+def test_the_report_carries_the_settlement_numbers() -> None:
+    """报告增**结算字段**（连击 / B2B / 等级）——值取自帧末快照。
+
+    **加字段不改已有字段的含义**（plan-M1.md S12 段）：前七项是 M0 的口径，
+    一字未动。
+    """
+    _assembly, loop = _small_loop()
+
+    report = loop.run_frames(200)
+    snapshot = loop.snapshot()
+
+    assert report.combo == snapshot.combo, "连击与帧末快照对不上"
+    assert report.b2b == snapshot.b2b, "B2B 与帧末快照对不上"
+    assert report.level == snapshot.level, "等级与帧末快照对不上"
+    # **M0 的七项一个都没变**：值仍取自帧末快照。
+    assert report.score == snapshot.score
+    assert report.lines == snapshot.lines
+    assert report.piecesPlaced == snapshot.piecesPlaced
+    assert report.phase == snapshot.phase
+
+
+def test_cli_sim_until_game_over_prints_the_settlement(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`sim --until game-over` → 跑到底出，输出 `phase=game_over` 与结算八项。
+
+    **默认棋盘的一整局约 7500 帧（约 9 秒）**——这是"真的玩到顶出"的代价，
+    绕不开：验收载体就是要**真的跑一局**（spec §7.8）。
+    """
+    code = main(["sim", "--until", "game-over", "--seed", "0"])
+
+    out = capsys.readouterr().out
+    assert code == 0, f"退出码不对：{code}"
+    assert "phase=game_over" in out, out
+    for key in SETTLEMENT_KEYS:
+        assert f"{key}=" in out, f"结算里没有「{key}」：{out}"
+
+
+def test_cli_sim_until_game_over_json_has_the_settlement_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`sim --until game-over --json` → 机器可读的同款结算（**十项**）。
+
+    **与 M0 的七项形态的区别**：结算形态多给 `combo` / `b2b` / `level` 三项
+    （M0 形态**保持七项不动**——见下面那条用例）。
+    """
+    code = main(["sim", "--until", "game-over", "--seed", "0", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0, f"退出码不对：{code}"
+    assert payload["phase"] == PHASE_GAME_OVER, payload
+    assert set(payload) == {
+        "phase",
+        "frames",
+        "events",
+        "fingerprint",
+        "score",
+        "lines",
+        "piecesPlaced",
+        "combo",
+        "b2b",
+        "level",
+    }
+    for key in SETTLEMENT_KEYS:
+        assert key in payload, f"结算里没有「{key}」：{payload}"
+
+
+def test_cli_sim_without_until_keeps_the_m0_output_shape(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**不带 `--until` 时，输出与 M0 逐字一致**（plan-M1.md S12 段的验证方案第 3 条）。
+
+    `RunReport` 加了三个结算字段，但 **M0 形态的输出仍然是那七项**——M0 的
+    既有用例一条都不许动（`test_cli_sim_json_outputs_the_same_fields` 断言的
+    正是那七个键）。
+    """
+    code = main(["sim", "--frames", "5", "--seed", "0", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert set(payload) == {
+        "frames",
+        "events",
+        "fingerprint",
+        "score",
+        "lines",
+        "piecesPlaced",
+        "phase",
+    }
+
+    code = main(["sim", "--frames", "5", "--seed", "0"])
+    out = capsys.readouterr().out
+    assert code == 0
+    for label in ("帧数", "事件数", "棋盘指纹", "分数", "行数", "已放置方块数", "阶段"):
+        assert label in out, f"输出里没有「{label}」"
+    # **七行，一行不多**：结算形态那三项**不进 M0 形态**。
+    assert len(out.strip().splitlines()) == 7, out
+
+
+def test_cli_sim_until_game_over_rejects_a_negative_frame_count(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--until game-over` **不豁免**负帧数的校验（退出码 2）。
+
+    M0 的既有口径（`test_cli_sim_rejects_a_negative_frame_count`）**不因为新
+    开关而失效**——新参数不能顺手把旧校验绕过去。
+    """
+    code = main(["sim", "--until", "game-over", "--frames", "-1", "--seed", "0"])
+
+    assert code == 2, f"负帧数应当以 2 退出，实为 {code}"
+    assert "帧数不能为负" in capsys.readouterr().err

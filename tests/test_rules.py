@@ -5,7 +5,7 @@
 
 覆盖 plan-M0.md S13 的六条验证：
 
-1. 8 条接口可单测（逐条直接调用）；
+1. 9 条接口可单测（逐条直接调用）；
 2. 纯函数性——同 `ctx` 同输入两次结果相同；不同 `ctx`（不同 `axis`）结果可以不同；
 3. `gravity_vector` 返回 `(0, 1)`，`wrap_cell` 是恒等；
 4. `scan_clears` 返回的组含**行索引与格子清单**；
@@ -89,7 +89,7 @@ SCORE_ZERO = ScoreState(score=0, lines=0, combo=0, b2b=False, level=1)
 
 
 # ---------------------------------------------------------------------------
-# 验证 1：8 条接口可脱离事件系统单测
+# 验证 1：9 条接口可脱离事件系统单测
 # ---------------------------------------------------------------------------
 
 
@@ -241,10 +241,15 @@ def test_scan_clears_on_a_zero_width_board_finds_no_line() -> None:
 
 
 def test_classify_placement_detects_tspin() -> None:
-    """最小 T-Spin 判定：T 型 + 最后一手是旋转 + 外框四角占其三。"""
+    """T-Spin 判定：T 型 + 最后一手是旋转 + 外框四角占其三。
+
+    **M1 起 `tSpin` 是五档**：这次放置消了 1 行 → 档位是 `single`
+    （`tspin` 那一档是「是 T-Spin 但不消行」）。计分类别键仍是
+    `tspin-single`——**形态与计分类别分开给**。
+    """
     classification = standard.classify_placement(TSPIN_BOARD, TSPIN_PLACEMENT, CTX_DOWN)
     assert isinstance(classification, PlacementClass)
-    assert classification.tSpin == "tspin"
+    assert classification.tSpin == "single"
     assert classification.classKey == "tspin-single"
 
 
@@ -445,13 +450,33 @@ def test_shape_cells_without_axis_table() -> None:
         standard.shape_cells(_ctx("left"), "T", 0)
 
 
-def test_kick_offsets_is_identity_table() -> None:
-    """最小踢墙表：恒等偏移（含 180° 的转向）。"""
+def test_kick_offsets_follow_the_piece_kick_group() -> None:
+    """踢墙表按**踢墙组**取：J/L/S/T/Z 共用一套 · I 独立一套 · O 不踢墙。
+
+    M1 起踢墙表是标准表（SRS + 180° 扩展，ADR-068），表结构多了一层
+    **踢墙组**——M0 的"恒等偏移最小表"已经退场。
+    """
     for piece_type in tables.PIECE_TYPES:
+        group = tables.KICK_GROUP_BY_PIECE[piece_type]
         for from_rotation in tables.ROTATIONS:
             for to_rotation in tables.ROTATIONS:
                 offsets = standard.kick_offsets(CTX_DOWN, piece_type, from_rotation, to_rotation)
-                assert offsets == ((0, 0),)
+                expected = tables.KICK_TABLE["down"][(from_rotation, to_rotation)][group]
+                assert offsets == expected, (
+                    f"方块 {piece_type!r} 从 {from_rotation} 到 {to_rotation} 的偏移取错了组"
+                )
+
+    # **O 不踢墙**（SRS 里 O 旋转不位移）：任何转向都只有恒等偏移。
+    for from_rotation in tables.ROTATIONS:
+        for to_rotation in tables.ROTATIONS:
+            offsets = standard.kick_offsets(CTX_DOWN, "O", from_rotation, to_rotation)
+            assert offsets == ((0, 0),)
+
+
+def test_kick_offsets_rejects_unknown_piece() -> None:
+    """未知方块类型当场报错——不返回空偏移糊弄过去。"""
+    with pytest.raises(ValueError):
+        standard.kick_offsets(CTX_DOWN, "X", 0, 1)
 
 
 def test_kick_offsets_without_axis_table() -> None:

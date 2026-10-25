@@ -140,11 +140,16 @@ LEVEL_MAX = 20
 #: 常量并注明出处；换规则集时改这一处。
 CLASS_KEY_NONE = "none"
 
-#: 出生横坐标（M0 的最小标准：所有方块同一个出生列）。
-SPAWN_X = 3
-
 #: 出生纵坐标（落在隐藏行里——可见区顶部之上）。
 SPAWN_Y = 0
+
+#: 锁定延迟时长（逻辑帧）——spec §7.5（FR-4.3）：方块落地后开始计时，到期锁定。
+LOCK_DELAY_FRAMES: int = 30
+
+#: 锁定延迟的重置上限（次）——spec §7.5：**超过上限不再重置**（防无限旋转拖延）。
+#:
+#: **上限到了不等于不锁定**：延迟照常到期锁定（"不重置 ≠ 不锁定"）。
+LOCK_DELAY_MAX_RESETS: int = 15
 
 #: 旋转方向的取值（`piece:rotated.direction`）。
 DIRECTION_CW = "cw"
@@ -205,6 +210,9 @@ class ActivePiece:
     快照只带 `pieceType` / `rotation` / `x` / `y`（契约 `ACTIVE_FIELDS`）；
     判定 T-Spin 需要的「最后一手是不是旋转」「踢墙信息」是**瞬时事实**，
     它们随 `PlacementInfo` 递给规则集，不进快照。
+
+    锁定延迟的两项也是**本块方块自己的事实**（spec §7.5）：重置次数**每块
+    各自计数**——换块就归零（新方块 = 新 `ActivePiece`）。
     """
 
     pieceType: str
@@ -215,6 +223,14 @@ class ActivePiece:
     kickIndex: int | None = None
     kickOffset: tuple[int, int] | None = None
     lastCause: str = "ground"
+    #: **本块已重置过锁定延迟的次数**（spec §7.5 的 15 次上限）。
+    lockResets: int = 0
+    #: **本帧有成功的移动 / 旋转**（且方块停在地板上）→ 锁定步据此重置计时。
+    #:
+    #: **为什么不在命令里直接重置**：命令在帧推进**之前**执行，而"这一帧不
+    #: 消耗计时"这条口径只有锁定步知道（起始帧与重置帧都不消耗）——**命令
+    #: 只登记意图，锁定步统一落账**，两边不会各算一套。
+    lockResetPending: bool = False
 
 
 @dataclass
@@ -286,7 +302,7 @@ class Kernel:
         - `seed`：内核随机源种子（FR-1.4：可重置到初始状态）；
         - `piece_types`：方块类型清单——**由调用方给**：方块名是规则层的词汇，
           内核不抄一份名单（抄了就是两处会悄悄分叉的副本）；
-        - `rule_set`：规则集（8 条接口，FR-4.9 可整体替换）；
+        - `rule_set`：规则集（9 条接口，FR-4.9 可整体替换）；
         - `mode`：运行模式（只随 `kernel:ready` 透传，**内核不按它分支**）；
         - `limits`：配额上限（**必须是构造参数**——回放宿主注入大得多的上限，
           否则回放超限会丢命令，违反 B-6）。
@@ -887,6 +903,7 @@ class Kernel:
         active.lastCause = "command"
         self._state.grounded = False
         self._state.ghost_delta = self._compute_ghost_delta()
+        self._note_lock_delay_reset()
         self._touch()
         return _Outcome(
             True,
@@ -933,7 +950,12 @@ class Kernel:
         self._state.grounded = False
         self._state.ghost_delta = self._compute_ghost_delta()
         before = self._state.score
-        self._state.score = before + 1
+        # **软降得分归规则集**（K1 · M0-6）：内核不再写死「每格 1 分」——换
+        # 规则集就换软降得分（撞 G4-1：M4 落地变体时内核文件必须零差异）。
+        # `distance` = 本次**实际下移的格数**（这里恒为 1：被墙挡住的那条分支
+        # 早就返回了，**不加分**——M0 的行为不变，只是分值来源换了）。
+        delta = self._rules.soft_drop_score(self._rule_context(), 1)
+        self._state.score = before + delta
         self._touch()
         return _Outcome(
             True,
@@ -949,7 +971,7 @@ class Kernel:
                 (
                     "score:changed",
                     (
-                        ("delta", 1),
+                        ("delta", delta),
                         ("before", before),
                         ("after", self._state.score),
                         ("cause", "softDrop"),
@@ -1011,6 +1033,7 @@ class Kernel:
             active.kickOffset = (ox, oy) if (ox, oy) != (0, 0) else None
             self._state.grounded = False
             self._state.ghost_delta = self._compute_ghost_delta()
+            self._note_lock_delay_reset()
             self._touch()
             events: list[RawEvent] = [
                 (
@@ -1083,10 +1106,13 @@ class Kernel:
             self._state.active = None
             events.extend(self._spawn_piece())
         else:
+            spawn_x = self._spawn_x(taken)
             self._state.active = ActivePiece(
-                pieceType=taken, rotation=0, x=SPAWN_X, y=SPAWN_Y, lastCause="command"
+                pieceType=taken, rotation=0, x=spawn_x, y=SPAWN_Y, lastCause="command"
             )
-            if self._collides(taken, 0, SPAWN_X, SPAWN_Y):
+            # **新方块没有在跑的锁定延迟**（换块 = 新的计时与新的重置次数）。
+            self._state.lock_timer = 0
+            if self._collides(taken, 0, spawn_x, SPAWN_Y):
                 events.append(self._end_game("blocked"))
             else:
                 self._state.ghost_delta = self._compute_ghost_delta()
@@ -1283,8 +1309,8 @@ class Kernel:
           `gravity_interval(ctx)`，标准 1 级 = 60 帧）才真正下移一格；没到期
           就**原地不动**（`dx` / `dy` 记 0）；
         - **触地判定每帧都做**（"再往重力方向走一格会不会撞"）——所以方块
-          贴地的那一帧就被判为 `grounded`，紧随其后的锁定步当场锁定（**落即
-          锁**，M0 不做锁定延迟）。
+          贴地的那一帧就被判为 `grounded`，紧随其后的锁定步**开始计时**
+          （M1 起是 30 帧的锁定延迟，见 `step_lock`；M0 是落即锁）。
 
         重力受阻时**位移为 0**（事件照发——五步的节奏是固定的，订阅者据此
         知道"这一帧重力没能推动方块"）。
@@ -1337,10 +1363,75 @@ class Kernel:
 
         **分类用的棋盘含本次放置、尚未消行**（规则集的两条约定之一）——所以
         分类在这里算，消行步只**搬运**不重新判定。
+
+        ## 锁定延迟（spec §7.5 · FR-4.3）
+
+        方块**停在地板上**就开始计时，**30 逻辑帧**后锁定；移动 / 旋转成功
+        （且方块已落地）**重置**计时，**最多 15 次**。
+
+        - **计时归零那一帧才锁定**——M0 是「落即锁」，M1 起换成有限次重置的
+          锁定延迟（**硬降也一样**：spec §7.5 没给硬降开口子，"落地后开始
+          计时"这句话没有例外）；
+        - **上限到了照常锁定**：不重置 ≠ 不锁定；
+        - **移不动不重置**：被墙挡住的移动 / 旋转不算成功（ADR-043），那条
+          分支压根走不到登记处；
+        - **起始帧与重置帧都不消耗计时**——两者的口径一致：计时都是「从这一
+          帧起算 30 帧」，所以「落地后 30 帧锁定」与「重置后 30 帧锁定」是
+          同一个数；
+        - **离地就取消**：方块离开地板（旋转踢墙把它顶起来）→ 计时归零，再次
+          落地时重新起算。
+
+        **事件**：延迟开始发 `piece:lock-delay-start`（带延迟时长）· 每次重置
+        发 `piece:lock-delay-reset`（带已重置次数）——**两条契约里已登记，
+        M1 不加**。两条都在**帧批**里（cause = tick）：**状态变更与事件同在
+        一步**，订阅者不用跨批去对。
         """
         active = self._state.active
-        if active is None or not self._state.grounded:
+        if active is None:
             return frame.StepOutcome((), context)
+        if not self._resting_on_floor():
+            # **不在地板上 → 没有延迟在跑**（落地过又离地就取消）。
+            self._state.lock_timer = 0
+            active.lockResetPending = False
+            return frame.StepOutcome((), context)
+        metadata = self._advance_metadata()
+        if self._state.lock_timer == 0:
+            # **延迟开始**：方块停在地板上那一刻起算 30 帧（**这一帧不消耗**）。
+            self._state.lock_timer = LOCK_DELAY_FRAMES
+            active.lockResetPending = False
+            return frame.StepOutcome(
+                (
+                    make_draft(
+                        "piece:lock-delay-start",
+                        (("delayFrames", LOCK_DELAY_FRAMES),),
+                        self._frame,
+                        metadata,
+                    ),
+                ),
+                context,
+            )
+        if active.lockResetPending:
+            # **重置**：这一帧也不消耗计时（与「延迟开始」同口径）。
+            active.lockResetPending = False
+            if active.lockResets < LOCK_DELAY_MAX_RESETS:
+                active.lockResets += 1
+                self._state.lock_timer = LOCK_DELAY_FRAMES
+                return frame.StepOutcome(
+                    (
+                        make_draft(
+                            "piece:lock-delay-reset",
+                            (("resetCount", active.lockResets),),
+                            self._frame,
+                            metadata,
+                        ),
+                    ),
+                    context,
+                )
+            # **上限到了**：不再重置——**延迟照常到期锁定**（不重置 ≠ 不锁定）。
+        self._state.lock_timer -= 1
+        if self._state.lock_timer > 0:
+            return frame.StepOutcome((), context)
+        # 计时归零 → 真的锁定（下面是 M0 原来的锁定逻辑，一字未动）。
         placement = self._placement_info(active)
         cells = self._active_cells(active)
         board = self._state.board
@@ -1564,13 +1655,16 @@ class Kernel:
         piece_type, queue, refilled = self._take_from_queue()
         if refilled:
             events.append(("queue:refilled", (("next", queue),)))
-        if self._collides(piece_type, 0, SPAWN_X, SPAWN_Y):
+        spawn_x = self._spawn_x(piece_type)
+        if self._collides(piece_type, 0, spawn_x, SPAWN_Y):
             events.append(self._end_game("blocked"))
             return events
         self._state.active = ActivePiece(
-            pieceType=piece_type, rotation=0, x=SPAWN_X, y=SPAWN_Y, lastCause="ground"
+            pieceType=piece_type, rotation=0, x=spawn_x, y=SPAWN_Y, lastCause="ground"
         )
         self._state.grounded = False
+        # **新方块没有在跑的锁定延迟**（换块 = 新的计时与新的重置次数）。
+        self._state.lock_timer = 0
         # **重力计时随出生重置**：新方块先等满一个间隔才落第一格——落格间隔
         # 是节奏，节奏从这一块开始算，不接着上一块 leftover。计时记的是
         # 「还有几帧才落格」，所以出生时是 `间隔 − 1`（第 `间隔` 帧落第一格）。
@@ -1581,7 +1675,7 @@ class Kernel:
                 "piece:spawned",
                 (
                     ("pieceType", piece_type),
-                    ("x", SPAWN_X),
+                    ("x", spawn_x),
                     ("y", SPAWN_Y),
                     ("next", queue),
                 ),
@@ -1667,6 +1761,56 @@ class Kernel:
             steps += 1
         return (dx * steps, dy * steps)
 
+    def _resting_on_floor(self) -> bool:
+        """活动方块是不是**停在地板上**（脚下就是落点）。
+
+        **判据用幽灵落点**（`ghost_delta == (0, 0)`），**不用 `grounded` 标志**
+        ——那个标志是 M0 的「本帧动过就置假」口径（命令一动就置假，等下一帧
+        的重力步重算），拿它判「已落地」会把**刚移动过的方块当成没落地**：
+        移动 / 旋转刚把 `grounded` 置假，锁定延迟就会被误判成「离地了」→
+        计时被取消。
+
+        **幽灵落点是现成的**：重力步每帧算它，命令一动方块也重算——这里读到
+        的永远是**当前这一手之后**的值。
+        """
+        if self._state.active is None:
+            return False
+        return self._state.ghost_delta == (0, 0)
+
+    def _note_lock_delay_reset(self) -> None:
+        """登记「移动 / 旋转成功，且方块停在地板上」→ 锁定延迟要重置。
+
+        **只登记意图，不落账**：重置次数与计时都由**锁定步**统一处理——「起始
+        帧与重置帧都不消耗计时」这条口径只有锁定步知道，两边各算一套必然
+        分叉。
+
+        **移不动不登记**：被墙挡住的移动 / 旋转**不算成功**（ADR-043），那条
+        分支压根走不到这里。
+        """
+        active = self._state.active
+        if active is None or not self._resting_on_floor():
+            return
+        active.lockResetPending = True
+
+    def _spawn_x(self, piece_type: str) -> int:
+        """出生横坐标：**按方块自己的盒子水平居中**（spec §7.7）。
+
+        **逐块算，不写死**：M0 是单一常量（所有方块同一个出生列），但 spec
+        §7.7 要求「7 种方块的水平居中位置按各自盒子算（I 用 4×4 盒居中，
+        其余 3×3，O 用 2×2）」——**O 的盒子只有 2 格宽，居中后落在 x=4**，
+        与其余六种的 x=3 不同。
+
+        **内核不知道「盒子」有多大**：它只看得见规则集给的占位格子——所以
+        **按占位列的跨度居中**（跨度 = 最右 − 最左 + 1）。**两种算法在这 7 种
+        方块的初始朝向上完全一致**（初始朝向下占位格子正好铺满整个盒子宽度
+        ——I 占 4 列、O 占 2 列、其余占 3 列），所以「按盒子算」与「按占位算」
+        在标准规则集下同解，换规则集也照样成立。
+        """
+        cells = self._shape_cells(piece_type, 0)
+        left = min(cx for cx, _ in cells)
+        right = max(cx for cx, _ in cells)
+        return (self._width - (right - left + 1)) // 2 + left
+
     def _rule_context(self) -> RuleContext:
         """递给规则集的运行时上下文（**随时间变化的一切都在这里**）。"""
         return RuleContext(
@@ -1716,6 +1860,8 @@ __all__ = [
     "GRAVITY_AXIS",
     "LEVEL_MAX",
     "LEVEL_MIN",
+    "LOCK_DELAY_FRAMES",
+    "LOCK_DELAY_MAX_RESETS",
     "PREVIEW_SIZE",
     "ActivePiece",
     "Kernel",
