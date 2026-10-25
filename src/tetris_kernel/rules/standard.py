@@ -180,8 +180,16 @@ def _tspin_line_grade(cleared: int) -> str:
     **T 最多只能消 3 行**（T 方块本身最多跨 3 行），所以 3 行及以上都算
     `triple`——不另立 `tspin-tetris`（`classKey` 的取值域里没有它，
     计分表里也没有）。
+
+    **消 0 行返回 `none`**（批次 B 审查 L-1）：三个调用点当前都在调用前先挡掉
+    0 行，所以这条分支**当前不可达**。但计分表里 `tspin-single` = 800 分——
+    **将来谁少写一句 `cleared <= 0` 的守卫，就会把"没消行的 T-Spin"算成
+    800 分，而且不报错**（`tspin-none` 与 `tspin-mini` 分值都在表里）。
+    **在函数边界上就暴露**，比指望每个调用点都记得挡更可靠。
     """
-    if cleared <= 1:
+    if cleared <= 0:
+        return "none"
+    if cleared == 1:
         return "single"
     if cleared == 2:
         return "double"
