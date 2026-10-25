@@ -178,7 +178,13 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
             "**`reset` 后归零**——`reset` 把整局状态归零（帧号 / 帧内序号 / 版本号"
             "三件套一起归，见内核的 `reset` 口径），版本号跟着一起归",
         ),
-        "rule": _field("rule", "str", "规则集标识，用于区分标准玩法与变体；录像与存档均须携带"),
+        "rule": _field(
+            "rule",
+            "str",
+            "规则集标识，用于区分标准玩法与变体；录像与存档均须携带。"
+            "**取值域归规则集，故意不收口**——变体规则集的标识由规则集自己定，"
+            "契约层钉死会把变体挡在门外（与规则侧 `tSpin` / `classKey` 同一口径）",
+        ),
         "phase": _field(
             "phase",
             PHASE_LITERAL,
@@ -198,14 +204,20 @@ SNAPSHOT_FIELDS: Mapping[str, FieldSpec] = MappingProxyType(
             "幽灵落点相对活动方块的**位移向量** (dx, dy)。标准玩法恒为 (0, n)；"
             "重力可旋转等变体下 dx 亦可为非零，故不能用单一纵坐标表达",
         ),
-        "hold": _field("hold", "str | None", "暂存的方块类型"),
+        "hold": _field(
+            "hold",
+            "str | None",
+            "暂存的方块类型。**取值域归规则集，故意不收口**——方块类型是规则集的"
+            "词汇，内核只透传不解读，契约层钉死会把变体挡在门外",
+        ),
         "holdUsed": _field("holdUsed", "bool", "本块是否已用过暂存"),
         "next": _field(
             "next",
             NEXT_QUEUE,
             "当前这一袋剩下的全部方块（最多 7 个 = 方块种类数）；"
             "**渲染层取前 5 个当预览**。放全袋是为了存档恢复后取片序列不分叉"
-            "（FR-10.2）",
+            "（FR-10.2）。**取值域归规则集，故意不收口**——同 `hold`，"
+            "方块类型是规则集的词汇",
         ),
         "score": _field("score", "int", "当前分数"),
         "lines": _field("lines", "int", "累计消行数"),
