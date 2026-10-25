@@ -647,11 +647,15 @@ class Kernel:
         phase = self._state.phase
         if phase == PHASE_RUNNING:
             return None
+        # 门禁三值**就是三个状态名本身**——契约层已把它们声明成同一份词汇
+        # （`contracts/commands.py` 的 `LIFECYCLE_REJECT_REASONS` 由
+        # `contracts/types.py` 的 `PHASE_*` 派生）。这里引用常量而不是再抄一遍
+        # 字面量：抄第二份，两处分叉时无人报警。
         if phase == PHASE_PAUSED:
-            return "paused"
+            return PHASE_PAUSED
         if phase == PHASE_GAME_OVER:
-            return "game_over"
-        return "not_started"
+            return PHASE_GAME_OVER
+        return PHASE_NOT_STARTED
 
     def _received_draft(self, command: Command) -> EventDraft:
         """`command:received`（出队执行前发）。"""

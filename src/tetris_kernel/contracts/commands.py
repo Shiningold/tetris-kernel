@@ -70,7 +70,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .types import CELLS, INT_TUPLE, literal_enum
+from .types import (
+    CELLS,
+    INT_TUPLE,
+    PHASE_GAME_OVER,
+    PHASE_NOT_STARTED,
+    PHASE_PAUSED,
+    literal_enum,
+)
 
 # ---------------------------------------------------------------------------
 # 声明结构
@@ -132,11 +139,14 @@ class CommandSpec:
 # ---------------------------------------------------------------------------
 
 #: 拒绝原因枚举（v1 定死，**只增不改**，需求 §8.2）。顺序 = 需求分类表的顺序。
+#:
+#: **生命周期那三个值由 `types.PHASE_*` 派生**——门禁原因**就是三个状态名本身**
+#: （架构 §7.3.1「门禁三值从状态派生」），抄第二份字面量表，两处分叉时无人报警。
 REJECT_REASONS: tuple[str, ...] = (
     # 生命周期门禁
-    "not_started",
-    "paused",
-    "game_over",
+    PHASE_NOT_STARTED,
+    PHASE_PAUSED,
+    PHASE_GAME_OVER,
     # 配额
     "quota_exceeded",
     # 参数
@@ -155,7 +165,7 @@ REJECT_REASONS: tuple[str, ...] = (
 #: 拒绝原因的分类（需求 §8.2 的「类」列）。键 = 分类代号，值 = 该类的取值。
 REJECT_REASON_CATEGORIES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "lifecycle": ("not_started", "paused", "game_over"),
+        "lifecycle": (PHASE_NOT_STARTED, PHASE_PAUSED, PHASE_GAME_OVER),
         "quota": ("quota_exceeded",),
         "parameter": ("invalid_argument", "level_out_of_range", "out_of_bounds"),
         "state": ("illegal_transition", "no_active_piece", "hold_already_used"),
@@ -176,7 +186,10 @@ REJECT_REASON_CATEGORY_LABELS: Mapping[str, str] = MappingProxyType(
 
 #: 生命周期门禁的三值（需求 §8.2 的门禁注）。**受门禁约束的命令必须三个全带**，
 #: 不受门禁约束的一个都不能带——这条不变式由测试守着。
-LIFECYCLE_REJECT_REASONS: tuple[str, ...] = ("not_started", "paused", "game_over")
+#:
+#: **由 `types.PHASE_*` 派生**：门禁三值就是三个状态名（架构 §7.3.1），
+#: 不另抄一份字面量表。
+LIFECYCLE_REJECT_REASONS: tuple[str, ...] = (PHASE_NOT_STARTED, PHASE_PAUSED, PHASE_GAME_OVER)
 
 _REASON_INDEX: Mapping[str, int] = MappingProxyType(
     {name: index for index, name in enumerate(REJECT_REASONS)}

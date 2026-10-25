@@ -2272,3 +2272,108 @@ def test_every_mapped_kernel_field_exists_in_the_kernel() -> None:
     for entry in KERNEL_STATE_TO_SNAPSHOT:
         root = entry.kernel_field.split(".")[0]
         assert root in known, f"映射表指着内核没有的字段：{entry.kernel_field}"
+
+
+# ---------------------------------------------------------------------------
+# 生命周期取值只写一处：契约层是唯一来源（内核不得抄第二份字面量表）
+# ---------------------------------------------------------------------------
+
+#: 允许出现生命周期四个取值的**唯一**位置：`contracts/types.py` 的四个常量。
+_PHASE_CONSTANT_NAMES = frozenset(
+    {"PHASE_NOT_STARTED", "PHASE_RUNNING", "PHASE_PAUSED", "PHASE_GAME_OVER"}
+)
+
+
+def _ignored_string_constants(tree: ast.AST) -> set[int]:
+    """**不算抄写**的字符串常量：docstring 与注解里的那些。
+
+    散文（docstring）与类型串（注解）说的是"这几个值叫什么"，不是"运行时
+    用哪个"——它们不是取值表。机器检查只看**代码里真正落下的字面量**。
+    """
+    ignored: set[int] = set()
+
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list) or not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            ignored.add(id(first.value))
+
+    annotations: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+        elif isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns:
+            annotations.append(node.returns)
+    for annotation in annotations:
+        for sub in ast.walk(annotation):
+            if isinstance(sub, ast.Constant):
+                ignored.add(id(sub))
+
+    return ignored
+
+
+def _phase_literal_allowances(tree: ast.AST, path: Path) -> set[int]:
+    """`contracts/types.py` 里**允许**出现这四个值的位置：四个常量与 `Phase` 别名。
+
+    唯一来源内部也不许乱抄——别名与常量之外再写一遍，就是第二份取值表。
+    """
+    if path.parent.name != "contracts" or path.name != "types.py":
+        return set()
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.TypeAlias):
+            # `type Phase = Literal[...]`——别名与常量是同一份词汇。
+            if isinstance(node.name, ast.Name) and node.name.id == "Phase":
+                for sub in ast.walk(node.value):
+                    if isinstance(sub, ast.Constant):
+                        allowed.add(id(sub))
+            continue
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id in _PHASE_CONSTANT_NAMES
+            for target in targets
+        ):
+            continue
+        for sub in ast.walk(value):
+            if isinstance(sub, ast.Constant):
+                allowed.add(id(sub))
+    return allowed
+
+
+def test_the_phase_values_are_written_down_in_one_place_only() -> None:
+    """生命周期四个取值**只有一处字面量表**：`contracts/types.py`（ADR-067 连带）。
+
+    契约层与内核层都**不得再抄一遍**这四个值的字面量——抄第二份，两处分叉
+    时无人报警（取值域收口把词汇表钉在契约层，正是为了这个）。
+
+    **docstring 与注解不算**：散文与类型串说的是"这几个值叫什么"，不是取值
+    表本身。`contracts/types.py` 内部也只允许四个常量与 `Phase` 别名。
+    """
+    src_root = Path(contracts_pkg.__file__).parent.parent
+    offenders: list[str] = []
+    for folder in ("contracts", "kernel"):
+        for path in sorted((src_root / folder).glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            ignored = _ignored_string_constants(tree) | _phase_literal_allowances(tree, path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                    continue
+                if node.value not in PHASE_VALUES or id(node) in ignored:
+                    continue
+                offenders.append(f"{folder}/{path.name}:{node.lineno} {node.value!r}")
+    assert not offenders, f"生命周期取值被抄了第二份：{offenders}"
