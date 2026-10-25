@@ -113,11 +113,11 @@ def _build_parser() -> argparse.ArgumentParser:
     """建解析器（四个子命令）。"""
     parser = argparse.ArgumentParser(
         prog="tetris",
-        description="俄罗斯方块内核 · 命令行（M0）",
+        description="俄罗斯方块内核 · 命令行（M1 · 标准玩法可无头玩到底）",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    sim = subparsers.add_parser("sim", help="无头批量模拟（M0 唯一跑通的子命令）")
+    sim = subparsers.add_parser("sim", help="无头批量模拟（唯一跑通的子命令）")
     sim.add_argument(
         "--frames",
         type=int,
@@ -142,9 +142,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sim.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
     for name, help_text in (
-        ("play", "交互式游玩（M0 占位）"),
-        ("replay", "录像回放（M0 占位）"),
-        ("inspect", "查看内核状态（M0 占位）"),
+        ("play", "交互式游玩（占位；输入适配器与渲染器属 M3–M4）"),
+        ("replay", "录像回放（占位；属 M2）"),
+        ("inspect", "查看内核状态（占位；属 M2）"),
     ):
         subparsers.add_parser(name, help=help_text)
     return parser
