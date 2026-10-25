@@ -671,3 +671,190 @@ def test_soft_drop_score_is_one_point_per_cell() -> None:
     """
     assert standard.soft_drop_score(CTX_DOWN, 0) == 0
     assert standard.soft_drop_score(CTX_DOWN, 3) == 3
+
+
+# ---------------------------------------------------------------------------
+# 踢墙表的独立转录表（S10）
+# ---------------------------------------------------------------------------
+
+#: 踢墙表的**独立转录**（第二遍手抄）——**本项目坐标**（x 右正、**y 下正**）。
+#:
+#: **来源**：Tetris Wiki 的 `Super Rotation System` 条目（`J, L, S, T, Z
+#: Tetromino Wall Kick Data` 与 `I Tetromino Wall Kick Data` 两张表）+
+#: Hard Drop Tetris Wiki 的 `Rotation System in TETR.IO` 条目（180° 两套）。
+#:
+#: **坐标换算**：权威表是 **y 上正**，本项目是 **y 下正** → **y 分量取反**。
+#:
+#: **转录时直接手抄成 y 下正的坐标**（不是抄 y 上正再在测试里取反）——
+#: 两边都取反的话，"整个踢墙方向上下颠倒"这种**系统性**错误比对抓不到
+#: （两遍都错同一边）。所以换算在**抄的时候**做，抄完两边就是两遍独立的
+#: 手抄。
+#:
+#: **顺序也是语义**：候选按**优先级**排，第一个能落下的就用它——所以比对
+#: 必须逐条比到顺序，不能只比集合。
+#:
+#: **同向转向**（`from == to`）不是旋转，唯一合法结果就是"不动" → 恒等偏移。
+_KICK_TRANSCRIPTION: dict[tuple[int, int], dict[str, tuple[tuple[int, int], ...]]] = {
+    # —— 顺时针 90°（0→1 / 1→2 / 2→3 / 3→0）——
+    (0, 1): {
+        "JLSTZ": ((0, 0), (-1, 0), (-1, -1), (0, 2), (-1, 2)),
+        "I": ((0, 0), (-2, 0), (1, 0), (-2, 1), (1, -2)),
+        "O": ((0, 0),),
+    },
+    (1, 2): {
+        "JLSTZ": ((0, 0), (1, 0), (1, 1), (0, -2), (1, -2)),
+        "I": ((0, 0), (-1, 0), (2, 0), (-1, -2), (2, 1)),
+        "O": ((0, 0),),
+    },
+    (2, 3): {
+        "JLSTZ": ((0, 0), (1, 0), (1, -1), (0, 2), (1, 2)),
+        "I": ((0, 0), (2, 0), (-1, 0), (2, -1), (-1, 2)),
+        "O": ((0, 0),),
+    },
+    (3, 0): {
+        "JLSTZ": ((0, 0), (-1, 0), (-1, 1), (0, -2), (-1, -2)),
+        "I": ((0, 0), (1, 0), (-2, 0), (1, 2), (-2, -1)),
+        "O": ((0, 0),),
+    },
+    # —— 逆时针 90°（0→3 / 1→0 / 2→1 / 3→2）——
+    (0, 3): {
+        "JLSTZ": ((0, 0), (1, 0), (1, -1), (0, 2), (1, 2)),
+        "I": ((0, 0), (-1, 0), (2, 0), (-1, -2), (2, 1)),
+        "O": ((0, 0),),
+    },
+    (1, 0): {
+        "JLSTZ": ((0, 0), (1, 0), (1, 1), (0, -2), (1, -2)),
+        "I": ((0, 0), (2, 0), (-1, 0), (2, -1), (-1, 2)),
+        "O": ((0, 0),),
+    },
+    (2, 1): {
+        "JLSTZ": ((0, 0), (-1, 0), (-1, -1), (0, 2), (-1, 2)),
+        "I": ((0, 0), (1, 0), (-2, 0), (1, 2), (-2, -1)),
+        "O": ((0, 0),),
+    },
+    (3, 2): {
+        "JLSTZ": ((0, 0), (-1, 0), (-1, 1), (0, -2), (-1, -2)),
+        "I": ((0, 0), (-2, 0), (1, 0), (-2, 1), (1, -2)),
+        "O": ((0, 0),),
+    },
+    # —— 180°（0→2 / 1→3 / 2→0 / 3→1）——
+    # SRS 原始规范**不含 180°**：采 TETR.IO / Jstris 口径（ADR-068）。
+    (0, 2): {
+        "JLSTZ": ((0, 0), (0, -1)),
+        "I": ((0, 0), (0, -1)),
+        "O": ((0, 0),),
+    },
+    (1, 3): {
+        "JLSTZ": ((0, 0), (1, 0)),
+        "I": ((0, 0), (1, 0)),
+        "O": ((0, 0),),
+    },
+    (2, 0): {
+        "JLSTZ": ((0, 0), (0, 1)),
+        "I": ((0, 0), (0, 1)),
+        "O": ((0, 0),),
+    },
+    (3, 1): {
+        # JLSTZ 与 I **只差这一条**：JLSTZ 是 (-1, 0)，I 是 (1, 0)。
+        "JLSTZ": ((0, 0), (-1, 0)),
+        "I": ((0, 0), (1, 0)),
+        "O": ((0, 0),),
+    },
+    # —— 同向（不是旋转：唯一合法结果是"不动"）——
+    (0, 0): {"JLSTZ": ((0, 0),), "I": ((0, 0),), "O": ((0, 0),)},
+    (1, 1): {"JLSTZ": ((0, 0),), "I": ((0, 0),), "O": ((0, 0),)},
+    (2, 2): {"JLSTZ": ((0, 0),), "I": ((0, 0),), "O": ((0, 0),)},
+    (3, 3): {"JLSTZ": ((0, 0),), "I": ((0, 0),), "O": ((0, 0),)},
+}
+
+
+def _assert_kick_table_matches(
+    table: dict[tuple[int, int], dict[str, tuple[tuple[int, int], ...]]],
+) -> None:
+    """断言给定的踢墙表与独立转录表**逐条相等**（**顺序也要对**）。
+
+    **逐条比顺序**：候选顺序就是优先级——顺序变了，"能不能转进去"的结果
+    就变了，所以**只比集合不比顺序**等于没比。
+    """
+    for (from_rotation, to_rotation), groups in _KICK_TRANSCRIPTION.items():
+        actual = table.get((from_rotation, to_rotation))
+        assert actual is not None, f"缺少从朝向 {from_rotation} 到朝向 {to_rotation} 的转向"
+        for group, expected in groups.items():
+            assert actual.get(group) == expected, (
+                f"从朝向 {from_rotation} 到朝向 {to_rotation} 的 {group} 组偏移不一致："
+                f"实现 {actual.get(group)} ≠ 转录 {expected}"
+            )
+
+
+def test_kick_table_matches_independent_transcription_entry_by_entry() -> None:
+    """踢墙表与独立转录表**逐条相等**（16 种转向 × 3 个踢墙组）。"""
+    down = {key: dict(value) for key, value in tables.KICK_TABLE["down"].items()}
+    _assert_kick_table_matches(down)
+
+
+def test_kick_table_covers_all_sixteen_transitions_and_three_groups() -> None:
+    """**表结构断言**：16 种转向 × 3 个组，一条不缺。
+
+    16 种转向 = 顺时针 4 种 · 180° 4 种 · 逆时针 4 种 · 同向 4 种。
+    """
+    down = tables.KICK_TABLE["down"]
+    assert len(down) == 16
+    for from_rotation in tables.ROTATIONS:
+        for to_rotation in tables.ROTATIONS:
+            groups = down.get((from_rotation, to_rotation))
+            assert groups is not None, f"缺少 {from_rotation} → {to_rotation}"
+            assert set(groups) == set(tables.KICK_GROUPS), (
+                f"{from_rotation} → {to_rotation} 的组不全"
+            )
+            for group, offsets in groups.items():
+                assert offsets, f"{from_rotation} → {to_rotation} 的 {group} 组没有候选"
+                assert offsets[0] == (0, 0), "第一个候选必须是恒等偏移（不位移）"
+
+
+def test_o_group_never_kicks() -> None:
+    """**O 组只有 `(0, 0)`**——SRS 里 O 旋转不位移。"""
+    down = tables.KICK_TABLE["down"]
+    for (from_rotation, to_rotation), groups in down.items():
+        assert groups["O"] == ((0, 0),), f"{from_rotation} → {to_rotation} 的 O 组不该有偏移"
+
+
+def test_kick_table_is_frozen_inside_and_out() -> None:
+    """踢墙表**内外都冻**——只冻外层等于没冻。"""
+    assert isinstance(tables.KICK_TABLE, MappingProxyType)
+    down = tables.KICK_TABLE["down"]
+    assert isinstance(down, MappingProxyType)
+    for (from_rotation, to_rotation), groups in down.items():
+        assert isinstance(groups, MappingProxyType), f"{from_rotation} → {to_rotation} 没冻"
+        for group, offsets in groups.items():
+            assert isinstance(offsets, tuple), f"{group} 组的候选不是元组"
+
+    with pytest.raises(TypeError):
+        tables.KICK_TABLE["left"] = {}  # type: ignore[index]
+    with pytest.raises(TypeError):
+        tables.KICK_TABLE["down"][(0, 1)] = {}  # type: ignore[index]
+
+
+def test_the_transcription_comparison_can_actually_fail() -> None:
+    """**比对本身能失败**——守卫要能触发，否则守卫等于没守。
+
+    抄一份实现表，**改一条**（偏移数值改错）与**删一条**（转向消失），
+    断言比对当场报红。
+    """
+    down = {key: dict(value) for key, value in tables.KICK_TABLE["down"].items()}
+
+    # 改一条：JLSTZ 的 0→1 最后一个候选从 (-1, 2) 改成 (-1, 3)。
+    broken_value = dict(down[(0, 1)])
+    broken_value["JLSTZ"] = ((0, 0), (-1, 0), (-1, -1), (0, 2), (-1, 3))
+    broken = dict(down)
+    broken[(0, 1)] = broken_value
+    with pytest.raises(AssertionError):
+        _assert_kick_table_matches(broken)
+
+    # 删一条：少一个转向。
+    missing = dict(down)
+    del missing[(0, 1)]
+    with pytest.raises(AssertionError):
+        _assert_kick_table_matches(missing)
+
+    # 原表必须仍然通过（守卫不能是"永远红"）。
+    _assert_kick_table_matches(down)
