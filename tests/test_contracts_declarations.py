@@ -3,7 +3,7 @@
 当前覆盖：事件注册表（44 条）、命名空间、产出者分布、信封与元数据声明、
 命令规格（16 条）与拒绝原因枚举（12 值）、快照字段声明（21 顶层 + board 5
 子字段 + active 4 子字段）、坐标系约定、M0 内核状态清单、PlacementInfo、
-规则接口签名（8 条）与四个中性交换结构、命名结构注册表、类型文法回验与
+规则接口签名（9 条）与四个中性交换结构、命名结构注册表、类型文法回验与
 公共叶子纯净度。
 """
 
@@ -1229,7 +1229,7 @@ def test_placement_cells_uses_cells_coordinate_constant() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S5：规则接口签名（架构 §7.3.1 · 8 条）与中性交换结构
+# S5：规则接口签名（架构 §7.3.1 · 9 条）与中性交换结构
 #
 # 架构 §7.3.1 的签名表，独立转录一份做交叉核对。转录的是「架构写了什么」，
 # 不是「声明写了什么」——拿声明自证，机检就只是证明自己没写错。
@@ -1263,6 +1263,10 @@ EXPECTED_RULE_SIGNATURES: dict[str, tuple[tuple[tuple[str, str], ...], str]] = {
         ),
         "ScoreDelta",
     ),
+    "soft_drop_score": (
+        (("ctx", "RuleContext"), ("distance", "int")),
+        "int",
+    ),
     "shape_cells": (
         (("ctx", "RuleContext"), ("pieceType", "str"), ("rotation", "int")),
         "tuple[tuple[int, int], ...]",
@@ -1278,7 +1282,8 @@ EXPECTED_RULE_SIGNATURES: dict[str, tuple[tuple[tuple[str, str], ...], str]] = {
     ),
 }
 
-#: 签名在架构 §7.3.1 表格里的顺序。
+#: 签名在架构 §7.3.1 表格里的顺序（**第 9 条紧跟 `score_clear` 之后**——
+#: 计分组连着排；顺序进基线，重排 = major 变更）。
 EXPECTED_RULE_SIGNATURE_ORDER = (
     "wrap_cell",
     "gravity_vector",
@@ -1286,17 +1291,18 @@ EXPECTED_RULE_SIGNATURE_ORDER = (
     "scan_clears",
     "classify_placement",
     "score_clear",
+    "soft_drop_score",
     "shape_cells",
     "kick_offsets",
 )
 
-#: 8 条签名按能力分组：四项接口（边界 / 重力 / 消行 / 计分）+ 两张表
+#: 9 条签名按能力分组：四项接口（边界 / 重力 / 消行 / 计分）+ 两张表
 #: （形状 / 踢墙）。FR-4.9：规则模块按这四项分别可插拔，**不另开第五项**。
 EXPECTED_SIGNATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "边界（拓扑）": ("wrap_cell",),
     "重力": ("gravity_vector", "gravity_interval"),
     "消行": ("scan_clears", "classify_placement"),
-    "计分": ("score_clear",),
+    "计分": ("score_clear", "soft_drop_score"),
     "形状": ("shape_cells",),
     "踢墙": ("kick_offsets",),
 }
@@ -1325,11 +1331,36 @@ EXPECTED_EXCHANGE_STRUCTURE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
-def test_rule_signature_count_is_eight() -> None:
-    """规则接口签名 = **8 条**（四项接口 + 形状表 / 踢墙表，架构 §7.3.1）。"""
-    assert len(RULE_SIGNATURES) == 8
-    assert len(RULE_SIGNATURE_NAMES) == 8
-    assert len(set(RULE_SIGNATURE_NAMES)) == 8
+def test_rule_signature_count_is_nine() -> None:
+    """规则接口签名 = **9 条**（四项接口 + 形状表 / 踢墙表 + M1 的软降计分）。
+
+    **条数进基线**（结构性计数键 `count/ruleSignature`）：整条新增一条签名只
+    产生新键，按"新增键放行"的口径会一路绿灯——比改参数更大的接口变更反而
+    更难被发现。
+    """
+    assert len(RULE_SIGNATURES) == 9
+    assert len(RULE_SIGNATURE_NAMES) == 9
+    assert len(set(RULE_SIGNATURE_NAMES)) == 9
+
+
+def test_soft_drop_score_is_its_own_signature() -> None:
+    """第 9 条 `soft_drop_score` 的**参数名与类型**逐条钉死。
+
+    **为什么是独立一条签名**，而不是给 `score_clear` 加参数：消行结算在锁定
+    时调一次，软降发生在放置途中，**时机与频率都不同**；软降距离是**单次
+    命令的参数**，塞进跨帧的 `RuleContext` 会多一个"每帧重置"的瞬时量。
+
+    **落位 = 紧跟 `score_clear` 之后**（计分组连着排）：声明顺序进基线，
+    后补的插中间 = 已有键的顺序变了 = 撞红。
+    """
+    signature = RULE_SIGNATURES["soft_drop_score"]
+    assert tuple((param.name, param.type) for param in signature.params) == (
+        ("ctx", "RuleContext"),
+        ("distance", "int"),
+    )
+    assert signature.returns == "int"
+    order = RULE_SIGNATURE_NAMES
+    assert order.index("soft_drop_score") == order.index("score_clear") + 1
 
 
 def test_rule_signatures_match_architecture_table() -> None:
@@ -1350,7 +1381,7 @@ def test_rule_signature_order_matches_architecture_table() -> None:
 
 
 def test_rule_signatures_cover_four_capabilities_and_two_tables() -> None:
-    """8 条 = 四项接口 + 两张表，**不另开第五项**（FR-4.9）。"""
+    """9 条 = 四项接口 + 两张表 + 软降计分，**不另开第五项**（FR-4.9）。"""
     grouped = tuple(name for group in EXPECTED_SIGNATURE_GROUPS.values() for name in group)
     assert sorted(grouped) == sorted(RULE_SIGNATURE_NAMES)
     assert len(grouped) == len(set(grouped)), "同一条签名被分到了两个能力下"

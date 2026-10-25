@@ -67,6 +67,7 @@ from .interface import (
     ScanClears,
     ScoreClear,
     ShapeCells,
+    SoftDropScore,
     WrapCell,
 )
 from .tables import (
@@ -320,6 +321,21 @@ def score_clear(
     return ScoreDelta(scoreDelta=score_delta, linesDelta=cleared, state=state)
 
 
+def soft_drop_score(ctx: RuleContext, distance: int) -> int:
+    """软降得分：本次软降应加的分（标准规则集 = **每下移一格加 1 分**）。
+
+    `distance` 是本次**实际下移**的格数（被墙挡住则为 0 → 加 0 分）。
+
+    M0 把这条**写死在核心里**（`core.py` 的 `+1`）——换规则集就改不了软降得分，
+    撞 G4-1（M4 落地变体时内核文件必须零差异）。M1 把它归规则集：内核在
+    S11 改为调用这里，**删掉写死的 `+1`**。
+
+    `ctx` 用不上（标准玩法的软降分不随等级 / 重力轴变），但**参数不能删**：
+    参数表是冻结的（ADR-061），变体规则集可以按 `ctx` 给不同的分。
+    """
+    return distance
+
+
 def shape_cells(
     ctx: RuleContext,
     pieceType: str,
@@ -413,9 +429,9 @@ def _effective_class_key(
 
 @dataclass(frozen=True)
 class StandardRuleSet:
-    """标准规则集：8 条接口的组合入口（FR-4.9）。
+    """标准规则集：9 条接口的组合入口（FR-4.9）。
 
-    **不可变、无状态**：8 条实现全是模块级纯函数，本类只做组装——
+    **不可变、无状态**：9 条实现全是模块级纯函数，本类只做组装——
     规则集一旦持有可变状态，FR-10.2 的存档恢复就得额外序列化它。
     """
 
@@ -425,6 +441,7 @@ class StandardRuleSet:
     scan_clears: ScanClears = scan_clears
     classify_placement: ClassifyPlacement = classify_placement
     score_clear: ScoreClear = score_clear
+    soft_drop_score: SoftDropScore = soft_drop_score
     shape_cells: ShapeCells = shape_cells
     kick_offsets: KickOffsets = kick_offsets
 
@@ -449,5 +466,6 @@ __all__ = [
     "scan_clears",
     "score_clear",
     "shape_cells",
+    "soft_drop_score",
     "wrap_cell",
 ]

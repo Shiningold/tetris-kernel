@@ -33,8 +33,29 @@ T-Spin 判定需要 `PlacementInfo` · 交换结构放 `contracts/` 不放 `rule
 kernel 的任何 dataclass**（架构 §7.3）。否则 `kernel > rules` 契约第一天就红，
 然后大概率被加豁免——契约就废了。
 
-## T-Spin 分类怎么到达计分
+## 第 9 条签名：`soft_drop_score`（M1 新增）
 
+M0 把软降得分写死在核心里（`kernel/core.py` 的 `+1`）——**换规则集就改不了软降
+得分**，撞 G4-1（M4 落地变体时内核文件必须零差异）。所以 M1 把它**归规则集**：
+
+```
+soft_drop_score(ctx: RuleContext, distance: int) -> int
+```
+
+**为什么是独立一条签名，而不是给 `score_clear` 加参数**：
+
+- **时机与频率都不同**：`score_clear` 只在**锁定结算**时调用一次，软降发生在
+  **放置途中**（每条软降命令一次）。塞进 `score_clear` 会让"消行结算"背上
+  "移动计分"的语义——两件事混成一件，计分表就说不清了。
+- **不是 `RuleContext` 的字段**：`RuleContext` 描述的是**跨帧的运行时上下文**
+  （帧号 / 等级 / 已放置数 / 轴 / 步长），而软降距离是**单次命令的参数**。
+  塞进上下文会让它多一个"每帧都要重置"的瞬时量。
+- **参数名与顺序进基线**：声明顺序紧跟 `score_clear` 之后（计分组连着排），
+  **不得重排**——重排就是已有键的哈希变化 = major 变更。
+
+**M1 的标准规则集实现它**（`distance × 1`），内核在 S11 改为调用它。
+
+## T-Spin 分类怎么到达计分
 `classify_placement` 的结果（`PlacementClass`）必须到达 `score_clear`——否则
 计分模块看不见 T-Spin，T-Spin 的分值就没法算（FR-4.6 的计分表）。
 
@@ -401,6 +422,25 @@ _RULE_SIGNATURES: tuple[tuple[str, RuleSignature], ...] = (
         ),
     ),
     (
+        "soft_drop_score",
+        RuleSignature(
+            name="soft_drop_score",
+            params=(
+                RuleParam("ctx", "RuleContext", "运行时上下文"),
+                RuleParam(
+                    "distance",
+                    "int",
+                    "本次软降实际下移的格数（被墙挡住则为 0）",
+                ),
+            ),
+            returns="int",
+            doc="软降得分：本次软降应加的分。**独立一条签名**，不是 `score_clear` "
+            "的参数——消行结算在锁定时调一次，软降发生在放置途中，"
+            "**时机与频率都不同**（塞进 `score_clear` 会让「消行结算」背上"
+            "「移动计分」的语义）。",
+        ),
+    ),
+    (
         "shape_cells",
         RuleSignature(
             name="shape_cells",
@@ -432,9 +472,11 @@ _RULE_SIGNATURES: tuple[tuple[str, RuleSignature], ...] = (
     ),
 )
 
-#: 规则接口签名注册表：键 = 签名名，值 = 该签名的声明。**8 条，M0 定稿**。
+#: 规则接口签名注册表：键 = 签名名，值 = 该签名的声明。**9 条**（M0 定稿 8 条
+#: + M1 新增第 9 条 `soft_drop_score`）。
 #:
-#: 顺序 = 架构 §7.3.1 表格的顺序。
+#: 顺序 = 架构 §7.3.1 表格的顺序；**第 9 条紧跟 `score_clear` 之后**
+#: （计分组连着排）。顺序进基线，**不得重排**。
 RULE_SIGNATURES: Mapping[str, RuleSignature] = MappingProxyType(dict(_RULE_SIGNATURES))
 
 #: 签名名的稳定序列（枚举顺序 = 架构 §7.3.1 表格顺序）。
