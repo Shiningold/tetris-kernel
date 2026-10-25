@@ -73,7 +73,7 @@ from tetris_kernel.contracts.commands import COMMAND_TYPES
 from tetris_kernel.host.assembly import assemble
 from tetris_kernel.host.loop import HeadlessLoop
 from tetris_kernel.kernel.commands import Args, Command
-from tetris_kernel.kernel.core import Kernel, KernelInvariantError
+from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel, KernelInvariantError
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.snapshot import Snapshot
 from tetris_kernel.rules.tables import PIECE_TYPES
@@ -259,12 +259,20 @@ def _kernel_in_state(phase: str, has_active: bool) -> Kernel:
     # running / paused：先开局（开局必有方块）。
     kernel.execute(Command("start", source="test"))
     if not has_active:
-        # 半帧：硬降 → 落地 → tick 授予推进许可 → 只消费重力与锁定两步。
+        # 半帧：硬降 → 落地 → 推进到**锁定延迟到期那一帧** → 只消费重力与锁定
+        # 两步（锁定步把方块落盘，出生步还没跑）。
+        #
+        # **M1 起锁定不是即时的**（spec §7.5：30 帧的锁定延迟，**硬降也一样**
+        # ——"方块落地后开始计时"没有例外），所以不能「推进一帧就锁定」——要
+        # 一直推到计时归零那一帧，半帧状态才造得出来。
         kernel.execute(Command("hardDrop", source="test"))
-        kernel.execute(Command("tick", source="test"))
-        steps = kernel.advance_frame()
-        next(steps)  # 重力步
-        next(steps)  # 锁定步：方块落盘，活动方块清空
+        for _ in range(LOCK_DELAY_FRAMES + 2):
+            kernel.execute(Command("tick", source="test"))
+            steps = kernel.advance_frame()
+            next(steps)  # 重力步
+            next(steps)  # 锁定步
+            if kernel.snapshot().active is None:
+                break
         assert kernel.snapshot().active is None, "半帧状态没造出来"
     if phase == "paused":
         kernel.execute(Command("pause", source="test"))

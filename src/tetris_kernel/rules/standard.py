@@ -46,10 +46,16 @@ M0 只保证**接口定稿 + 最小实现**（架构 §7.3 · spec-M0.md §7.5�
 
 分类挂在**消行组**上（架构 §7.3.1 纪律 4），而**消 0 行的放置根本没有组**
 ——内核这时调的是 `score_clear((), …)`，也就是**落空**。所以
-`tspin-mini`（不消行的 T-Spin Mini，guideline 口径 400 分）与 `tspin-none`
-这两档**当前送不到计分**：表里按 spec §7.4 备着，但要真发这 400 分，得让
+`tspin-mini`（不消行的 T-Spin Mini，**100 分**）与 `tspin-none`
+（不消行的完整 T-Spin，**400 分**）这两档**当前送不到计分**：表里按
+guideline 原值备着（ADR-070 摆正），但要真发这 100 / 400 分，得让
 "没消行但有分类"这条信息也走通——那是**改冻结签名**的活（M1 的三次 major
 变更里没有这一条），留到后续里程碑处理，缺口记在 `PROGRESS.md` 的待办里。
+
+**同一条缺口还有第二处后果**：0 行的 T-Spin 走的也是「落空」分支 →
+`b2b = False` → **断了 B2B 链**，而 guideline 明写「0 行的 T-Spin 不断链」
+（**ADR-070** 记成项目口径与 guideline 的第二处偏离）。**规则集根本不知道
+发生过 T-Spin**——分类没有组可挂。
 
 ## T-Spin 分类怎么到达计分
 
@@ -180,8 +186,16 @@ def _tspin_line_grade(cleared: int) -> str:
     **T 最多只能消 3 行**（T 方块本身最多跨 3 行），所以 3 行及以上都算
     `triple`——不另立 `tspin-tetris`（`classKey` 的取值域里没有它，
     计分表里也没有）。
+
+    **消 0 行返回 `none`**（批次 B 审查 L-1）：三个调用点当前都在调用前先挡掉
+    0 行，所以这条分支**当前不可达**。但计分表里 `tspin-single` = 800 分——
+    **将来谁少写一句 `cleared <= 0` 的守卫，就会把"没消行的 T-Spin"算成
+    800 分，而且不报错**（`tspin-none` 与 `tspin-mini` 分值都在表里）。
+    **在函数边界上就暴露**，比指望每个调用点都记得挡更可靠。
     """
-    if cleared <= 1:
+    if cleared <= 0:
+        return "none"
+    if cleared == 1:
         return "single"
     if cleared == 2:
         return "double"
