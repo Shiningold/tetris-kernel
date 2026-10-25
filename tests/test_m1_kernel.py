@@ -250,7 +250,8 @@ def test_the_piece_locks_when_the_lock_delay_expires() -> None:
     """锁定延迟 **30 帧**后锁定——**硬降也一样**。
 
     **硬降不跳过锁定延迟**（spec §7.5「方块落地后开始计时，到期锁定」这句话
-    没有例外）。落地那一帧**起算但不消耗**，所以从落地到锁定是 31 帧。
+    没有例外）。落地那一帧**起算但不消耗**，所以从落地到锁定**相隔 30 帧**
+    （**含落地那一帧算进去是 31 帧**）。
     """
     kernel = _running_kernel()
     kernel.execute(Command("hardDrop", source="test"))

@@ -455,7 +455,7 @@ def test_a_grounded_piece_locks_after_the_lock_delay_despite_the_interval() -> N
     被间隔拖住，这块方块得等 60 帧才锁）。
 
     **M1 口径的落点**：锁定延迟在**落地那一帧起算**（那一帧**不消耗**计时），
-    之后 30 帧到期才锁定 → 从硬降到锁定共 **31 帧**。
+    之后 30 帧到期才锁定 → 从硬降到锁定**相隔 30 帧**（**含落地帧算进去共 31 帧**）。
     """
     kernel = _running_kernel()
     kernel.execute(Command("hardDrop", source="test"))
