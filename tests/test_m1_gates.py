@@ -822,8 +822,15 @@ def test_m1_soft_drop_score_the_kernel_source_holds_no_hardcoded_value() -> None
 # 元守卫：§5.2 的九个入口必须都还活着
 # ---------------------------------------------------------------------------
 
-#: §5.2 的复跑命令在 plan 里的形态（`` `pytest -k <命中名>` ``）。
-_ENTRY_POINT_PATTERN = re.compile(r"`pytest -k ([a-z0-9_]+)`")
+#: §5.2 的复跑命令在 plan 里的形态（**只认表格行**：`| G1-n | … | `pytest -k <命中名>` |`）。
+#:
+#: **为什么只认表格行**：全文搜 `pytest -k <名字>` 会把**正文里顺带提到的**
+#: 那几个也算进来（§5.13 的发现段里就写着两条）——数出来是 11，不是 9。
+#: **这张表才是契约**，散文里提到某个命令不算数。
+_ENTRY_POINT_PATTERN = re.compile(
+    r"^\|\s*G1-\d+\s*\|.*`pytest -k ([a-z0-9_]+)`",
+    flags=re.MULTILINE,
+)
 
 
 def _collect_test_names() -> list[str]:
