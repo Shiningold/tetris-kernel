@@ -74,7 +74,7 @@ def assemble(
 
     - `seed`：内核随机源种子（FR-1.4）；
     - `piece_types`：方块类型清单——**默认从规则层取**，内核自己不抄；
-    - `rule_set`：规则集（8 条接口，FR-4.9 可整体替换）；
+    - `rule_set`：规则集（9 条接口，FR-4.9 可整体替换）；
     - `rule_id`：规则集标识（进快照与 `kernel:ready`）；
     - `board_width` / `board_height` / `hidden_rows`：棋盘尺寸（隐藏行是**数量**，
       不是可见起始行）；
