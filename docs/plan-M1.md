@@ -171,7 +171,7 @@ S15 收尾与状态同步
 | **规则接口第 9 条** | `soft_drop_score(ctx: RuleContext, distance: int) -> int`，**落位 = 紧跟 `score_clear` 之后**（声明顺序进基线，不得重排） | S3（`contracts/rules.py` + `rules/interface.py` 的 `RuleSet` 协议） | S9（实现）· S11（内核调用）· S6（基线计数键） |
 | **规则表结构** | `KICK_TABLE[轴][(from, to)][踢墙组] -> tuple[tuple[int,int], ...]`；踢墙组 ∈ `{"I", "O", "JLSTZ"}`；方块类型 → 组 的映射由规则集提供；`O` 组只有 `(0,0)` | S7（`rules/tables.py`） | S8 / S9（`rules/standard.py` 的查表）· S10（转录表比对） |
 | **T-Spin 词汇** | `tSpin` ∈ `{"none", "tspin", "mini", "single", "double", "triple"}` · `classKey` ∈ `{"none", "single", "double", "triple", "tetris", "tspin-none", "tspin-mini", "tspin-single", "tspin-double", "tspin-triple"}`（**规则集定义的域，契约层不钉**） | S7（`tables.py` 的域常量） | S8 / S9（判定与计分）· S11（内核只透传） |
-| **计分表** | 基础分 100/300/500/800 · T-Spin 800/1200/1600 · Mini 400 · 不消行 T-Spin 0 · 连击奖励 `50 × 消行前连击数` · B2B **×1.5 作用于基础分**（基础分全为 100 的倍数 → 结果仍是 `int`） | S7（表常量） | S9（`score_clear` 实现）· S13（手算比对） |
+| **计分表** | 基础分 100/300/500/800 · T-Spin 800/1200/1600 · Mini 100 · 不消行 T-Spin 400（**两档 0 行分值是 guideline 原值**，ADR-070 摆正）· 连击奖励 `50 × 消行前连击数` · B2B **×1.5 作用于基础分**（基础分全为 100 的倍数 → 结果仍是 `int`） | S7（表常量） | S9（`score_clear` 实现）· S13（手算比对） |
 | **软降计分** | 标准规则集：`soft_drop_score(ctx, distance) = distance × 1`；`distance` = 本次实际下移格数（被墙挡住 = 0） | S9 | S11（内核 `_cmd_soft_drop` 改为调用它，**删掉写死的 `+1`**） |
 | **锁定延迟参数** | 延迟 **30 逻辑帧** · 重置上限 **15 次** · 重置触发 = 移动 / 旋转**成功**且方块**已落地** | S11（`kernel/frame.py` + `kernel/core.py`） | S13（G1-5） |
 | **内核对外操作面** | 不变（`execute` / `advance_frame` / `snapshot`）——**M1 不改内核的对外形状** | S11 | S12 · S13 |
@@ -461,7 +461,7 @@ S15 收尾与状态同步
   - [ ] `rules/tables.py`：**踢墙表结构加"踢墙组"层**：`KICK_TABLE[轴][(from, to)][组] -> tuple[tuple[int, int], ...]`；组 ∈ `{"I", "O", "JLSTZ"}`；**方块类型 → 组**的映射常量；`O` 组只有 `(0, 0)`
   - [ ] `rules/tables.py`：**SRS 踢墙表转录**（JLSTZ 一套 · I 一套 · 180° 扩展表两套），**候选顺序 = 优先级**（第一个能落下的就用它）
   - [ ] `rules/tables.py`：**形状表逐条核对**（down 轴 7 种 × 4 朝向 = 28 条）——M0 的表已是 SRS 基准坐标，本阶段**核对并修正**
-  - [ ] `rules/tables.py`：**计分表扩充**：基础分 100/300/500/800 · T-Spin 800/1200/1600 · Mini 400 · 不消行 T-Spin 0 · 连击奖励常量 `50` · **B2B 倍率 `1.5`**（记成 `3 / 2` 的整数比或分数常量，**不许用浮点**——`scoreDelta` 是 `int`）
+  - [ ] `rules/tables.py`：**计分表扩充**：基础分 100/300/500/800 · T-Spin 800/1200/1600 · Mini 100 · 不消行 T-Spin 400（**0 行那两档按 ADR-070 已摆正成 guideline 原值**）· 连击奖励常量 `50` · **B2B 倍率 `1.5`**（记成 `3 / 2` 的整数比或分数常量，**不许用浮点**——`scoreDelta` 是 `int`）
   - [ ] `rules/tables.py`：`TSPIN_VALUES` 扩到 **5 档** · `CLASS_KEYS` 扩到 **10 个**（含 `tspin-none` / `tspin-mini`）
   - [ ] `rules/tables.py`：**重力曲线口径**保留 M0 的 10 级表（**M1 不追 guideline 完整曲线**），表尾行为与下限（≥1 帧）写进注释
   - [ ] `rules/tables.py`：**180° 的来源写进注释**——SRS 原始规范不含 180°，采现代通行扩展口径，**不冒充 SRS 正统**

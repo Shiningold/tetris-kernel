@@ -501,16 +501,27 @@ def test_rule_set_holds_no_mutable_module_state() -> None:
 # 完整计分表（S9）
 # ---------------------------------------------------------------------------
 
-#: 计分表的**独立转录**（guideline 口径 · spec §7.4）——**手抄的第二遍**，
-#: 不从实现表生成（从实现表抄 = 比对变同义反复）。
+#: 计分表的**独立转录**——**转录源是 guideline 的表**（Tetris Wiki `T-Spin`
+#: 条目 §Scoring，表头 `! Lines !! Mini T-spin !! T-spin`：
+#: `0 || 100 || 400` · `1 || 200 || 800` · `2 || 400 || 1200` ·
+#: `3 || [Impossible.] || 1600`），**不是 spec §7.4**。
+#:
+#: **为什么不能照 spec 抄**（ADR-070 的根因）：spec §7.4 把 Mini 0 行写成
+#: 400（guideline 原值是 100），**实现表与这张转录表都是照 spec 抄的**——
+#: 同一个错抄了两遍，**比对变同义反复**，抓不住。**转录源必须指向权威源**。
+#:
+#: **手抄的第二遍**，不从实现表生成（从实现表抄 = 比对变同义反复）。
+#:
+#: **与 guideline 不同的一处**：Mini **消了行**按完整 T-Spin 计（800 / 1200 /
+#: 1600），guideline 是 200 / 400 / Impossible——M1 拍板的项目口径（ADR-069）。
 _EXPECTED_BASE_SCORE: dict[str, int] = {
     "none": 0,
     "single": 100,
     "double": 300,
     "triple": 500,
     "tetris": 800,
-    "tspin-none": 0,
-    "tspin-mini": 400,
+    "tspin-none": 400,
+    "tspin-mini": 100,
     "tspin-single": 800,
     "tspin-double": 1200,
     "tspin-triple": 1600,
@@ -562,8 +573,11 @@ def test_base_score_per_class_key_is_hand_checked() -> None:
         if lines == 0:
             # **消 0 行的类别键送不到计分**：内核把分类挂在**消行组**上，
             # 0 行的放置根本没有组可挂——`score_clear` 收到的是空组（落空）。
-            # 表里按 spec 备着（`tspin-mini` = 400），但当前投递路径够不着，
-            # 缺口记在 PROGRESS.md 的待办里。
+            # 表里按 guideline 原值备着（`tspin-mini` = 100 · `tspin-none` = 400），
+            # 但当前投递路径够不着，缺口记在 PROGRESS.md 的待办里。
+            # **同一条缺口还导致另一处偏离**：0 行的 T-Spin 走「落空」分支 →
+            # `b2b = False` → **断了 B2B 链**，而 guideline 明写 0 行的 T-Spin
+            # 不断链（ADR-070）。
             continue
         groups = _groups(class_key, lines)
         delta = standard.score_clear(groups, CTX_DOWN, SCORE_ZERO)
