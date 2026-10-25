@@ -69,23 +69,47 @@
 卡点 ③ 在 `docs/plan-M1.md` 留触发点（**M1 第一次新增事件 / 命令时**正好
 要拍板这条口径）。
 
+**M1 的处置**：`docs/plan-M1.md` 的 S5 落地**第二层防线**（见下节）。**M0 的
+判断保留**：契约 v1 已冻结，所以第一层（基线文件里的自述块）**照旧保留**，
+两层一起在。
+
+## 第二层防线：跨文件期望清单
+
+第一层守的是**基线内部自洽**：自述条数与实际条数对不上、版本对不上、基线被
+清空。它挡不住的是——**计数键与被计数的条目在同一个文件里**：少一条键、
+**同时**把 `meta.entryCount` 改成新条数，基线仍然自洽，工具照样放行（少掉的
+那条被当成"新增键"）。这是 M0 全量审查 M0-1 的原题，**实测复现过**。
+
+**第二层把期望值移出基线文件**：另有一份期望清单
+（`tests/baseline/contracts_expected.json`），两份清单的条目集必须**逐条
+相等**——不只是条数相等（删一条 A、加一条 B，条数不变，只比条数照样放行）。
+三个维度都看：只在基线里的键 · 只在期望清单里的键 · 同键但哈希不同的。
+
+**这一层防的是"只改一处"，不是防蓄意绕过**：两份都在仓内，**同时改两份仍能
+骗过工具**。上限写在这儿，不吹大——真要防住蓄意绕过，等契约真正冻结后再议
+（M2）。
+
 ## 刷新要写明理由
 
-`--update-baseline` **必须带 `--reason`**（不给就用法错误退出），并打印
-**「旧基线 → 新基线」的差异摘要**：刷新不是无声覆盖，理由与改了什么都要看得见
-（批次 D 审查 D4）。
+`--update-baseline` 与 `--update-expected` **都必须带 `--reason`**（不给就用法
+错误退出），并打印**「旧基线 → 新基线」的差异摘要**：刷新不是无声覆盖，理由与
+改了什么都要看得见（批次 D 审查 D4）。
+
+**两份清单要一起刷**：只刷基线不刷期望清单，跨文件自证立刻变红——这是故意的
+（两份都得有人点头），刷新时把 `--update-expected` 一起带上即可。
 
 ## 用法
 
 ```
 python tools/contract_baseline.py                    # 校验（默认）
 python tools/contract_baseline.py --update-baseline --reason "<理由>"
+python tools/contract_baseline.py --update-expected --reason "<理由>"
 python tools/contract_baseline.py --checklist-only    # 只看清单状态
 python tools/contract_baseline.py --print-entries     # 打印当前条目（排查用）
 ```
 
-退出码：0 = 通过；1 = 有红项（清单没勾完 / 已有键变化 / 已有键消失 /
-基线自身不可信）；2 = 用法或 IO 错误。
+退出码：0 = 通过；1 = 有红项（清单没勾完 / 已有键变化 / 已有键消失 / 基线自身
+不可信 / **基线与期望清单不自洽**）；2 = 用法或 IO 错误。
 """
 
 from __future__ import annotations
@@ -99,6 +123,7 @@ from pathlib import Path
 from _toolkit import (
     CONTRACT_BASELINE,
     CONTRACT_CHECKLIST,
+    CONTRACT_EXPECTED,
     HASH_ALGORITHM,
     SRC_ROOT,
     blake2b_hex,
@@ -374,6 +399,69 @@ def write_baseline(path: Path, entries: list[Entry]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 跨文件期望清单（第二层防线）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CrossResult:
+    """两份清单**逐条**比对的结果。"""
+
+    only_in_baseline: list[str]
+    only_in_expected: list[str]
+    digest_mismatch: list[tuple[str, str, str]]
+
+    @property
+    def failed(self) -> bool:
+        """两份清单对不上——红。"""
+        return bool(self.only_in_baseline or self.only_in_expected or self.digest_mismatch)
+
+
+def cross_compare(baseline: dict[str, str], expected: dict[str, str]) -> CrossResult:
+    """**逐条**比对两份清单的条目集。
+
+    **不只比条数**：删一条 A、加一条 B，条数不变——只比条数照样放行。三个维度
+    都看：只在基线里的键 · 只在期望清单里的键 · 同键但哈希不同的。
+    """
+    baseline_keys = set(baseline)
+    expected_keys = set(expected)
+    return CrossResult(
+        only_in_baseline=sorted(baseline_keys - expected_keys),
+        only_in_expected=sorted(expected_keys - baseline_keys),
+        digest_mismatch=[
+            (key, baseline[key], expected[key])
+            for key in sorted(baseline_keys & expected_keys)
+            if baseline[key] != expected[key]
+        ],
+    )
+
+
+def expected_document(entries: dict[str, str], version: str) -> dict[str, object]:
+    """期望清单文件的内容（形状与基线文件一致：`meta` + `entries`）。
+
+    **期望清单 = 基线文件当前内容的独立副本**——两份分开存，跨文件自证才有
+    意义（期望值与计数键同在一处就是 M0-1 的原题）。
+    """
+    return {
+        "meta": {
+            "contractVersion": version,
+            "entryCount": len(entries),
+            "hashAlgorithm": HASH_ALGORITHM,
+            "generatedBy": "tools/contract_baseline.py",
+        },
+        "entries": dict(entries),
+    }
+
+
+def write_expected(path: Path, entries: dict[str, str], version: str) -> None:
+    """写期望清单文件（排序输出，保证逐字节可复现）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = expected_document(entries, version)
+    text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+# ---------------------------------------------------------------------------
 # 校验
 # ---------------------------------------------------------------------------
 
@@ -483,15 +571,26 @@ def main(argv: list[str] | None = None) -> int:
         help="契约 v1 冻结清单路径",
     )
     parser.add_argument(
+        "--expected",
+        type=Path,
+        default=CONTRACT_EXPECTED,
+        help=f"跨文件期望清单路径（默认 {relative_to_repo(CONTRACT_EXPECTED)}）",
+    )
+    parser.add_argument(
         "--update-baseline",
         action="store_true",
         help="生成 / 刷新基线（清单没勾完就拒绝；必须带 --reason）",
     )
     parser.add_argument(
+        "--update-expected",
+        action="store_true",
+        help="生成 / 刷新期望清单（照着基线文件当前内容写；必须带 --reason）",
+    )
+    parser.add_argument(
         "--reason",
         type=str,
         default=None,
-        help="刷新基线的理由（--update-baseline 必须带）",
+        help="刷新基线的理由（--update-baseline / --update-expected 必须带）",
     )
     parser.add_argument(
         "--checklist-only",
@@ -508,6 +607,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_baseline and not args.reason:
         parser.error(
             '--update-baseline 必须带 --reason "<理由>"：基线刷新要写明理由，不做无声覆盖。'
+        )
+    if args.update_expected and not args.reason:
+        parser.error(
+            '--update-expected 必须带 --reason "<理由>"：期望清单刷新要写明理由，不做无声覆盖。'
         )
 
     try:
@@ -534,14 +637,41 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{entry.key}\t{entry.digest}\t{entry.canonical}")
         return 0
 
-    if args.update_baseline:
-        if not _report_checklist(items, args.checklist):
-            print("拒绝生成基线：冻结清单没勾完。", file=sys.stderr)
-            return 1
-        _print_update_diff(args.baseline, entries, args.reason)
-        write_baseline(args.baseline, entries)
-        print(f"已写入基线：{relative_to_repo(args.baseline)}（{len(entries)} 条）")
-        print("提醒：生成基线的那次提交，message 里必须写明「契约 v1 冻结」。")
+    if args.update_baseline or args.update_expected:
+        # **刷新路径**：两个开关各自都要 --reason（上面已经拒掉没带的了）。
+        if args.update_baseline:
+            if not _report_checklist(items, args.checklist):
+                print("拒绝生成基线：冻结清单没勾完。", file=sys.stderr)
+                return 1
+            _print_update_diff(args.baseline, entries, args.reason)
+            write_baseline(args.baseline, entries)
+            print(f"已写入基线：{relative_to_repo(args.baseline)}（{len(entries)} 条）")
+            print("提醒：生成基线的那次提交，message 里必须写明「契约 v1 冻结」。")
+        if args.update_expected:
+            # 期望清单**照着基线文件当前内容写**——它是基线记录的声明集的独立
+            # 副本。基线刚刷过就照着新基线写；否则照着盘上的基线文件写。
+            if args.update_baseline:
+                source = {entry.key: entry.digest for entry in entries}
+                version = CONTRACT_VERSION
+            else:
+                if not args.baseline.exists():
+                    print(
+                        f"拒绝生成期望清单：基线文件不存在（{relative_to_repo(args.baseline)}）。",
+                        file=sys.stderr,
+                    )
+                    return 2
+                try:
+                    document = load_baseline(args.baseline)
+                except (OSError, ValueError) as error:
+                    print(f"读基线失败：{error}", file=sys.stderr)
+                    return 2
+                source = document.entries
+                version = str(document.meta.get("contractVersion", CONTRACT_VERSION))
+            write_expected(args.expected, source, version)
+            print(f"刷新理由：{args.reason}")
+            print(f"已写入期望清单：{relative_to_repo(args.expected)}（{len(source)} 条）")
+        if args.update_baseline and not args.update_expected:
+            print("提醒：期望清单没跟着刷 → 跨文件自证会红；两份一起刷请同时带 --update-expected。")
         return 0
 
     # ---- 默认校验路径 ----
@@ -554,24 +684,70 @@ def main(argv: list[str] | None = None) -> int:
         print("基线校验失败：契约 v1 冻结清单没勾完。", file=sys.stderr)
         return 1
 
-    if not args.baseline.exists():
-        print(
-            f"基线尚未生成：{relative_to_repo(args.baseline)} 不存在"
-            "（按计划在 S17 冻结契约 v1 时生成）"
-        )
-        return 0
+    baseline: BaselineDocument | None = None
+    if args.baseline.exists():
+        try:
+            baseline = load_baseline(args.baseline)
+        except (OSError, ValueError) as error:
+            print(f"读基线失败：{error}", file=sys.stderr)
+            return 2
 
-    try:
-        baseline = load_baseline(args.baseline)
-    except (OSError, ValueError) as error:
-        print(f"读基线失败：{error}", file=sys.stderr)
-        return 2
+    expected: BaselineDocument | None = None
+    if args.expected.exists():
+        try:
+            expected = load_baseline(args.expected)
+        except (OSError, ValueError) as error:
+            print(f"读期望清单失败：{error}", file=sys.stderr)
+            return 2
+
+    if baseline is None:
+        if expected is None:
+            print(
+                f"基线尚未生成：{relative_to_repo(args.baseline)} 不存在"
+                "（按计划在 S17 冻结契约 v1 时生成）"
+            )
+            return 0
+        # 期望清单还在 → 基线文件被删了。自述块那一层管不到"文件整个不见"
+        # （没有自述块可对账），**跨文件这一层管得到**。
+        print(
+            f"跨文件自证失败（红）：基线文件不见了"
+            f"（{relative_to_repo(args.baseline)}），"
+            f"而期望清单还记着 {len(expected.entries)} 条：基线被删了"
+        )
+        print("基线校验失败：基线与期望清单不自洽。", file=sys.stderr)
+        return 1
 
     problems = baseline_integrity_problems(baseline)
     if problems:
         for problem in problems:
             print(f"基线自身不可信（红）：{problem}")
         print("基线校验失败：基线文件被清空 / 残缺 / 与当前契约版本不符。", file=sys.stderr)
+        return 1
+
+    cross_problems: list[str] = []
+    if expected is None:
+        cross_problems.append(
+            f"期望清单不存在：{relative_to_repo(args.expected)}（用 --update-expected 生成）"
+        )
+    else:
+        expected_problems = baseline_integrity_problems(expected)
+        for problem in expected_problems:
+            print(f"期望清单自身不可信（红）：{problem}")
+        if expected_problems:
+            print("基线校验失败：期望清单自身不可信。", file=sys.stderr)
+            return 1
+        cross = cross_compare(baseline.entries, expected.entries)
+        for key in cross.only_in_baseline:
+            cross_problems.append(f"基线里有、期望清单里没有：{key}")
+        for key in cross.only_in_expected:
+            cross_problems.append(f"期望清单里有、基线里没有：{key}")
+        for key, old, new in cross.digest_mismatch:
+            cross_problems.append(f"两份清单的哈希不一致：{key}（基线 {old} ≠ 期望清单 {new}）")
+
+    if cross_problems:
+        for problem in cross_problems:
+            print(f"跨文件自证失败（红）：{problem}")
+        print("基线校验失败：基线与期望清单不自洽。", file=sys.stderr)
         return 1
 
     result = compare(baseline.entries, entries)

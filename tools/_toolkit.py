@@ -34,6 +34,13 @@ BASELINE_DIR = REPO_ROOT / "tests" / "baseline"
 #: 契约基线文件（只增不改）。
 CONTRACT_BASELINE = BASELINE_DIR / "contracts_baseline.json"
 
+#: 契约基线的**跨文件期望清单**（第二层防线：期望值不在基线文件里）。
+#:
+#: **与基线文件分开存**：计数键与被计数的条目同在一处时，"少一条键、同时改
+#: 自述块"骗得过工具（M0 全量审查 M0-1 · 实测复现）。两份都在仓内——**同时
+#: 改两份仍能骗过工具**，这一层的上限就写在这儿。
+CONTRACT_EXPECTED = BASELINE_DIR / "contracts_expected.json"
+
 #: 冻结区内容哈希基线文件。
 FROZEN_BASELINE = BASELINE_DIR / "kernel_hashes.json"
 
