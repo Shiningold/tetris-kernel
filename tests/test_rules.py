@@ -241,10 +241,15 @@ def test_scan_clears_on_a_zero_width_board_finds_no_line() -> None:
 
 
 def test_classify_placement_detects_tspin() -> None:
-    """最小 T-Spin 判定：T 型 + 最后一手是旋转 + 外框四角占其三。"""
+    """T-Spin 判定：T 型 + 最后一手是旋转 + 外框四角占其三。
+
+    **M1 起 `tSpin` 是五档**：这次放置消了 1 行 → 档位是 `single`
+    （`tspin` 那一档是「是 T-Spin 但不消行」）。计分类别键仍是
+    `tspin-single`——**形态与计分类别分开给**。
+    """
     classification = standard.classify_placement(TSPIN_BOARD, TSPIN_PLACEMENT, CTX_DOWN)
     assert isinstance(classification, PlacementClass)
-    assert classification.tSpin == "tspin"
+    assert classification.tSpin == "single"
     assert classification.classKey == "tspin-single"
 
 

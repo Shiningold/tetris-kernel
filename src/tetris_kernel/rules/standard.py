@@ -6,13 +6,14 @@ M0 只保证**接口定稿 + 最小实现**（架构 §7.3 · spec-M0.md §7.5�
 
 - `wrap_cell` 恒等；`gravity_vector` 按轴给向量；`gravity_interval` 查最小表；
 - `scan_clears` 整行 / 整列满即消，产出带**轴 + 索引 + 格子清单**的组；
-- `classify_placement` 给 T-Spin 标记 + 计分类别键（**一档 T-Spin**）；
+- `classify_placement` 给 **T-Spin 五档**（`none` / `tspin` / `mini` /
+  `single` / `double` / `triple`）+ 计分类别键；
 - `score_clear` 基础分值 + 连击奖励；
 - `shape_cells` 标准 7 种方块 × 4 朝向；`kick_offsets` **标准踢墙表**
   （SRS + 180° 扩展，ADR-068）。
 
-**标准踢墙表逐条验证、T-Spin 三类全对、完整计分表是 M1**（spec-M0.md §7.5
-与 M1 开门判据）——这里一次做完，M1 的判据就失去意义了。
+**标准踢墙表与完整计分表是 M1**（spec-M1.md §7.2 / §7.4）——M0 只做到"接口
+定稿 + 最小实现"，那些表的逐条验证留到 M1 做，正是为了让 M1 的判据有意义。
 
 ## 规则集不可变、无状态
 
@@ -44,6 +45,17 @@ M0 只保证**接口定稿 + 最小实现**（架构 §7.3 · spec-M0.md §7.5�
 `score_clear` 从组里读它（**内核只搬运、不重新判定**）。**不给签名加参数**
 ——签名是冻结的（ADR-061）。`scan_clears` 单独调用时不知道放置上下文，
 所以它产出的组 `classification` 是 `None`。
+
+## T-Spin 五档与「前两角 / 后两角」
+
+`classify_placement` 判出 `tSpin` 的**五档**（`none` / `tspin` / `mini` /
+`single` / `double` / `triple`）与**计分类别键**（`classKey`）——**两个字段
+分开给**：形态与计分类别不是一回事（Mini 消行时前者是 `mini`、后者是
+`tspin-single`），合成一个字段就丢信息。
+
+「前两角 / 后两角」的口径写在 `classify_placement` 的 docstring 与
+`_tspin_corner_flags` 里（**别猜**：那是这类 bug 的经典来源）。
+
 """
 
 from __future__ import annotations
@@ -136,31 +148,60 @@ def _full_indices(board: Sequence[Sequence[int]], clear_axis: str) -> tuple[int,
     )
 
 
-def _junction_cell(cells: tuple[tuple[int, int], ...]) -> tuple[int, int] | None:
-    """T 形的"枢纽格"：与另外三格都正交相邻的那一格。
+def _plain_class_key(cleared: int) -> str:
+    """**普通消行**的类别键：消 0 行 → `none`；1/2/3/4 行 → `single` /
+    `double` / `triple` / `tetris`；5 行以上按 `tetris` 算（不另立类别）。
 
-    找不到就是形状不对（T 形枢纽唯一，找到即说明是 T）。
-    """
-    occupied = set(cells)
-    for x, y in cells:
-        neighbors = sum(
-            1 for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)) if (nx, ny) in occupied
-        )
-        if neighbors == 3:
-            return (x, y)
-    return None
-
-
-def _class_key(spin: bool, cleared: int) -> str:
-    """计分类别键：按"是否 T-Spin + 消了几行"推出 `classKey`。
-
-    消 0 行 → `none`；1/2/3/4 行 → `single` / `double` / `triple` / `tetris`；
-    5 行以上按 `tetris` 算（M0 不另立类别）。
+    **这是「不是 T-Spin」时的口径**——T-Spin 的类别键见 `_tspin_class_key`。
     """
     if cleared <= 0:
         return "none"
-    name = CLEAR_NAMES.get(cleared, "tetris")
-    return f"tspin-{name}" if spin else name
+    return CLEAR_NAMES.get(cleared, "tetris")
+
+
+def _tspin_line_grade(cleared: int) -> str:
+    """T-Spin **消行后**的档位：1 / 2 / 3 行 → `single` / `double` / `triple`。
+
+    **T 最多只能消 3 行**（T 方块本身最多跨 3 行），所以 3 行及以上都算
+    `triple`——不另立 `tspin-tetris`（`classKey` 的取值域里没有它，
+    计分表里也没有）。
+    """
+    if cleared <= 1:
+        return "single"
+    if cleared == 2:
+        return "double"
+    return "triple"
+
+
+def _class_key_for(spin: bool, cleared: int) -> str:
+    """**没有分类时**的回退口径：按「是否 T-Spin + 消了几行」推类别键。
+
+    普通消行走 `_plain_class_key`；T-Spin 走 `tspin-<档位>`（档位见
+    `_tspin_line_grade`——T 最多消 3 行）。
+    """
+    if cleared <= 0:
+        return "none"
+    if spin:
+        return f"tspin-{_tspin_line_grade(cleared)}"
+    return _plain_class_key(cleared)
+
+
+def _tspin_class_key(spin: str, cleared: int) -> str:
+    """T-Spin 的**计分类别键**（与 `tSpin` 分开给）。
+
+    | 情形 | `tSpin` | `classKey` |
+    | --- | --- | --- |
+    | T-Spin 消 0 行（非 Mini） | `tspin` | `tspin-none` |
+    | T-Spin Mini 消 0 行 | `mini` | `tspin-mini` |
+    | T-Spin 消 1 / 2 / 3 行 | `single` / `double` / `triple` | `tspin-single` / … |
+    | **T-Spin Mini 消了行** | **`mini`** | 按行数取 `tspin-single` / … |
+
+    **Mini 消行时 `tSpin` 仍是 `mini` 而 `classKey` 按行数取**——形态与
+    计分类别不是一回事，合成一个字段就丢信息（spec §7.3）。
+    """
+    if cleared <= 0:
+        return "tspin-mini" if spin == "mini" else "tspin-none"
+    return f"tspin-{_tspin_line_grade(cleared)}"
 
 
 def _first_classification(groups: Sequence[ClearGroup]) -> PlacementClass | None:
@@ -237,19 +278,63 @@ def classify_placement(
     placement: PlacementInfo,
     ctx: RuleContext,
 ) -> PlacementClass:
-    """判定本次放置的分类：T-Spin 标记 + 计分类别键。
+    """判定本次放置的分类：**T-Spin 档位** + **计分类别键**。
 
-    M0 的 T-Spin 判定是**最小版**：三个必要条件（T 型 · 最后一手是旋转 ·
-    3×3 外框四角里有三个被占）加一次占位统计。**Mini 与三档区分是 M1**
-    （架构 §7.3.1 纪律 3 · spec §7.5）。
+    ## `tSpin`（五档 · spec §7.3）
 
-    占位统计把**本次放置的格子自己排除掉**——方块自己的格子不算墙。
+    | `tSpin` | 含义 |
+    | --- | --- |
+    | `none` | 不是 T-Spin |
+    | `tspin` | 是 T-Spin，但**不消行**（非 Mini） |
+    | `mini` | **T-Spin Mini**（只在消 0 行时是这个形态；消了行仍是 `mini`） |
+    | `single` / `double` / `triple` | T-Spin 消 1 / 2 / 3 行 |
+
+    ## 判定三步
+
+    1. **必要条件**：`pieceType == "T"` 且 `lastMoveWasRotation`——平移过来的
+       不算（spec §7.3）。
+    2. **占位统计**：T 的 **3×3 外框四角**里被占**至少三个**。
+    3. **Mini 与完整的分界**：**没有发生踢墙** 且 **背头两角都被占** 且
+       **贴头两角没占满** → `mini`；其余 → 完整 T-Spin。
+
+    ## 「前两角 / 后两角」的口径（写死在这，别猜）
+
+    **「头」= T 的突出格**——三个格子成排之外的那一格（Tetris Wiki 叫
+    "the sticking out mino"）。它指向哪一侧，**贴头的那两个角**就在哪一侧。
+
+    ```
+    头朝上（.X. / XXX）：   贴头两角 = 外框的**上**两个角
+    头朝右（.X. / .XX / .X.）：贴头两角 = 外框的**右**两个角
+    ```
+
+    **Mini 的判据 = 背头两角占满 + 贴头两角没占满**：
+    **头被两侧的角夹住**（贴头两角都占）是**完整** T-Spin；**头只被夹住
+    一侧**（贴头只占一个）而背面被占满 → **Mini**——头没真正楔进去。
+
+    **与两套外部口径的对照**（三者判出的结果完全一致）：
+    - **guideline / Tetris Wiki**：把*贴头*那两个角叫 "front corners"，
+      Mini 的定义是 "only one mino in two front corners and two minoes to the
+      back corners"——即贴头只占一个 + 背头占两个。
+    - **spec §7.3**：把「三格成排的那一侧」（= 远离头的方向）叫「正面」，
+      Mini 的条件写成「前两角被占 且 后两角没有同时占满」——即背头占两个 +
+      贴头没占满。**与上一条是同一个判据，只是把两对角换了名字**。
+
+    **纯函数**：只读 `board` / `placement` / `ctx`，**不记任何"上一手干了
+    什么"**——上一手信息只从 `PlacementInfo` 来（架构 §7.3.1 纪律 3）。
     """
     cleared = len(_full_indices(board, CLEAR_AXIS_BY_GRAVITY[ctx.axis]))
-    spin = _is_tspin(board, placement, ctx)
+    spin = _tspin_grade(board, placement, ctx)
+    if spin == "none":
+        return PlacementClass(tSpin="none", classKey=_plain_class_key(cleared))
+    if cleared <= 0:
+        # 不消行的 T-Spin：Mini 与完整是两档（`tspin-mini` / `tspin-none`）。
+        return PlacementClass(tSpin=spin, classKey=_tspin_class_key(spin, cleared))
+    grade = _tspin_line_grade(cleared)
+    # **Mini 消了行**：形态仍是 `mini`（Mini 与完整是两回事），计分类别按
+    # 行数取——Mini 消行按完整 T-Spin 计分（spec §7.3 的表）。
     return PlacementClass(
-        tSpin="tspin" if spin else "none",
-        classKey=_class_key(spin, cleared),
+        tSpin="mini" if spin == "mini" else grade,
+        classKey=f"tspin-{grade}",
     )
 
 
@@ -391,28 +476,132 @@ def kick_offsets(
     return by_group[group]
 
 
-def _is_tspin(
+def _is_diagonal(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    """两个格子是否**斜向**相邻（`|dx| == 1` 且 `|dy| == 1`）。"""
+    return abs(a[0] - b[0]) == 1 and abs(a[1] - b[1]) == 1
+
+
+def _tspin_frame(
+    cells: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """T 形的**枢纽格**与**突出格（头）**；不是 T 形则返回 `None`。
+
+    - **枢纽格**：与另外三格都正交相邻的那一格（正方形的中心）。
+    - **突出格（头）**：T 从「三个格子成排」里**伸出来**的那一格——它是
+      **唯一**与另外两格都**斜向**相邻的格子。
+
+    **别用「只有一个正交邻居」去找头**：T 的三个非枢纽格里，**横排的两个
+    端头也只有一个正交邻居**（它们挨着枢纽格）——照那个判据会把头认成
+    端头，**方位一反，Mini 与完整的分界跟着反**（这个坑踩过一次）。
+
+    两者都唯一即说明形状是 T（T 形枢纽唯一，找到即说明是 T）。
+    """
+    occupied = set(cells)
+    junction: tuple[int, int] | None = None
+    for x, y in cells:
+        neighbors = sum(
+            1 for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)) if (nx, ny) in occupied
+        )
+        if neighbors == 3:
+            junction = (x, y)
+            break
+    if junction is None:
+        return None
+    others = [cell for cell in cells if cell != junction]
+    for cell in others:
+        rest = [other for other in others if other != cell]
+        if rest and all(_is_diagonal(cell, other) for other in rest):
+            return junction, cell
+    return None
+
+
+def _tspin_corner_flags(
+    board: Sequence[Sequence[int]],
+    placement: PlacementInfo,
+) -> tuple[bool, bool, bool, bool] | None:
+    """T 的 **3×3 外框四角**的占位情况：`(贴头左, 贴头右, 背头左, 背头右)`。
+
+    **不是 T 形则返回 `None`**（连枢纽格都找不到，谈不上外框）。
+
+    **本次放置的格子自己不算墙**（spec §7.3）：方块自己的格子排除在占位
+    统计之外。**实际它对 T 自身是空操作**——T 的四个格子是枢纽格加三个
+    **正交**邻格，而外框四角是枢纽格的**斜向**邻格，两组不重叠；这条排除
+    留着是**口径**，不是修 bug。
+
+    **越界视为空**（棋盘外面没有墙），与 `_cell_at` 同一口径。
+    """
+    frame = _tspin_frame(placement.cells)
+    if frame is None:
+        return None
+    (jx, jy), (hx, hy) = frame
+    if hy != jy:
+        # 头在枢纽的**上方或下方** → 前后按**行**分。
+        near_y = jy + (1 if hy > jy else -1)
+        far_y = jy + (-1 if hy > jy else 1)
+        near = ((jx - 1, near_y), (jx + 1, near_y))
+        far = ((jx - 1, far_y), (jx + 1, far_y))
+    else:
+        # 头在枢纽的**左方或右方** → 前后按**列**分。
+        near_x = jx + (1 if hx > jx else -1)
+        far_x = jx + (-1 if hx > jx else 1)
+        near = ((near_x, jy - 1), (near_x, jy + 1))
+        far = ((far_x, jy - 1), (far_x, jy + 1))
+
+    own = set(placement.cells)
+    flags = []
+    for cell in near + far:
+        if cell in own:
+            flags.append(False)
+        else:
+            flags.append(_cell_at(board, cell[0], cell[1]) != 0)
+    return (flags[0], flags[1], flags[2], flags[3])
+
+
+def _is_kickless(placement: PlacementInfo) -> bool:
+    """本次旋转**没有发生踢墙**。
+
+    三种情况都算"没踢墙"：`kickIndex` 为 `None`（压根没踢）· `kickIndex`
+    为 0（用的是第一个候选 `(0, 0)`）· `kickOffset` 为 `(0, 0)`（没位移）。
+
+    **口径来自 spec §7.3**：Mini 的前提就是"没踢墙"——踢过的 T-Spin 一律
+    算完整（guideline 里还有一条"最后一次旋转位移是 1×2 时仍算完整"的
+    例外，本项目按 spec 的粗口径处理：**任何踢墙都不算 Mini**）。
+    """
+    if placement.kickIndex is None:
+        return True
+    if placement.kickIndex == 0:
+        return True
+    return placement.kickOffset == (0, 0)
+
+
+def _tspin_grade(
     board: Sequence[Sequence[int]],
     placement: PlacementInfo,
     ctx: RuleContext,
-) -> bool:
-    """最小 T-Spin 判定：T 型 · 最后一手是旋转 · 外框四角占其三。"""
+) -> str:
+    """T-Spin 判定：返回 `"none"` / `"mini"` / `"tspin"`。
+
+    **只判形态，不判消行数**——消行后的档位由 `classify_placement` 按本次
+    消行数给（`tSpin` 与 `classKey` 分开）。
+    """
     if ctx.axis != "down":
-        # M0 只判标准朝向下的 T-Spin：横向重力下形状表还没有（见 tables.py）。
-        return False
+        # 横向重力下形状表还没有（见 tables.py），判不了 T-Spin。
+        return "none"
     if placement.pieceType != "T" or not placement.lastMoveWasRotation:
-        return False
-    junction = _junction_cell(placement.cells)
-    if junction is None:
-        return False
-    jx, jy = junction
-    occupied = 0
-    for corner in ((jx - 1, jy - 1), (jx + 1, jy - 1), (jx - 1, jy + 1), (jx + 1, jy + 1)):
-        if corner in placement.cells:
-            continue
-        if _cell_at(board, corner[0], corner[1]) != 0:
-            occupied += 1
-    return occupied >= 3
+        return "none"
+    flags = _tspin_corner_flags(board, placement)
+    if flags is None:
+        return "none"
+    head_left, head_right, tail_left, tail_right = flags
+    occupied = sum(flags)
+    if occupied < 3:
+        return "none"
+    # **Mini 与完整的分界**（口径见 `classify_placement` 的 docstring）：
+    # 没踢墙 · **背头两角都被占** · **贴头两角没占满**。
+    # **头被两侧的角夹住**（贴头两角都占）→ 完整 T-Spin。
+    if _is_kickless(placement) and tail_left and tail_right and not (head_left and head_right):
+        return "mini"
+    return "tspin"
 
 
 def _effective_class_key(
@@ -429,7 +618,7 @@ def _effective_class_key(
         key = classification.classKey
         if key != "none" and key in SCORE_TABLE:
             return key
-    return _class_key(spin, cleared)
+    return _class_key_for(spin, cleared)
 
 
 # ---------------------------------------------------------------------------

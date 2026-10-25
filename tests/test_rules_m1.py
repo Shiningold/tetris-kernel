@@ -31,7 +31,11 @@ from types import MappingProxyType
 
 import pytest
 
-from tetris_kernel.rules import tables
+from tetris_kernel.contracts import PlacementInfo, RuleContext
+from tetris_kernel.rules import standard, tables
+
+#: 标准玩法的上下文（重力向下）。
+CTX_DOWN = RuleContext(frame=10, level=1, piecesPlaced=3, axis="down", stepMs=16)
 
 # ---------------------------------------------------------------------------
 # 形状表的独立转录表（S7）
@@ -189,3 +193,298 @@ def test_shape_table_is_frozen_inside_and_out() -> None:
         tables.SHAPE_TABLE["left"] = {}  # type: ignore[index]
     with pytest.raises(TypeError):
         tables.SHAPE_TABLE["down"]["T"] = {}  # type: ignore[index]
+
+
+# ---------------------------------------------------------------------------
+# T-Spin 五档判定（S8）
+# ---------------------------------------------------------------------------
+
+#: 棋盘画的约定：`X` = 墙 · `T` = 本次放置的 T 方块 · `.` = 空。
+#:
+#: **棋盘是「已放置、待消行」的视图**——T 自己的格子在棋盘上也是实心
+#: （内核把方块放上棋盘后才调 `classify_placement`）。
+#:
+#: **画里能一眼看出为什么是这一档**：贴头的两角（紧挨突出格的那两个角）
+#: 与背头的两角，被占的用 `X` 标出来。
+_BOARD_ART = {
+    # 完整 T-Spin（头朝上）：贴头两角**都**被占 → 头被夹住 → 完整。
+    "tspin_up": (
+        ".XTX",
+        ".TTT",
+        ".X..",
+        "....",
+    ),
+    # T-Spin Mini（头朝上）：贴头只占**一个** + 背头占满 → 头没楔进去。
+    "mini_up": (
+        ".XT.",
+        ".TTT",
+        ".X.X",
+        "....",
+    ),
+    # 完整 T-Spin（头朝右）：贴头两角（右侧两个）都被占。
+    "tspin_right": (
+        ".....",
+        ".XTX.",
+        "..TT.",
+        "..TX.",
+        ".....",
+    ),
+    # T-Spin Mini（头朝右）：贴头只占一个（右下）+ 背头占满。
+    "mini_right": (
+        ".....",
+        ".XT..",
+        "..TT.",
+        ".XTX.",
+        ".....",
+    ),
+    # 只占了一个角 → 连 T-Spin 都不是。
+    "one_corner": (
+        ".XT.",
+        ".TTT",
+        "....",
+        "....",
+    ),
+    # 完整 T-Spin + 消 1 行。
+    "tspin_single": (
+        ".XTX",
+        ".TTT",
+        "XXXX",
+        "....",
+    ),
+    # 完整 T-Spin + 消 2 行。
+    "tspin_double": (
+        ".XTX",
+        ".TTT",
+        "XXXX",
+        "XXXX",
+    ),
+    # 完整 T-Spin + 消 3 行。
+    "tspin_triple": (
+        ".XTX",
+        ".TTT",
+        "XXXX",
+        "XXXX",
+        "XXXX",
+    ),
+    # Mini + 消 1 行。
+    "mini_single": (
+        ".XT.",
+        ".TTT",
+        "XXXX",
+        "....",
+    ),
+}
+
+
+def _board_from_art(art: tuple[str, ...]) -> list[list[int]]:
+    """把棋盘画转成行优先的格子值（`X` / `T` = 1，`.` = 0）。"""
+    return [[1 if char in "XT" else 0 for char in row] for row in art]
+
+
+def _placement(
+    cells: tuple[tuple[int, int], ...],
+    *,
+    rotation: int = 0,
+    last_move_was_rotation: bool = True,
+    kick_index: int | None = None,
+    kick_offset: tuple[int, int] | None = None,
+) -> PlacementInfo:
+    """造一次 T 放置的上下文。"""
+    return PlacementInfo(
+        pieceType="T",
+        rotation=rotation,
+        cells=cells,
+        lastMoveWasRotation=last_move_was_rotation,
+        kickIndex=kick_index,
+        kickOffset=kick_offset,
+    )
+
+
+#: 头朝上的 T：突出格在枢纽格**上方**，横排三格在枢纽格那一行。
+_CELLS_UP = ((2, 0), (1, 1), (2, 1), (3, 1))
+
+#: 头朝右的 T：竖排三格 + 突出格在枢纽格**右边**。
+_CELLS_RIGHT = ((2, 1), (2, 2), (3, 2), (2, 3))
+
+
+def test_tspin_grades_cover_all_five_levels() -> None:
+    """**五档各有用例**：`none` / `tspin` / `mini` / `single` / `double` / `triple`。
+
+    每张棋盘都能一眼看出为什么是这一档（贴头 / 背头两对角占没占，写在
+    `_BOARD_ART` 的注释里）。
+    """
+    # ① 不是 T-Spin：只占了一个角。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["one_corner"]), _placement(_CELLS_UP), CTX_DOWN
+    )
+    assert (result.tSpin, result.classKey) == ("none", "none")
+
+    # ② 完整 T-Spin，不消行 → `tspin` / `tspin-none`。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["tspin_up"]), _placement(_CELLS_UP), CTX_DOWN
+    )
+    assert (result.tSpin, result.classKey) == ("tspin", "tspin-none")
+
+    # ③ T-Spin Mini，不消行 → `mini` / `tspin-mini`。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["mini_up"]), _placement(_CELLS_UP), CTX_DOWN
+    )
+    assert (result.tSpin, result.classKey) == ("mini", "tspin-mini")
+
+    # ④ 完整 T-Spin，消 1 / 2 / 3 行 → `single` / `double` / `triple`。
+    for key, grade in (
+        ("tspin_single", "single"),
+        ("tspin_double", "double"),
+        ("tspin_triple", "triple"),
+    ):
+        result = standard.classify_placement(
+            _board_from_art(_BOARD_ART[key]), _placement(_CELLS_UP), CTX_DOWN
+        )
+        assert (result.tSpin, result.classKey) == (grade, f"tspin-{grade}"), key
+
+    # ⑤ Mini 消了行：**形态仍是 `mini`**，计分类别按行数取。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["mini_single"]), _placement(_CELLS_UP), CTX_DOWN
+    )
+    assert (result.tSpin, result.classKey) == ("mini", "tspin-single")
+
+
+def test_tspin_mini_needs_no_kick() -> None:
+    """**踢过墙的 Mini 不是 Mini**——踢墙就不是「原地转进去」。
+
+    `kickIndex` 为 0（第一个候选 `(0, 0)`）与 `None`（压根没踢）都算没踢。
+    """
+    board = _board_from_art(_BOARD_ART["mini_up"])
+
+    # 没踢墙 → Mini。
+    assert standard.classify_placement(board, _placement(_CELLS_UP), CTX_DOWN).tSpin == "mini"
+
+    # 踢了墙 → 完整 T-Spin（形态与类别键都跟着变）。
+    kicked = _placement(_CELLS_UP, kick_index=1, kick_offset=(0, 1))
+    result = standard.classify_placement(board, kicked, CTX_DOWN)
+    assert (result.tSpin, result.classKey) == ("tspin", "tspin-none")
+
+    # `kickIndex = 0` / 偏移 `(0, 0)` → 仍然算没踢墙。
+    assert (
+        standard.classify_placement(
+            board, _placement(_CELLS_UP, kick_index=0, kick_offset=(0, 0)), CTX_DOWN
+        ).tSpin
+        == "mini"
+    )
+
+
+def test_tspin_mini_boundary_is_the_head_corners() -> None:
+    """**边界用例**：贴头两角都占 → 完整（头被夹住）；只占一个 → Mini。
+
+    这一条是「前两角 / 后两角」口径的机器守卫——**换个朝向也成立**
+    （头朝右时前后按**列**分）。
+    """
+    # 头朝上：贴头两角（外框上两个）都占 → 完整。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["tspin_up"]), _placement(_CELLS_UP), CTX_DOWN
+    )
+    assert result.tSpin == "tspin"
+
+    # 头朝上：贴头只占一个 → Mini。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["mini_up"]), _placement(_CELLS_UP), CTX_DOWN
+    )
+    assert result.tSpin == "mini"
+
+    # 头朝右：贴头两角（外框右两个）都占 → 完整。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["tspin_right"]),
+        _placement(_CELLS_RIGHT, rotation=1),
+        CTX_DOWN,
+    )
+    assert result.tSpin == "tspin"
+
+    # 头朝右：贴头只占一个 → Mini。
+    result = standard.classify_placement(
+        _board_from_art(_BOARD_ART["mini_right"]),
+        _placement(_CELLS_RIGHT, rotation=1),
+        CTX_DOWN,
+    )
+    assert result.tSpin == "mini"
+
+
+def test_not_a_tspin_when_only_two_corners_are_occupied() -> None:
+    """**占位只有两角 → 不是 T-Spin**（门槛是「至少三个」）。"""
+    board = [
+        [0, 1, 0, 0],
+        [0, 1, 1, 1],
+        [1, 0, 0, 1],
+        [0, 0, 0, 0],
+    ]
+    result = standard.classify_placement(board, _placement(_CELLS_UP), CTX_DOWN)
+    assert (result.tSpin, result.classKey) == ("none", "none")
+
+
+def test_not_a_tspin_when_the_last_move_was_not_a_rotation() -> None:
+    """**最后一手不是旋转 → 不是 T-Spin**（必要条件之一）。
+
+    平移进来的 T 摆得再像 T-Spin 也不算——**旋转**才是 T-Spin 的定义。
+    """
+    board = _board_from_art(_BOARD_ART["tspin_up"])
+    result = standard.classify_placement(
+        board, _placement(_CELLS_UP, last_move_was_rotation=False), CTX_DOWN
+    )
+    assert (result.tSpin, result.classKey) == ("none", "none")
+
+
+def test_not_a_tspin_for_a_non_t_piece() -> None:
+    """**不是 T 一律 `none`**（必要条件之一）。"""
+    board = _board_from_art(_BOARD_ART["tspin_up"])
+    placement = PlacementInfo(
+        pieceType="L",
+        rotation=0,
+        cells=_CELLS_UP,
+        lastMoveWasRotation=True,
+        kickIndex=None,
+        kickOffset=None,
+    )
+    result = standard.classify_placement(board, placement, CTX_DOWN)
+    assert (result.tSpin, result.classKey) == ("none", "none")
+
+
+def test_placed_cells_do_not_count_as_walls() -> None:
+    """**本次放置的格子自己不算墙**——方块自己的格子排除在占位统计外。
+
+    **探针做法**：把一个外框角**塞进 `placement.cells`**（真实内核不会这么
+    放，但判定逻辑必须认它），该角就**不算被占**——占位数从 3 掉到 2，
+    于是不再是 T-Spin。
+
+    **顺带一条事实**：T 自己的四个格子是枢纽格加三个**正交**邻格，而外框
+    四角是枢纽格的**斜向**邻格，两组不重叠——所以这条排除对真正的 T 是
+    **空操作**。它是**口径**，不是修 bug。
+    """
+    board = _board_from_art(_BOARD_ART["mini_up"])
+    assert standard.classify_placement(board, _placement(_CELLS_UP), CTX_DOWN).tSpin == "mini"
+
+    # 把贴头的角 (1,0) 也算进"本次放置的格子" → 它不再算墙 → 只剩两角。
+    probed = _placement((*_CELLS_UP, (1, 0)))
+    result = standard.classify_placement(board, probed, CTX_DOWN)
+    assert (result.tSpin, result.classKey) == ("none", "none")
+
+
+def test_classify_placement_is_pure() -> None:
+    """**纯函数性**：同 `ctx` + 同 `placement` 两次结果相同，且不改棋盘。"""
+    board = _board_from_art(_BOARD_ART["tspin_up"])
+    snapshot = [row[:] for row in board]
+    first = standard.classify_placement(board, _placement(_CELLS_UP), CTX_DOWN)
+    second = standard.classify_placement(board, _placement(_CELLS_UP), CTX_DOWN)
+    assert first == second
+    assert board == snapshot, "规则集不许改棋盘"
+
+
+def test_rule_set_holds_no_mutable_module_state() -> None:
+    """**规则集不持有可变状态**——模块级不能有 list / dict / set。
+
+    「规则集不自己记上一手」是硬要求（架构 §7.3.1 纪律 1）：一旦规则集
+    持有可变状态，FR-10.2 的存档恢复就得多序列化一份，而且"上一手是不是
+    旋转"这种信息会**藏在规则集里**而不是来自 `PlacementInfo`。
+    """
+    for name, value in vars(standard).items():
+        if name.startswith("__"):
+            continue
+        assert not isinstance(value, (list, dict, set)), f"模块级 {name} 是可变状态"
