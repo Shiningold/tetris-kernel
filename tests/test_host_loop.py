@@ -44,7 +44,7 @@ from tetris_kernel.host.cli import main
 from tetris_kernel.host.clock import DEFAULT_STEP_MS, VirtualClock
 from tetris_kernel.host.loop import HeadlessLoop, RunReport
 from tetris_kernel.kernel.commands import Command
-from tetris_kernel.kernel.core import Kernel
+from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.frame import FrameContext, StepOutcome
 from tetris_kernel.kernel.lifecycle import PHASE_RUNNING, PHASES
@@ -140,6 +140,11 @@ def test_the_game_really_progresses_and_the_frames_keep_going() -> None:
     for _ in range(40):
         assembly.kernel.submit(Command(type="hardDrop", source="test"))
         loop.run_frame()
+        # **锁定延迟 30 帧（spec §7.5）**：硬降只是把方块按到地板上，**照样要
+        # 等延迟到期才锁定**（M0 是落即锁，推进一帧就锁上了）——不补这段帧，
+        # 方块永远锁不上、棋盘永远填不满，这条用例顶不到「顶出 → 局结束」那条
+        # 路径，后面的断言就全成了空跑。
+        loop.run_frames(LOCK_DELAY_FRAMES + 1)
         if assembly.kernel.phase != PHASE_RUNNING:
             break
 
@@ -412,8 +417,9 @@ def test_state_changed_payload_matches_the_frame_end_snapshot_by_value() -> None
         4,
         {tuple(cell) for cell in cast("tuple[tuple[int, int], ...]", landing)},
     )
-    for _ in range(2):
-        loop.run_frame()
+    # **锁定延迟 30 帧（spec §7.5）**：硬降之后要等延迟到期方块才锁定，锁定
+    # 那一帧才消行——M0 是推进一帧就锁上并消行。
+    loop.run_frames(LOCK_DELAY_FRAMES + 1)
     # 消行之后暂存一下：hold / holdUsed 也得有非平凡取值。
     kernel.execute(Command("hold", source="test"))
     loop.run_frame()
@@ -530,7 +536,10 @@ def test_advance_frame_is_drained_when_publishing_raises(monkeypatch: pytest.Mon
         loop.run_frame()
 
     assert executed == list(FIVE_STEPS), "剩余步骤没有被耗尽——半帧状态残留了"
-    assert "piece:locked" in published, "排空阶段的剩余事件没有照发"
+    # **锁定步的事件**在 M1 起是 `piece:lock-delay-start`（spec §7.5 的锁定
+    # 延迟：方块落地先起算 30 帧，不当场锁定）——**要验的是「排空阶段的事件
+    # 照发」**，所以认锁定步发出的那条事件即可。
+    assert "piece:lock-delay-start" in published, "排空阶段的剩余事件没有照发"
 
 
 def test_advance_frame_is_fully_consumed_without_error(monkeypatch: pytest.MonkeyPatch) -> None:
