@@ -3,7 +3,7 @@
 冻结区（kernel/ + rules/），规则表落成 Python 字面量常量（ADR-032）。
 接口只用中性类型，不 import kernel 的任何 dataclass（架构 §7.3）。
 
-批次 A 落地后本包有四块内容：8 条接口的**中性签名**（`interface`）·
+批次 A 落地后本包有四块内容：9 条接口的**中性签名**（`interface`）·
 最小标准实现（`standard`）· 形状表 / 踢墙表（`tables`）· 冻结签名与交换结构
 （`contracts`，从契约层来，规则层不复制）。
 """

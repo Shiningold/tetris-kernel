@@ -9,13 +9,14 @@
 - `RuleContext`：内核递给规则集的运行时上下文（5 字段）。
 - `PlacementClass` · `ClearGroup` · `ScoreState` · `ScoreDelta`：四个**中性交换
   结构**——内核与规则集之间传的东西。
-- `RULE_SIGNATURES`：8 条接口签名的机器可读声明（参数名 + 类型 + 返回类型）。
+- `RULE_SIGNATURES`：9 条接口签名的机器可读声明（参数名 + 类型 + 返回类型）。
 
 ## 为什么签名必须在 M0 定死
 
 `rules/` 自 M0 进冻结区（架构 §4.4 / §7.6），而标准规则是 M 级需求、M1 就要
-实现——**签名晚于实现必被实现反向塑形**，补维度即改冻结区（ADR-061）。所以这
-8 条在 M0 定稿，签名进 `contracts/` 基线（第四部分）。
+实现——**签名晚于实现必被实现反向塑形**，补维度即改冻结区（ADR-061）。所以前
+8 条在 M0 定稿、第 9 条 `soft_drop_score` 在 M1 定稿（见下），签名进
+`contracts/` 基线（第四部分）。
 
 四条纪律（架构 §7.3.1）：规则集不可变 · 形状表 / 踢墙表必须带轴维度 ·
 T-Spin 判定需要 `PlacementInfo` · 交换结构放 `contracts/` 不放 `rules/`。
@@ -62,7 +63,7 @@ soft_drop_score(ctx: RuleContext, distance: int) -> int
 **冻结的签名里没有给它的位置**：`score_clear(groups, ctx, prev)` 只吃消行组。
 所以分类**挂在组上**——`ClearGroup.classification`：
 
-- **不新增签名参数**：`score_clear` 的参数表是架构 §7.3.1 定死的 8 条之一，
+- **不新增签名参数**：`score_clear` 的参数表是架构 §7.3.1 定死的 9 条之一，
   加参数就是改冻结签名（要走 major 变更流程）。
 - **不另开第五项接口**：FR-4.9 仍是四项。
 - 内核只做**搬运**，不做判断：分类是规则集给的，内核不重新判定 T-Spin。
@@ -347,7 +348,7 @@ class RuleSignature:
 
 
 # ---------------------------------------------------------------------------
-# 八条签名（架构 §7.3.1 · 四项接口 + 形状表 / 踢墙表）
+# 九条签名（架构 §7.3.1 · 四项接口 + 形状表 / 踢墙表 + M1 新增软降计分）
 # ---------------------------------------------------------------------------
 
 _RULE_SIGNATURES: tuple[tuple[str, RuleSignature], ...] = (
@@ -488,7 +489,9 @@ RULE_SIGNATURES: Mapping[str, RuleSignature] = MappingProxyType(dict(_RULE_SIGNA
 RULE_SIGNATURE_NAMES: tuple[str, ...] = tuple(name for name, _ in _RULE_SIGNATURES)
 
 __all__ = [
+    "AXIS_LITERAL",
     "AXIS_VALUES",
+    "CLEAR_AXIS_LITERAL",
     "CLEAR_AXIS_VALUES",
     "RULE_SET_DEFINED_FIELDS",
     "RULE_SIGNATURES",
