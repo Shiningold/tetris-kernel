@@ -31,8 +31,15 @@ from types import MappingProxyType
 
 import pytest
 
-from tetris_kernel.contracts import PlacementInfo, RuleContext
-from tetris_kernel.rules import standard, tables
+from tetris_kernel.contracts import (
+    RULE_SIGNATURES,
+    ClearGroup,
+    PlacementClass,
+    PlacementInfo,
+    RuleContext,
+    ScoreState,
+)
+from tetris_kernel.rules import interface, standard, tables
 
 #: 标准玩法的上下文（重力向下）。
 CTX_DOWN = RuleContext(frame=10, level=1, piecesPlaced=3, axis="down", stepMs=16)
@@ -488,3 +495,179 @@ def test_rule_set_holds_no_mutable_module_state() -> None:
         if name.startswith("__"):
             continue
         assert not isinstance(value, (list, dict, set)), f"模块级 {name} 是可变状态"
+
+
+# ---------------------------------------------------------------------------
+# 完整计分表（S9）
+# ---------------------------------------------------------------------------
+
+#: 计分表的**独立转录**（guideline 口径 · spec §7.4）——**手抄的第二遍**，
+#: 不从实现表生成（从实现表抄 = 比对变同义反复）。
+_EXPECTED_BASE_SCORE: dict[str, int] = {
+    "none": 0,
+    "single": 100,
+    "double": 300,
+    "triple": 500,
+    "tetris": 800,
+    "tspin-none": 0,
+    "tspin-mini": 400,
+    "tspin-single": 800,
+    "tspin-double": 1200,
+    "tspin-triple": 1600,
+}
+
+#: 每个 `classKey` 对应的消行数（**期望值独立手写**，不从实现算）。
+_LINES_BY_CLASS_KEY: dict[str, int] = {
+    "none": 0,
+    "single": 1,
+    "double": 2,
+    "triple": 3,
+    "tetris": 4,
+    "tspin-none": 0,
+    "tspin-mini": 0,
+    "tspin-single": 1,
+    "tspin-double": 2,
+    "tspin-triple": 3,
+}
+
+#: 零状态计分。
+SCORE_ZERO = ScoreState(score=0, lines=0, combo=0, b2b=False, level=1)
+
+
+def _groups(class_key: str, lines: int) -> tuple[ClearGroup, ...]:
+    """造 `lines` 个消行组，每个组挂上同一个分类。"""
+    classification = PlacementClass(tSpin="none", classKey=class_key)
+    return tuple(
+        ClearGroup(
+            axis="row",
+            index=index,
+            cells=((0, index),),
+            classification=classification,
+        )
+        for index in range(lines)
+    )
+
+
+def test_score_table_matches_independent_transcription() -> None:
+    """计分表与**独立转录表**逐条相等（10 个键一个不多一个不少）。"""
+    assert dict(tables.SCORE_TABLE) == _EXPECTED_BASE_SCORE
+    assert set(tables.SCORE_TABLE) == set(_EXPECTED_BASE_SCORE)
+    assert set(tables.CLASS_KEYS) == set(_EXPECTED_BASE_SCORE)
+
+
+def test_base_score_per_class_key_is_hand_checked() -> None:
+    """**逐项手算**：每个类别键的基础分（期望值独立转录，不调实现算）。"""
+    for class_key, expected in _EXPECTED_BASE_SCORE.items():
+        lines = _LINES_BY_CLASS_KEY[class_key]
+        if lines == 0:
+            # **消 0 行的类别键送不到计分**：内核把分类挂在**消行组**上，
+            # 0 行的放置根本没有组可挂——`score_clear` 收到的是空组（落空）。
+            # 表里按 spec 备着（`tspin-mini` = 400），但当前投递路径够不着，
+            # 缺口记在 PROGRESS.md 的待办里。
+            continue
+        groups = _groups(class_key, lines)
+        delta = standard.score_clear(groups, CTX_DOWN, SCORE_ZERO)
+        assert delta.scoreDelta == expected, class_key
+        assert delta.linesDelta == lines, class_key
+
+
+def test_b2b_chain_trajectory() -> None:
+    """**B2B 链**：难消 → 难消 → 普通消行，逐手断言 `b2b` 的变化轨迹。
+
+    **入链那一跳不吃倍率**——上一手不在链里（`prev.b2b` 为 `False`），
+    倍率的条件是「本次难消 **∧** 上一手也难消」。
+    """
+    difficult = _groups("tetris", 4)
+    ordinary = _groups("single", 1)
+
+    # 起链：进链，但不吃倍率。
+    first = standard.score_clear(difficult, CTX_DOWN, SCORE_ZERO)
+    assert first.state.b2b is True
+    assert first.scoreDelta == 800
+
+    # 链中再来一次难消：仍在链中，**这次吃倍率**（800 → 1200）。
+    second = standard.score_clear(difficult, CTX_DOWN, first.state)
+    assert second.state.b2b is True
+    assert second.scoreDelta == 1200 + tables.COMBO_BONUS * 1
+
+    # 普通消行：断链，**倍率也不生效**（普通消行不是难消）。
+    third = standard.score_clear(ordinary, CTX_DOWN, second.state)
+    assert third.state.b2b is False
+    assert third.scoreDelta == 100 + tables.COMBO_BONUS * 2
+
+
+def test_b2b_multiplier_never_breaks_the_integer_type() -> None:
+    """**B2B ×3/2 不许破 `int`**（`scoreDelta` 的类型是 `int`）。
+
+    基础分全是 100 的倍数 → 乘完仍是整数。**写成浮点 1.5 就破类型了**。
+    """
+    groups = _groups("tspin-double", 2)
+    cold = ScoreState(score=0, lines=0, combo=0, b2b=True, level=1)
+    delta = standard.score_clear(groups, CTX_DOWN, cold)
+
+    assert isinstance(delta.scoreDelta, int)
+    assert not isinstance(delta.scoreDelta, float)
+    # 1200 × 3/2 = 1800。
+    assert delta.scoreDelta == 1800
+
+
+def test_empty_groups_break_combo_and_b2b() -> None:
+    """**落空**（空组）→ `combo == 0` 且 `b2b is False`。
+
+    落空由**内核每次锁定后都调 `score_clear`（含空组）**表达——内核不自己
+    改 `combo` / `b2b`，计分口径归规则集。
+    """
+    prev = ScoreState(score=800, lines=4, combo=3, b2b=True, level=2)
+    delta = standard.score_clear((), CTX_DOWN, prev)
+
+    assert delta.scoreDelta == 0
+    assert delta.linesDelta == 0
+    assert delta.state.combo == 0
+    assert delta.state.b2b is False
+    # 分数、行数、等级不动。
+    assert delta.state.score == 800
+    assert delta.state.lines == 4
+    assert delta.state.level == 2
+
+
+def test_level_rises_every_ten_lines() -> None:
+    """**每消 10 行升 1 级**；一次消多行也能**跨档**。
+
+    9 行时消 4 行 → 13 行 → **2 级**（不是"本次消行数 // 10"那种写法——
+    那样这次消 4 行不掉级，跨档就丢了）。
+    """
+    groups = _groups("tetris", 4)
+
+    almost = ScoreState(score=0, lines=9, combo=0, b2b=False, level=1)
+    crossed = standard.score_clear(groups, CTX_DOWN, almost)
+    assert crossed.state.lines == 13
+    assert crossed.state.level == 2
+
+    # 还没到 10 行 → 仍是 1 级。
+    below = ScoreState(score=0, lines=5, combo=0, b2b=False, level=1)
+    assert standard.score_clear(groups, CTX_DOWN, below).state.level == 1
+
+    # **等级只升不降**：上一手等级更高就保持不变（不会因为行数少而降级）。
+    higher = ScoreState(score=0, lines=0, combo=0, b2b=False, level=5)
+    assert standard.score_clear(groups, CTX_DOWN, higher).state.level == 5
+
+
+def test_rule_set_implements_all_nine_signatures() -> None:
+    """**协议一致性由红转绿**：标准规则集补齐了第 9 条（软降计分）。
+
+    S3 定了 `soft_drop_score(ctx, distance) -> int` 的签名并提前落了最小
+    实现，这里断言**九条签名一条不缺、参数名逐字一致**。
+    """
+    assert interface.signature_mismatches(standard.STANDARD_RULESET) == ()
+    assert len(RULE_SIGNATURES) == 9
+    for name in RULE_SIGNATURES:
+        assert hasattr(standard, name), f"标准实现缺少接口 {name}"
+
+
+def test_soft_drop_score_is_one_point_per_cell() -> None:
+    """**软降计分归规则集**：每实际下移一格加 1 分（被墙挡住 = 0 分）。
+
+    `distance` 是本次**实际下移**的格数——被墙挡住时是 0，加 0 分。
+    """
+    assert standard.soft_drop_score(CTX_DOWN, 0) == 0
+    assert standard.soft_drop_score(CTX_DOWN, 3) == 3

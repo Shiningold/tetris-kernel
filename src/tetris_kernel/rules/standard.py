@@ -29,15 +29,27 @@ M0 只保证**接口定稿 + 最小实现**（架构 §7.3 · spec-M0.md §7.5�
 ——`classify_placement` 要靠它数出"这次消几行"（T-Spin 档位与计分类别键都
 依赖这个数）。
 
-## 计分口径（连击 / 背面连击 / 消行数）
+## 计分口径（连击 / 背面连击 / 消行数 / 等级）
 
 - **连击**（`combo`）：连续消行的次数；**落空清零**。落空由**内核每次锁定后
   都调用 `score_clear`（含空组）**表达——空组即落空，**内核不自己改 `combo`**。
 - **背面连击**（`b2b`）：这一位表示「当前处于背面连击链中」——本次消行是难消
-  （四消 / T-Spin）就入链，普通消行或落空断链。**B2B 倍率**（M1）的条件是
-  「本次难消 ∧ 上一手也难消」，`prev.b2b` 正是"上一手在链中"的答案。
+  （四消 / T-Spin **消行**）就入链，普通消行或落空断链。**B2B 倍率**的条件是
+  「本次难消 ∧ 上一手也难消」，`prev.b2b` 正是"上一手在链中"的答案；倍率
+  **× 3/2 只作用于基础分**（整数运算，不含连击奖励与软降分）。
 - **消行数**（`linesDelta`）：**组数就是消掉的线数**——重力向下时线是行，横向
   重力时线是列；`lines` 记的始终是"消掉了几条线"，与重力轴无关。
+- **等级**（`level`）：**每消 10 行升 1 级**，**由规则集算**——内核不自己数
+  行数定等级（换规则集就该能改阈值）。
+
+## 一个已知缺口：**消 0 行的类别键送不到计分**
+
+分类挂在**消行组**上（架构 §7.3.1 纪律 4），而**消 0 行的放置根本没有组**
+——内核这时调的是 `score_clear((), …)`，也就是**落空**。所以
+`tspin-mini`（不消行的 T-Spin Mini，guideline 口径 400 分）与 `tspin-none`
+这两档**当前送不到计分**：表里按 spec §7.4 备着，但要真发这 400 分，得让
+"没消行但有分类"这条信息也走通——那是**改冻结签名**的活（M1 的三次 major
+变更里没有这一条），留到后续里程碑处理，缺口记在 `PROGRESS.md` 的待办里。
 
 ## T-Spin 分类怎么到达计分
 
@@ -84,6 +96,8 @@ from .interface import (
     WrapCell,
 )
 from .tables import (
+    B2B_MULTIPLIER_DENOMINATOR,
+    B2B_MULTIPLIER_NUMERATOR,
     CLEAR_AXIS_BY_GRAVITY,
     CLEAR_NAMES,
     COMBO_BONUS,
@@ -92,6 +106,7 @@ from .tables import (
     GRAVITY_VECTORS,
     KICK_GROUP_BY_PIECE,
     KICK_TABLE,
+    LINES_PER_LEVEL,
     ROTATION_COUNT,
     SCORE_TABLE,
     SHAPE_TABLE,
@@ -171,6 +186,26 @@ def _tspin_line_grade(cleared: int) -> str:
     if cleared == 2:
         return "double"
     return "triple"
+
+
+def _apply_b2b(base: int) -> int:
+    """B2B 倍率：基础分 **× 3/2**（**整数运算，不许浮点**）。
+
+    `ScoreDelta.scoreDelta` 的类型是 `int`——写成浮点 `1.5` 直接破类型。
+    倍率记成整数比（`B2B_MULTIPLIER_NUMERATOR` / `B2B_MULTIPLIER_DENOMINATOR`），
+    基础分全是 **100 的倍数** → **乘完仍是整数**（800 → 1200 · 1200 → 1800 ·
+    1600 → 2400）。
+
+    **乘不整就当场报错**：将来有人往计分表里加一条奇数基础分，这行会立刻
+    炸掉，而不是悄悄截断（截断 = 分数与手算对不上，且没人知道差在哪）。
+    """
+    scaled = base * B2B_MULTIPLIER_NUMERATOR
+    if scaled % B2B_MULTIPLIER_DENOMINATOR:
+        raise ValueError(
+            f"基础分 {base} 乘 B2B 倍率 {B2B_MULTIPLIER_NUMERATOR}/"
+            f"{B2B_MULTIPLIER_DENOMINATOR} 不是整数：分数必须是 100 的倍数"
+        )
+    return scaled // B2B_MULTIPLIER_DENOMINATOR
 
 
 def _class_key_for(spin: bool, cleared: int) -> str:
@@ -364,10 +399,15 @@ def score_clear(
     ## 背面连击（`b2b`）
 
     这一位表示「**当前处于背面连击链中**」：链在**本次消行是难消**（四消 /
-    T-Spin）时进入，普通消行或落空时断开。
+    T-Spin **消行**）时进入，普通消行或落空时断开。
 
-    **B2B 倍率**（M1）的条件是「本次难消 ∧ 上一手也难消」——`prev.b2b`
-    正是"上一手在链中"的答案（M0 的计分表里没有 B2B 倍率，见 `tables.py`）。
+    **B2B 倍率**：条件是「**本次难消 ∧ 上一手也难消**」——`prev.b2b` 正是
+    "上一手在链中"的答案。倍率 **× 3/2 作用于基础分**（**不含连击奖励、
+    不含软降分**）。
+
+    **难消的定义**：四消与 T-Spin **消行**。**T-Spin 不消行不算难消**
+    （`tspin-none` / `tspin-mini` 都不在难消表里）——它没消行，进链会让
+    B2B 变成"转进去也算数"，与 guideline 不符。
 
     **这一位不是"链长 ≥ 2"**，它表示"链中"；链长由规则集在计分时用
     「本次难消 ∧ `prev.b2b`」当场判。
@@ -377,6 +417,16 @@ def score_clear(
     **组数就是消掉的线数**——重力向下时线是行，横向重力时线是列。`lines`
     记的始终是"消掉了几条线"，与重力轴无关（横向重力的口径见
     `docs/plan-M0.md` S13 段）。
+
+    ## 等级（`level`）
+
+    **每消 10 行升 1 级**（`LINES_PER_LEVEL`）——**由规则集算**，内核不自己
+    数行数定等级（换规则集就该能改阈值，架构 §7.3.1）。内核只比较前后等级
+    并发 `progress:level-changed`。
+
+    等级 = `总行数 // 10 + 1`（0–9 行是 1 级）。**一次消多行也能跨档**：
+    9 行时消 4 行 → 13 行 → 2 级（不是"除以 10 取整"那种按本次消行数算的
+    写法）。**等级只升不降**：`prev.level` 更高时保持不变。
     """
     if not groups:
         # 落空：连击与背面连击链都断在这里（内核每次锁定后都调本函数）。
@@ -395,15 +445,22 @@ def score_clear(
     classification = _first_classification(groups)
     spin = classification is not None and classification.tSpin != "none"
     class_key = _effective_class_key(classification, spin, cleared)
-    score_delta = SCORE_TABLE[class_key] + COMBO_BONUS * prev.combo
+    base = SCORE_TABLE[class_key]
+    difficult = class_key in DIFFICULT_CLASS_KEYS
+    # **B2B 倍率只作用于基础分**——连击奖励不乘（口径写进 spec §7.4）。
+    if difficult and prev.b2b:
+        base = _apply_b2b(base)
+    score_delta = base + COMBO_BONUS * prev.combo
+    new_lines = prev.lines + cleared
     state = ScoreState(
         score=prev.score + score_delta,
-        lines=prev.lines + cleared,
+        lines=new_lines,
         combo=prev.combo + 1,
         # 本次是难消就在链中，普通消行断链——**不与 `prev.b2b` 相与**：
         # 那样链永远起不来（从 `False` 起步的 AND 恒为 `False`）。
-        b2b=class_key in DIFFICULT_CLASS_KEYS,
-        level=prev.level,
+        b2b=difficult,
+        # **等级由规则集算**：每消 10 行升 1 级；**只升不降**。
+        level=max(prev.level, new_lines // LINES_PER_LEVEL + 1),
     )
     return ScoreDelta(scoreDelta=score_delta, linesDelta=cleared, state=state)
 
