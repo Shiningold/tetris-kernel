@@ -7,7 +7,7 @@
 2. **不可丢**：长局（数百条命令）→ **录像里的命令数 == 被接受的命令数**
    （逐条相等，不是"差不多"）；
 3. **体积**：录像体积**显著小于**同样一局的逐帧快照（**明确的倍数关系**）；
-4. **格式可读**：头里的种子与规则集标识**逐字等于**构造时的值；
+4. **格式可读**：头里的种子与规则集标识**逐字等于**内核就绪事件里的值；
 5. **落盘经 sink**：sink 收到**字节**，录制系统**一个文件都不碰**；
 6. **未知版本**：喂一个不认识的头 → **明确报错**（不静默忽略、不按旧版解析）。
 
@@ -96,6 +96,15 @@ def _tick(frame: int) -> EventDraft:
     return make_draft("clock:tick", (("frame", frame), ("stepMs", 50)), frame)
 
 
+def _kernel_ready(seed: int = 0, rule: str = "standard", mode: str = "live") -> EventDraft:
+    """一条**内核就绪**事件（**种子与规则集标识的权威来源**）。"""
+    return make_draft(
+        "kernel:ready",
+        (("seed", seed), ("rule", rule), ("mode", mode)),
+        0,
+    )
+
+
 def _game_over(frame: int = 1) -> EventDraft:
     return make_draft("game:over", (("score", 0), ("lines", 0), ("reason", "topout")), frame)
 
@@ -126,7 +135,7 @@ def test_the_rejected_command_is_not_in_the_recording() -> None:
     它必红。
     """
     bus = _bus()
-    system = RecordingSystem(bus, seed=1, rule="standard")
+    system = RecordingSystem(bus)
 
     bus.publish(_received("moveLeft"))
     bus.publish(_rejected("moveLeft"))
@@ -218,9 +227,11 @@ def test_the_recording_is_much_smaller_than_the_per_frame_snapshots() -> None:
 
 
 def test_the_header_carries_the_seed_and_the_rule_verbatim() -> None:
-    """**头里的种子与规则集标识逐字等于**构造时的值。"""
+    """**头里的种子与规则集标识逐字等于**内核就绪事件里的值。"""
     bus = _bus()
-    system = RecordingSystem(bus, seed=20261026, rule="standard")
+    system = RecordingSystem(bus)
+
+    bus.publish(_kernel_ready(seed=20261026, rule="standard"))
 
     text = recording_to_jsonl(system.recording())
     header = json.loads(text.splitlines()[0])
@@ -326,7 +337,7 @@ def test_the_sink_receives_the_bytes() -> None:
     """落盘经 sink：sink 收到的是**字节**（一行一条 JSON）。"""
     captured: list[bytes] = []
     bus = _bus()
-    system = RecordingSystem(bus, captured.append, seed=42)
+    system = RecordingSystem(bus, captured.append)
 
     bus.publish(_accepted("moveLeft", frame=3))
     system.flush()
@@ -447,7 +458,7 @@ def test_the_game_over_flushes_and_stops_the_recording() -> None:
     received: list[Envelope] = []
     bus = _bus()
     bus.subscribe("replay:recording-stopped", received.append)
-    system = RecordingSystem(bus, captured.append, seed=5)
+    system = RecordingSystem(bus, captured.append)
 
     bus.publish(_tick(10))
     bus.publish(_accepted("moveLeft", frame=10))
@@ -464,15 +475,32 @@ def test_the_game_over_flushes_and_stops_the_recording() -> None:
     assert len(system.commands) == 1, "局末之后不再录"
 
 
-def test_the_recording_started_event_is_emitted() -> None:
-    """构造录制系统时发出 `replay:recording-started`（种子 + 规则集标识）。"""
+def test_the_recording_started_event_is_emitted_when_the_kernel_is_ready() -> None:
+    """**内核就绪时**发出 `replay:recording-started`（种子 + 规则集标识）。"""
     bus = _bus()
     received: list[Envelope] = []
     bus.subscribe("replay:recording-started", received.append)
 
-    RecordingSystem(bus, seed=99, rule="standard")
+    RecordingSystem(bus)
+    bus.publish(_kernel_ready(seed=99, rule="standard"))
 
     assert len(received) == 1
     payload = dict(received[0].payload)
     assert payload["seed"] == 99
     assert payload["rule"] == "standard"
+
+
+def test_the_recording_system_publishes_nothing_on_construction() -> None:
+    """**构造时一个事件都不发**——装配层不该自己造事件（宿主的一条不变量）。
+
+    **这条就是"录制器改从 `kernel:ready` 取值"这条改动的判据**：把它改回
+    构造即发 `replay:recording-started`，它必红。
+    """
+    bus = _bus()
+    received: list[str] = []
+    bus.subscribe("*", lambda envelope: received.append(envelope.type))
+
+    RecordingSystem(bus)
+
+    assert received == [], f"构造时就发了事件：{received}"
+    assert bus.last_seq == 0, "构造时占了总线序号"

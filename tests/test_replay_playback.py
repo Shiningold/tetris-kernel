@@ -115,9 +115,15 @@ def _record_a_game(seed: int, frames: int) -> tuple[Recording, FourItems]:
     **用 `writeCells`**：受控写入立刻改棋盘（受控写入是外部改变棋盘的**唯一**
     合法通道）——几帧之内就有确定的内容，**四项全等才有区分力**（两边都是空
     棋盘的话，用例等于没测）。
+
+    **可观测总开关关掉**：这条**自己造**一个录制系统，装配层再装一个就成了
+    两个录制器同时录同一局——没必要的重复。
+
+    **种子与规则集标识从 `kernel:ready` 取**：录制器在 `HeadlessLoop` 构造
+    之前就订阅好了，`kernel:ready` 一到，录像头里的种子与规则集标识就位。
     """
-    assembly = assemble(seed=seed, mode="live")
-    recorder = RecordingSystem(assembly.bus, None, seed=seed, rule="standard")
+    assembly = assemble(seed=seed, mode="live", observability_enabled=False)
+    recorder = RecordingSystem(assembly.bus, None)
     loop = HeadlessLoop(assembly)
     loop.start()
     for index in range(frames):

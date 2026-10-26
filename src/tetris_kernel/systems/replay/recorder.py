@@ -35,6 +35,15 @@
 
 **来源透传原值**（ADR-062）：回放时**不改写成 `replay`**——改写会让 FR-6.4
 的事件流回归基线永久失配。
+
+## 种子与规则集标识**从 `kernel:ready` 事件里取**
+
+**内核是那两项的权威**——它发 `kernel:ready` 时带着种子与规则集标识。所以本
+系统**订阅那条事件**，而不是在构造时收一份拷贝。
+
+**顺带落了一条宿主的不变量**：**装配层一个事件都不发**。录制器若在构造时发
+`replay:recording-started`，等于让装配层自己造事件——那条不变量是宿主侧的
+（"造零件不许造事件"），不能由零件自己破坏。
 """
 
 from __future__ import annotations
@@ -62,6 +71,9 @@ CLOCK_TICK_EVENT = "clock:tick"
 #: 局末事件（**局末落盘由它触发**）。
 GAME_OVER_EVENT = "game:over"
 
+#: 内核就绪事件（**种子与规则集标识从它来**）。
+KERNEL_READY_EVENT = "kernel:ready"
+
 #: 周期点间隔（**帧** · 写死 · spec §7.2）。
 CHECKPOINT_INTERVAL_FRAMES = 600
 
@@ -88,10 +100,12 @@ class RecordingSystem[V]:
 
     - `bus`：事件总线（**只订不写内核状态**）；
     - `sink`：**落盘出口**（`None` = 不落盘）；**路径是宿主的事**；
-    - `seed` / `rule`：**录像头的内容**（种子 + 规则集标识）；
     - `checkpoint_interval`：**周期点间隔**（帧）；
     - `outcome_provider`：**局末四项的取法**（宿主注入；`None` = 不取，录像头
       里就没有比对基准）。
+
+    **种子与规则集标识从 `kernel:ready` 事件里取**（内核是那两项的权威）——
+    **装配层因此一个事件都不发**（"装配层不该自己发事件"是宿主的一条不变量）。
     """
 
     def __init__(
@@ -99,8 +113,6 @@ class RecordingSystem[V]:
         bus: EventBus[V],
         sink: Sink | None = None,
         *,
-        seed: int = 0,
-        rule: str = "standard",
         checkpoint_interval: int = CHECKPOINT_INTERVAL_FRAMES,
         outcome_provider: OutcomeProvider | None = None,
     ) -> None:
@@ -108,21 +120,22 @@ class RecordingSystem[V]:
             raise ValueError(f"checkpoint_interval 至少为 1，实为 {checkpoint_interval}")
         self._bus = bus
         self._sink = sink
-        self._seed = seed
-        self._rule = rule
         self._checkpoint_interval = checkpoint_interval
         self._outcome_provider = outcome_provider
         self._outcome: FourItems | None = None
         self._commands: list[RecordedCommand] = []
         self._frame_count = 0
         self._stopped = False
+        self._seed = 0
+        self._rule = "standard"
+        self._announced = False
         # **只订阅被接受的命令**——`command:received` 含被拒的，录了会分叉。
         self._subscription = bus.subscribe(
             ACCEPTED_COMMAND_EVENT, self._on_command, name="录像系统"
         )
         bus.subscribe(CLOCK_TICK_EVENT, self._on_tick, name="录像系统")
         bus.subscribe(GAME_OVER_EVENT, self._on_game_over, name="录像系统")
-        self._bus.publish(_recording_started_draft(seed, rule))
+        bus.subscribe(KERNEL_READY_EVENT, self._on_kernel_ready, name="录像系统")
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -163,6 +176,22 @@ class RecordingSystem[V]:
     # ------------------------------------------------------------------
     # 订阅回调
     # ------------------------------------------------------------------
+
+    def _on_kernel_ready(self, envelope: Envelope) -> None:
+        """**内核就绪才开录**：种子与规则集标识**从事件里取**（内核是权威）。
+
+        **为什么不在构造时就开始**：装配层**一个事件都不该发**（宿主的一条
+        不变量）——构造时就发 `replay:recording-started`，等于让装配层自己
+        造事件。而"内核就绪"正是录制真正开始的时刻。
+        """
+        if self._announced:
+            return
+        self._announced = True
+        self._seed = _int_of(envelope.payload, "seed")
+        rule = _text_of(envelope.payload, "rule")
+        if rule:
+            self._rule = rule
+        self._bus.publish(_recording_started_draft(self._seed, self._rule))
 
     def _on_command(self, envelope: Envelope) -> None:
         """记一条**被接受的**命令（**只读事件负载**）。"""
