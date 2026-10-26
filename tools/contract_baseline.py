@@ -86,8 +86,29 @@
 三个维度都看：只在基线里的键 · 只在期望清单里的键 · 同键但哈希不同的。
 
 **这一层防的是"只改一处"，不是防蓄意绕过**：两份都在仓内，**同时改两份仍能
-骗过工具**。上限写在这儿，不吹大——真要防住蓄意绕过，等契约真正冻结后再议
-（M2）。
+骗过工具**。上限写在这儿，不吹大。
+
+## 第三层防线：git 历史背书（ADR-077）
+
+前两层守的是**文件内部**与**两份文件之间**。它们有一个共同的盲区：**基线
+文件本身可以被直接改**——直接编辑基线文件就能让工具变绿，而没人检查这次
+编辑是不是走了显式刷新流程。
+
+**第三层把"谁动了这两份文件"交给 git 回答**：契约基线与期望清单**必须与
+`git show HEAD:<路径>` 的内容一致**。工作区改了但没提交 → 红；提交了 → 绿。
+
+**它只管那两个文件**（`GIT_BACKED_FILES`）：守卫若盯整个工作区，"改声明、
+还没刷基线"的正常流程会被拦下——那是 S1 到 S3 之间的常态。**它守的是
+"这两份文件有没有被悄悄改过"，不是"工作区干不干净"。**
+
+**它不区分"谁写的"**，只区分"改了但没提交"与"改了且已提交"：**能把两个文件
+改好再提交的人，也能改好 git 历史**——所以这一层是把"静默绕过"变成"留痕
+绕过"，**不是"防住了"**（ADR-077 的残余上限照旧写实，不吹大）。
+
+**比对前必须归一化换行符**：本仓库 `core.autocrlf=true` 且没有 `.gitattributes`
+——`git show` 给的是 blob（LF），工作区文件是 CRLF，**逐字节比必然永远红**，
+守卫会形同虚设。归一化用的是 `normalize_newlines`（与冻结区基线同款，
+理由见 `tools/_toolkit.py`）。
 
 ## 刷新要写明理由
 
@@ -109,7 +130,8 @@ python tools/contract_baseline.py --print-entries     # 打印当前条目（排
 ```
 
 退出码：0 = 通过；1 = 有红项（清单没勾完 / 已有键变化 / 已有键消失 / 基线自身
-不可信 / **基线与期望清单不自洽**）；2 = 用法或 IO 错误。
+不可信 / **基线与期望清单不自洽** / **与 `HEAD` 不一致（git 背书）**）；
+2 = 用法或 IO 错误。
 """
 
 from __future__ import annotations
@@ -128,6 +150,9 @@ from _toolkit import (
     SRC_ROOT,
     blake2b_hex,
     configure_output,
+    git_head_bytes,
+    git_repo_root,
+    normalize_newlines,
     relative_to_repo,
 )
 from contract_grammar import GrammarError, canonicalize
@@ -462,6 +487,86 @@ def write_expected(path: Path, entries: dict[str, str], version: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 第三层防线：git 历史背书（ADR-077）
+# ---------------------------------------------------------------------------
+
+#: **git 背书守卫视的那两个文件**——**只管这两个**，别的一概不看。
+#:
+#: 守卫若盯整个工作区，"改声明、还没刷基线"的正常流程会被拦下——那是 S1 到
+#: S3 之间的常态。**它守的是"这两份文件有没有被悄悄改过"**，不是"工作区
+#: 干不干净"。
+GIT_BACKED_FILES: tuple[Path, ...] = (CONTRACT_BASELINE, CONTRACT_EXPECTED)
+
+#: 红项的**机器可辨标记**（ASCII）——测试要在 Windows 的 GBK 管道里断言
+#: "这条红项是 git 背书那一层报的"，而中文提示在管道里会被编码错配打散。
+#: 标记是 ASCII，按字节查就稳（与 `tests/test_baselines.py` 的 `_run_tool_bytes`
+#: 同一手法）。
+GIT_BACKING_MARKER = "git-backing"
+
+
+def git_backing_problem(path: Path) -> str | None:
+    """`path` 与 `HEAD` 版本对不上时返回一句红项说明；一致返回 `None`。
+
+    **四种红**（每一种都要说清"为什么"与"怎么办"）：
+
+    - **不在 git 工作区里** → 没有版本历史可对，背书无从谈起；
+    - **工作区里文件不见了** → 文件被删了；
+    - **`HEAD` 里没有这个文件** → 它从没被提交过；
+    - **内容不一致** → 工作区改了但还没提交（或提交漏了它）。
+
+    **只区分"改了但没提交"与"改了且已提交"**，不区分"谁写的"——能把两个
+    文件改好再提交的人，也能改好 git 历史。**它是"留痕绕过"不是"防住了"**
+    （ADR-077 的残余上限照旧写实）。
+
+    **比对前归一化换行符**：`git show` 给的是 blob（LF），工作区是 CRLF
+    （`core.autocrlf=true` 且无 `.gitattributes`）——**不归一化就永远红**。
+    """
+    repo_root = git_repo_root(path)
+    if repo_root is None:
+        return f"{path} 不在 git 工作区里：git 背书无从谈起（ADR-077）——这份文件没有版本历史可对"
+
+    try:
+        relative = path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        return f"{relative_to_repo(path)} 不在仓库 {repo_root} 里：git 背书无从谈起（ADR-077）"
+
+    head = git_head_bytes(repo_root, relative)
+    if head is None:
+        return f"{relative} 在 HEAD 里不存在（它从没被提交过）：git 背书无从谈起（ADR-077）"
+
+    if not path.exists():
+        return (
+            f"{relative} 不在工作区里了（文件被删了）：恢复它，"
+            "或走显式刷新流程重新生成（--update-baseline --reason / "
+            "--update-expected --reason）"
+        )
+
+    try:
+        current = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return f"{relative} 读不出来：{error}"
+
+    if normalize_newlines(current) == normalize_newlines(head.decode("utf-8", "replace")):
+        return None
+
+    return (
+        f"{relative} 与 HEAD 的版本不一致（工作区改了但还没提交，或提交漏了它）："
+        '走显式刷新流程——--update-baseline --reason "<理由>" / '
+        '--update-expected --reason "<理由>"，并与声明改动同笔提交'
+    )
+
+
+def git_backing_problems(paths: tuple[Path, ...] = GIT_BACKED_FILES) -> list[str]:
+    """守着那几个文件的 git 背书（每个一条红项说明）。"""
+    problems: list[str] = []
+    for path in paths:
+        problem = git_backing_problem(path)
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # 校验
 # ---------------------------------------------------------------------------
 
@@ -682,6 +787,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if not _report_checklist(items, args.checklist):
         print("基线校验失败：契约 v1 冻结清单没勾完。", file=sys.stderr)
+        return 1
+
+    # **git 背书（第三层 · ADR-077）**：那两份文件必须与 `HEAD` 一致。
+    #
+    # **放在比对之前**：**文件的权威性**先于"它与声明对不对得上"——一份没被
+    # 提交过的基线，拿它跟声明比对出来的结论没有意义。
+    backing_problems = git_backing_problems()
+    if backing_problems:
+        for problem in backing_problems:
+            print(f"git 背书失败（红 · {GIT_BACKING_MARKER}）：{problem}")
+        print(
+            "基线校验失败：契约基线与期望清单没有与 HEAD 一致（ADR-077）。",
+            file=sys.stderr,
+        )
         return 1
 
     baseline: BaselineDocument | None = None
