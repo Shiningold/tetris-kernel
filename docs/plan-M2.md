@@ -136,8 +136,8 @@ S15 收尾与状态同步
 | S1 | 契约面：`replay:` 命名空间 | — | A | **已完成** | `fba33fa` |
 | S2 | 期望源加固：git 背书守卫 | — | A | **已完成** | `ec730c8` |
 | S3 | 契约基线与期望清单显式刷新 | — | A | **已完成** | `f497ae7` |
-| S4 | 存储适配器 + 落盘路径 + 宿主 sink 注入 | — | B | 未开始 | — |
-| S5 | 总线增强 + `bus/` 独立基线 | — | B | 未开始 | — |
+| S4 | 存储适配器 + 落盘路径 + 宿主 sink 注入 | — | B | **已完成** | `27f12ba` |
+| S5 | 总线增强 + `bus/` 独立基线 | — | B | **已完成** | `437850f` · `1c0eb86` |
 | S6 | 日志系统 | — | C | 未开始 | — |
 | S7 | 指标系统 | — | C | 未开始 | — |
 | S8 | 录像录制 | — | C | 未开始 | — |
@@ -154,7 +154,7 @@ S15 收尾与状态同步
 | 批次 | 分支 | 写手 | 阶段 | 状态 | 落笔提交 | 审查报告 |
 | --- | --- | --- | --- | --- | --- | --- |
 | A 契约面与基线 | `feature/m2-batch-a` | A1 · 集成者 | S1 / S2 / S3 | **已完成**（已 `--no-ff` 合并进 `master`：`b9ea355`） | `fba33fa`（S1）· `ec730c8`（S2）· `f497ae7`（S3） | — |
-| B 底座 | `feature/m2-batch-b` | B1 · B2 | S4 / S5 | 未开始 | — | — |
+| B 底座 | `feature/m2-batch-b` | B1 · B2 | S4 / S5 | **已完成**（S4 一笔 + S5 两笔，阶段内不混提） | `27f12ba`（S4）· `437850f` · `1c0eb86`（S5） | — |
 | C 可观测三系统 | `feature/m2-batch-c` | C1 · C2 · C3 | S6 / S7 / S8–S9 | 未开始 | — | — |
 | D 派生与验证 | `feature/m2-batch-d` | D1 · D2 · D3 · 集成者 | S10 / S11 / S12 / S13–S14 | 未开始 | — | — |
 | E 收尾 | `feature/m2-batch-e` | 集成者 | S15 | 未开始 | — | — |
@@ -307,13 +307,14 @@ S15 收尾与状态同步
 
 - **目标**：任何要落盘的部件都有一个**宿主注入的 sink**；默认路径**项目优先、回落 home**（ADR-074）。
 - **任务**
-  - [ ] `adapters/`：新增存储适配器——把 sink 落成文件（**不自开路径**，路径由宿主给）
-  - [ ] `adapters/`：**默认路径策略**（ADR-074）：项目下 `<项目根>/.tetris-data/` → 不可写时回落 `~/.tetris/`；**写入只有一处**；**目录自建**（含父目录）；**不静默失败**（回落要能被用户看见）
-  - [ ] `adapters/`：**不设环境变量**（不读 `TETRIS_DATA_DIR` 之类）
-  - [ ] `host/assembly.py`：**注入 sink**（`Callable[[bytes], None]` 一类）——**路径由宿主定**（M2-D2）
-  - [ ] `host/assembly.py`：**可观测总开关**——关掉之后**一个可观测系统都不装配**（`G2-3` 的前提）
-  - [ ] `.gitignore`：加 `.tetris-data/`
-  - [ ] `tests/`：**默认路径策略的独立用例**（项目优先可写 / 项目不可写回落 home / **只写一处**）；其余落盘测试**一律注入 `tmp_path`**
+  - [x] `adapters/`：新增存储适配器——把 sink 落成文件（**不自开路径**，路径由宿主给）
+  - [x] `host/assembly.py`：**默认路径策略**（ADR-074）：项目下 `<项目根>/.tetris-data/` → 不可写时回落 `~/.tetris/`；**写入只有一处**；**目录自建**（含父目录）；**不静默失败**（回落要能被用户看见）
+    > **订正（2026-10-26 · S4 落笔时）**：本条原先挂在 `adapters/` 名下，**与本节的常见坑第三条自相矛盾**（那条明写「**把路径策略放进 `adapters/`** → `adapters/` 是存储实现，**策略是宿主的装配决定**（ADR-074 的连带条款）」）。按 ADR-074 与常见坑执行：**策略在 `host/assembly.py`**，`adapters/` 只提供"把 sink 落成文件"的 `FileSink`（覆盖语义 + 原子替换 + 目录自建）。
+  - [x] `host/assembly.py`：**不设环境变量**（不读 `TETRIS_DATA_DIR` 之类）
+  - [x] `host/assembly.py`：**注入 sink**（`Callable[[bytes], None]` 一类）——**路径由宿主定**（M2-D2）
+  - [x] `host/assembly.py`：**可观测总开关**——关掉之后**一个可观测系统都不装配**（`G2-3` 的前提）
+  - [x] `.gitignore`：加 `.tetris-data/`
+  - [x] `tests/`：**默认路径策略的独立用例**（项目优先可写 / 项目不可写回落 home / **只写一处**）；其余落盘测试**一律注入 `tmp_path`**
 - **涉及文件**：`src/tetris_kernel/adapters/**` · `src/tetris_kernel/host/assembly.py` · `.gitignore` · `tests/test_storage_adapter.py`
 - **批次 / 写手 / 文件归属**：**批次 B** · 写手 **B1** · 独占 `adapters/**` · `host/assembly.py` · `tests/test_storage_adapter.py` · `.gitignore`。
 - **验证方案**
@@ -325,7 +326,9 @@ S15 收尾与状态同步
   6. **依赖方向**：`lint-imports` 仍 **4 kept**——**`systems/` 不得 import `adapters/`**（ADR-064 的理由）。
   7. **纯净度**：`tools\check_kernel_purity.py` 绿——**`kernel/` 里不许出现路径字样**（M2-D2）。
 - **完成判据**：七条验证全过；**路径策略的三条用例都在**。
+  > **实测（2026-10-26）**：七条全过（新增 16 条用例）。**两条反向验证真跑过并精确复原**：① 把策略改成"两处都写" → 用例红并点名另一处；② 改成"只读 `Path.home()`、不看项目目录" → **6 条红**。**回落要能被看见**靠两处：`DataDirectory.fell_back` / `.reason`（给程序读）+ `default_sink()` 往 stderr 打一行（给人看）。**可写性判定是注入点**——Windows 上改只读属性拦不住本进程写入，**测试不假装文件系统坏了**。**总开关关的是"装配"不是"订阅"**：`OBSERVABLE_SYSTEM_FACTORIES` 在开关关掉时**一个都不被调用**（`G2-3` 的假绿陷阱）。
 - **提交**：`新功能：新增存储适配器与默认落盘路径策略` —— 含 `adapters/**` + `host/assembly.py` + `.gitignore` + `tests/test_storage_adapter.py`。
+  > **实测落笔**：`27f12ba`（**与建议标题逐字相同**）。
 - **常见坑**
   - **在 `systems/` 里 `open()` 或 `Path.home()`** → 破 M2-D2 + 破依赖方向。**`systems/` 知道有 sink，不知道路径**。
   - **两处都写** → 同一局录像在两处分叉，**`G2-1` 的比对会假红**（ADR-074 的硬要求）。
@@ -339,15 +342,16 @@ S15 收尾与状态同步
 
 - **目标**：总线具备**中间件 · 历史查询 · 计数**三件套；**总线封板**并生成独立基线（ADR-019）。
 - **任务**
-  - [ ] `bus/bus.py`：**中间件**——事件分发链上可插入的横切处理（**不改变事件内容**）
-  - [ ] `bus/subscriber.py`：**历史查询**——按条件检索环形历史（**按事件序号随机访问不在本阶段**，spec §11.2 K1）
-  - [ ] `bus/bus.py`：**计数**——按命名空间 / 按事件类型计数（供指标系统与事件完备性判据用）
-  - [ ] `bus/`：**抛错订阅者被隔离**（AC-4）——其余订阅者不受影响 · **错误事件照常发出**（`kernel:error` 契约里已登记）
-  - [ ] `tools/check_frozen_baseline.py`：新增 **`bus/` 独立基线**的校验入口（**与冻结区基线分开**，ADR-019）
-  - [ ] `tests/baseline/bus_hashes.json`：**首次生成**（总线封板后生成一次）
-  - [ ] `tests/`：中间件 / 历史查询 / 计数 / 错误隔离的用例
-- **涉及文件**：`src/tetris_kernel/bus/**` · `tools/check_frozen_baseline.py` · `tools/_toolkit.py` · `tests/baseline/bus_hashes.json` · `tests/test_bus_m2.py`
-- **批次 / 写手 / 文件归属**：**批次 B** · 写手 **B2** · 独占 `bus/**` · `tools/check_frozen_baseline.py` · `tools/_toolkit.py` · `tests/baseline/bus_hashes.json` · `tests/test_bus_m2.py`。
+  - [x] `bus/bus.py`：**中间件**——事件分发链上可插入的横切处理（**不改变事件内容**）→ `EventBus.use()`
+  - [x] `bus/subscriber.py`：**历史查询**——按条件检索环形历史（**按事件序号随机访问不在本阶段**，spec §11.2 K1）→ `HistoryQuery`（查询条件）
+  - [x] `bus/bus.py`：**计数**——按命名空间 / 按事件类型计数（供指标系统与事件完备性判据用）→ `EventCounts` + `EventBus.counts()`
+  - [x] `bus/`：**抛错订阅者被隔离**（AC-4）——其余订阅者不受影响 · **错误事件照常发出**（`kernel:error` 契约里已登记）
+  - [x] `tools/check_frozen_baseline.py`：新增 **`bus/` 独立基线**的校验入口（**与冻结区基线分开**，ADR-019）→ `--scope bus`
+  - [x] `tests/baseline/bus_hashes.json`：**首次生成**（总线封板后生成一次）
+  - [x] `tests/`：中间件 / 历史查询 / 计数 / 错误隔离的用例
+- **涉及文件**：`src/tetris_kernel/bus/**` · `tools/check_frozen_baseline.py` · `tools/_toolkit.py` · `tests/baseline/bus_hashes.json` · `tests/test_bus_m2.py` · `tests/test_baselines.py`
+- **批次 / 写手 / 文件归属**：**批次 B** · 写手 **B2** · 独占 `bus/**` · `tools/check_frozen_baseline.py` · `tools/_toolkit.py` · `tests/baseline/bus_hashes.json` · `tests/test_bus_m2.py` · `tests/test_baselines.py`。
+  > **文件归属的订正（2026-10-26 · S5 落笔时）**：本节原把「历史查询」整体写在 `bus/subscriber.py`——**实际职责是两块**：**查询条件**（`HistoryQuery`，复用订阅模式的那套写法）住在 `subscriber.py`（模式词汇的老家），**查询入口**（`EventBus.query_history`）住在 `bus.py`（**环形历史在那儿**）。按实际职责拆成这两处，**计划书的文件分配随之订正**。
 - **验证方案**
   1. **中间件**：插一个计数中间件 → **每个事件过它一次** · **事件内容一个字节没变**。
   2. **历史查询**：按命名空间过滤 → **返回的事件与订阅时收到的一致**（逐条相等）。
@@ -358,10 +362,16 @@ S15 收尾与状态同步
   7. **冻结区基线仍然绿**（`kernel/` + `rules/` 一个字节没动——M2-D5）。
   8. 机检：`lint-imports` 仍 **4 kept**（`bus/` 的依赖方向不变）。
 - **完成判据**：八条验证全过；**`bus/` 基线已生成且能红**。
-- **提交**：`重构：总线加中间件、历史查询与计数` —— 含 `bus/**` + `tools/**` + `tests/test_bus_m2.py`。
-  1. `新功能!：按 M2 总线封板生成 bus 独立内容哈希基线` —— 含 `tests/baseline/bus_hashes.json` + `tools/check_frozen_baseline.py`。
-  > **加感叹号**：多了一份比对基准 → **基线换了 = 比对基准换了**。
-  > **不是 major 变更**：`bus/` **不在冻结区**（ADR-019）→ 不消耗 M2-C1。
+  > **实测（2026-10-26）**：八条全过（新增 22 条用例 + 6 条基线门禁用例）。**三条反向验证真跑过并精确复原**：① 注入"订阅者收到被改过帧号的信封" → **2 条红**（同一信封 / 历史查询一致性）；② 去掉分发链的 try/except → **7 条红**（三个文件都抓到）；③ 改 `bus/subscriber.py` **一个字节** → 工具报「bus/内容变化（红）：bus/subscriber.py」并 exit 1，**门禁用例同时变红**。
+  > **中间件"不改内容"是结构事实，不是纪律**：信封是 `frozen=True` 的 dataclass、负载是元组——中间件与订阅者拿到**同一个信封对象**，改内容在结构上做不到。
+  > **`limit=0` 要显式拦掉**：`matched[-0:]` 等于整段（`-0` 就是 `0`），不拦会把"零条"变成"全部"。
+- **提交**
+  1. `重构：总线加中间件、历史查询与计数` —— 含 `bus/**` + `tests/test_bus_m2.py`。
+     > **实测落笔**：`437850f`。**与原计划的一处差别**：原写「含 `bus/**` + `tools/**`」，**工具改动挪到了封板那一笔**——`--scope bus` 在没有基线时只会说"尚未生成"，**半成品没有价值**。
+  2. `新功能!：按 M2 总线封板生成 bus 独立内容哈希基线` —— 含 `tools/check_frozen_baseline.py` + `tools/_toolkit.py` + `tests/baseline/bus_hashes.json` + `tests/test_baselines.py`。
+     > **实测落笔**：`1c0eb86`。**比原计划多带一个文件**：`tests/test_baselines.py` 的 **bus 基线门禁 + 四条反向用例**——**封板 = 基线与给它上牙齿的门禁同笔落笔**（只有基线没有门禁，它只是躺在仓库里的一份 JSON）。
+     > **加感叹号**：多了一份比对基准 → **基线换了 = 比对基准换了**。
+     > **不是 major 变更**：`bus/` **不在冻结区**（ADR-019）→ 不消耗 M2-C1。
 - **常见坑**
   - **中间件改了事件内容** → 中间件是横切处理，**改内容 = 破坏事件完备性**。
   - **bus 基线批批刷新** → ADR-019 的原话："批批刷新基线会变成橡皮图章"。**封板后生成一次**。
@@ -687,7 +697,7 @@ python tools\contract_baseline.py --checklist-only
 >    **真正的代价不是红，是"没牙齿"**：新键不在基线里 → 落在"新增键"那一支 → **改了它的类型、删掉它的声明，都没有任何一层会拦**。**S3 刷完基线，它才有牙齿**（实测：把 `event/replay:frame-stepped/commandCount` 从 `int` 改成 `str` → 报「已有键哈希变化（红）」）。
 >    **所以 S3 不是 bookkeeping**：它是那 23 个新键唯一的保护。
 > 2. **S2 之后到 S3 提交之前**，**两条 git 背书守卫必红**（工作区改了基线 / 期望清单但还没提交）——**这正是"显式刷新 + 同笔提交"的强制执行**，S3 提交后即绿。
-> 3. **S5 之后到 S5 结束**，`bus/` 独立基线**从无到有**（不是红，是"还没有"）；此后**改动 `bus/` 任一文件 → bus 基线必红**——**总线封板后不许再随手改**。
+> 3. **S5 期间**，`bus/` 独立基线**从无到有**（不是红，是"还没有"）；**S5 落笔后**（`1c0eb86`）**改动 `bus/` 任一文件 → bus 基线必红**——**总线封板后不许再随手改**。**该门禁已接进 pytest**（`tests/test_baselines.py`）。
 >
 > **收官时必须没有一条红**：M2 开工时全套是绿的（**M1 的三处预期红已在 M1 收官时全部消解**）——**M2 开工看到红就是真坏了**。
 >

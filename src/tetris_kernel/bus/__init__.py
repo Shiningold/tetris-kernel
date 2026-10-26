@@ -3,7 +3,7 @@
 信封封装、全局序号（序号的唯一权威）、订阅模式、优先级、中间件、
 环形历史、异常隔离。不被内核 import（架构 §4.2）。
 
-批次 B 落地后本包有四块内容：信封与草稿协议（`envelope`）· 总线本体
+批次 B 落地后本包有三块内容：信封与草稿协议（`envelope`）· 总线本体
 （`bus`）· 订阅与优先级（`subscriber`）。**总线按 Protocol 消费内核的草稿，
 不 import kernel 的具体类**——内核与总线之间保持松耦合。
 """
@@ -13,6 +13,8 @@ from .bus import (
     DEFAULT_TRACE_LIMIT,
     ERROR_EVENT_TYPE,
     EventBus,
+    EventCounts,
+    Middleware,
 )
 from .envelope import (
     CAUSE_KEY,
@@ -28,6 +30,7 @@ from .envelope import (
     producer_of,
 )
 from .subscriber import (
+    HistoryQuery,
     SingleHandler,
     SubscriberRegistry,
     Subscription,
@@ -47,8 +50,11 @@ __all__ = [
     "Draft",
     "Envelope",
     "EventBus",
+    "EventCounts",
+    "HistoryQuery",
     "JSONValue",
     "Metadata",
+    "Middleware",
     "Payload",
     "SingleHandler",
     "SubscriberRegistry",

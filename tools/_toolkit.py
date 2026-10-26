@@ -45,6 +45,12 @@ CONTRACT_EXPECTED = BASELINE_DIR / "contracts_expected.json"
 #: 冻结区内容哈希基线文件。
 FROZEN_BASELINE = BASELINE_DIR / "kernel_hashes.json"
 
+#: 总线目录（ADR-019：`bus/` 另列独立基线，**不并进冻结区**）。
+BUS_DIR = SRC_ROOT / "tetris_kernel" / "bus"
+
+#: `bus/` 独立内容哈希基线文件（M2 总线封板后生成 · ADR-019）。
+BUS_BASELINE = BASELINE_DIR / "bus_hashes.json"
+
 #: 每帧事件数基线文件（S16 采集 · 行为基线：内核每帧多发一条事件它就红）。
 FRAME_EVENTS_BASELINE = BASELINE_DIR / "frame_events.json"
 

@@ -1,6 +1,7 @@
-"""事件总线（总线层 · S11）。
+"""事件总线（总线层 · S11 · M2-S5）。
 
-**序号唯一权威** · 三种订阅 · 两个入口 · 异常隔离 · 待发布队列 · 环形历史。
+**序号唯一权威** · 三种订阅 · 两个入口 · 异常隔离 · 待发布队列 · 环形历史
+· **中间件 · 历史查询 · 计数**。
 
 ## 序号唯一权威（架构 §4.2）
 
@@ -22,6 +23,22 @@
 `achievement:unlocked`）**延后到分发结束后 FIFO 发出**；序号在**入队时**
 分配，因此"序号顺序 == 分发顺序"恒成立。
 
+## 中间件（M2-S5）
+
+**横切处理**：分发链上、分发给订阅者**之前**跑一遍。中间件**只看事件、
+不改事件**——信封是冻结的（`frozen=True`），负载是元组，改不动。
+
+中间件抛错 → **与订阅者同款隔离**（转 `kernel:error` · 其余订阅者不受
+影响 · 错误事件照常发出）。
+
+## 历史查询与计数（M2-S5）
+
+- **历史查询**（`query_history`）：按订阅模式的写法过滤环形历史。**不做
+  按全局序号的随机跳转**（spec §11.2 K1——历史是环形缓冲，随机访问需要
+  一套索引，M2 不做）。
+- **计数**（`counts`）：**累计**按事件类型 / 按命名空间的条数。它是独立
+  累加器，**不靠环形历史算**——历史满了会忘，计数不会。
+
 ## 不提供 `bus.view()`（ADR-021）
 
 只读视图**只**走系统层入口的 `ctx.view()`——总线上的访问器可以在任何时候
@@ -31,10 +48,13 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 
 from .envelope import Draft, Envelope, Metadata, build_metadata, producer_of
 from .subscriber import (
+    HistoryQuery,
     SingleHandler,
     SubscriberRegistry,
     Subscription,
@@ -51,6 +71,33 @@ DEFAULT_HISTORY_LIMIT = 1024
 
 #: 轨迹（trace）默认保留条数——静默丢弃与二次抛错都记在这里。
 DEFAULT_TRACE_LIMIT = 64
+
+#: 中间件：分发链上的横切处理（**只看事件，不改内容**）。
+type Middleware = Callable[[Envelope], None]
+
+
+@dataclass(frozen=True)
+class EventCounts:
+    """事件计数：**累计**按类型 / 按命名空间的条数。
+
+    **它不是环形历史的长度**——历史满了会忘（最旧的被挤出去），计数不会。
+    指标系统与"事件完备性"判据要的就是这个：**发出去过多少条**。
+
+    - `by_type`：事件类型名 → 条数；
+    - `by_namespace`：命名空间（事件类型名里 `:` 前的部分）→ 条数。
+    """
+
+    by_type: Mapping[str, int]
+    by_namespace: Mapping[str, int]
+
+    @property
+    def total(self) -> int:
+        """所有事件的条数（**不分公司**）。"""
+        return sum(self.by_type.values())
+
+    def count_of(self, event_type: str) -> int:
+        """某个事件类型的条数（**没有就是 0**）。"""
+        return self.by_type.get(event_type, 0)
 
 
 class EventBus[V]:
@@ -88,6 +135,9 @@ class EventBus[V]:
         self._history: deque[Envelope] = deque(maxlen=history_limit)
         self._pending: deque[Envelope] = deque()
         self._traces: deque[str] = deque(maxlen=DEFAULT_TRACE_LIMIT)
+        self._middlewares: list[tuple[str, Middleware]] = []
+        self._counts_by_type: dict[str, int] = {}
+        self._counts_by_namespace: dict[str, int] = {}
         self._seq = 0
         self._dispatching = False
 
@@ -133,6 +183,25 @@ class EventBus[V]:
         """
         subscriber_name = default_name(callback) if name is None else name
         return self._registry.add(pattern, callback, priority, subscriber_name)
+
+    # ------------------------------------------------------------------
+    # 中间件
+    # ------------------------------------------------------------------
+
+    def use(self, middleware: Middleware, *, name: str | None = None) -> str:
+        """挂一个中间件（**分发链上、分发给订阅者之前**）。
+
+        中间件是**横切处理**：它拿到的事件与订阅者拿到的是**同一个信封**，
+        因此**改不动内容**（信封冻结、负载是元组）。
+
+        `name` 省略时取回调的 `__qualname__`——它会进 `kernel:error` 的负载
+        （中间件抛错时，负载里的 `subscriber` 字段放的是**抛错者的名字**）。
+
+        返回中间件名（报错时好指认是谁炸了）。
+        """
+        middleware_name = default_name(middleware) if name is None else name
+        self._middlewares.append((middleware_name, middleware))
+        return middleware_name
 
     # ------------------------------------------------------------------
     # 发布
@@ -197,20 +266,48 @@ class EventBus[V]:
                 self._dispatching = False
 
     def _deliver(self, envelope: Envelope) -> None:
-        """把一条事件交给**全部命中**的订阅者（优先级已排好）。
+        """把一条事件交给**中间件**与**全部命中**的订阅者（优先级已排好）。
 
         一次分发只建**一个** `ctx`：所有订阅者拿到的是**同一份**视图
         （架构 §5.2 的"按发布点缓存"）。
+
+        **中间件先跑**（分发链上、分发给订阅者之前）；**中间件抛错不影响
+        订阅者**——横切处理坏了，最多是它自己缺席。
         """
         self._history.append(envelope)
+        self._count(envelope)
         ctx: SystemContext[V] = SystemContext[V](self._view_provider)
         is_error_event = envelope.type == ERROR_EVENT_TYPE
+        self._run_middlewares(envelope, is_error_event)
         for subscription in self._registry.matching(envelope.type):
             try:
                 subscription.handler(envelope, ctx)
             except Exception as error:
                 # 异常隔离是本模块的职责：这里**必须**兜住订阅者的异常。
                 self._handle_failure(subscription, envelope, error, is_error_event)
+
+    def _run_middlewares(self, envelope: Envelope, is_error_event: bool) -> None:
+        """跑一遍中间件（**按挂载顺序**）。
+
+        **一个中间件抛错不影响后面的中间件，也不影响订阅者**——与订阅者
+        同款隔离。
+        """
+        for name, middleware in self._middlewares:
+            try:
+                middleware(envelope)
+            except Exception as error:
+                self._report_failure("中间件", name, envelope, error, is_error_event)
+
+    def _count(self, envelope: Envelope) -> None:
+        """累加计数（**按类型 · 按命名空间**）。
+
+        计数的是**进总线的事件**——被丢弃的未登记事件类型**不算**（它没
+        进门）；错误事件算（它确实发出去了）。
+        """
+        event_type = envelope.type
+        self._counts_by_type[event_type] = self._counts_by_type.get(event_type, 0) + 1
+        namespace = event_type.split(":", 1)[0]
+        self._counts_by_namespace[namespace] = self._counts_by_namespace.get(namespace, 0) + 1
 
     def _handle_failure(
         self,
@@ -220,17 +317,33 @@ class EventBus[V]:
         is_error_event: bool,
     ) -> None:
         """订阅者抛错 → 转 `kernel:error`；**其余订阅者不受影响**。"""
+        self._report_failure("订阅者", subscription.name, envelope, error, is_error_event)
+
+    def _report_failure(
+        self,
+        role: str,
+        name: str,
+        envelope: Envelope,
+        error: Exception,
+        is_error_event: bool,
+    ) -> None:
+        """抛错 → 转 `kernel:error`；**其余订阅者不受影响**。
+
+        `role` 只是报告里的称呼（订阅者 / 中间件）；负载里放的是**抛错者
+        的名字**——契约里那个字段叫 `subscriber`，**中间件也在分发链上，
+        同样要能指认是谁炸了**（不改契约面：M2-D4 只增不改）。
+        """
         summary = f"{type(error).__name__}: {error}"
         if is_error_event:
             # 错误事件自身不再产生错误事件——否则必然抛错的订阅者会造成
             # 无限循环。
-            self._trace(f"订阅者 {subscription.name} 处理错误事件时再次抛错：{summary}")
+            self._trace(f"{role} {name} 处理错误事件时再次抛错：{summary}")
             return
-        self._queue_error(subscription, envelope, summary)
+        self._queue_error(name, envelope, summary)
 
     def _queue_error(
         self,
-        subscription: Subscription[V],
+        name: str,
         envelope: Envelope,
         summary: str,
     ) -> None:
@@ -238,7 +351,7 @@ class EventBus[V]:
         producer = producer_of(ERROR_EVENT_TYPE) or "bus"
         metadata: Metadata = build_metadata((), producer, self._default_source)
         payload = (
-            ("subscriber", subscription.name),
+            ("subscriber", name),
             ("eventType", envelope.type),
             ("eventSeq", envelope.seq),
             ("error", summary),
@@ -260,9 +373,41 @@ class EventBus[V]:
     def history(self) -> tuple[Envelope, ...]:
         """环形历史里的最近 N 条（**由旧到新**）。
 
-        区间查询与时间旅行留 M2（FR-3.6 是 S 级需求）。
+        **按条件检索走 `query_history`**（M2-S5）；**按全局序号随机跳转
+        不做**（spec §11.2 K1——历史是环形缓冲，随机访问需要一套索引）。
         """
         return tuple(self._history)
+
+    def query_history(self, query: HistoryQuery | None = None) -> tuple[Envelope, ...]:
+        """按条件检索环形历史（**由旧到新**）。
+
+        `query` 省略时等价于 `history()`。过滤**复用订阅模式的那套写法**
+        （精确 · `命名空间:*` · `*`），帧号区间与条数上限见 `HistoryQuery`。
+
+        **不做按全局序号的随机跳转**（spec §11.2 K1）——要"跳到第 N 条"
+        得有一套索引；环形缓冲丢过最旧的，按序号跳过去未必还找得到。
+        """
+        if query is None:
+            return tuple(self._history)
+        matched = [envelope for envelope in self._history if query.accepts(envelope)]
+        limit = query.limit
+        if limit is not None:
+            if limit == 0:
+                return ()
+            if len(matched) > limit:
+                # 取**最近** N 条。注意 `limit == 0` 时 `matched[-0:]` 等于
+                # 整段（`-0` 就是 `0`）——上面先把它拦掉，这里才敢切片。
+                matched = matched[-limit:]
+        return tuple(matched)
+
+    def counts(self) -> EventCounts:
+        """事件计数（**累计** · 按类型 / 按命名空间）。
+
+        它是**独立累加器**，不靠环形历史算——历史满了会忘，计数不会。
+        """
+        by_type: Mapping[str, int] = MappingProxyType(dict(self._counts_by_type))
+        by_namespace: Mapping[str, int] = MappingProxyType(dict(self._counts_by_namespace))
+        return EventCounts(by_type=by_type, by_namespace=by_namespace)
 
     def traces(self) -> tuple[str, ...]:
         """最近的轨迹记录（静默丢弃、二次抛错等）。"""
@@ -293,4 +438,6 @@ __all__ = [
     "DEFAULT_TRACE_LIMIT",
     "ERROR_EVENT_TYPE",
     "EventBus",
+    "EventCounts",
+    "Middleware",
 ]
