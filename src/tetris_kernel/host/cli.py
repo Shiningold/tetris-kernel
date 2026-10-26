@@ -10,10 +10,28 @@
 | `sim` | **跑通**：无头批量模拟，出统计 |
 | `play` | 占位（交互式游玩要渲染与输入适配器，M3–M4） |
 | `replay` | **跑通**（M2）：读录像 → 重放 → 输出四项比对 |
-| `inspect` | 占位（属 M2 的 S11） |
+| `inspect` | **跑通**（M2 · S11）：跑 n 帧 → 只读事件流视图（按命名空间过滤 · 可暂停） |
 
 占位子命令**要能跑、不许报错**：M0 的门是「无头闭环」，占位命令只是先把
 命令行骨架立起来。
+
+## `inspect` 的输出
+
+**只读事件流**：一行一条事件（序号 · 帧号 · 类型 · 负载）。
+
+- **按命名空间过滤**（`--namespace`，可重复）：过滤的是**命名空间**（事件类型
+  名里 `:` 前的那一段），**不是事件名**——需求 §8.1 的约定就是"事件按命名
+  空间划分"，ADR-075 正是为了让 `replay:` 与 `game:` **在过滤时分开**；
+- **可暂停**（`--pause-at`）：跑到第 N 帧就**暂停视图**——之后**不再有新事件
+  进入视图**，**内核照跑**（订阅者拦不住总线，也拦不住内核）；
+- **可导出**（`--export`）：把**完整轨迹**落成文件（JSON Lines）。
+
+**可观测系统一律不装配**（`observability_enabled=False`）：面板要看的是**内核
+的事件流**——多几个订阅者只会多几条 `log:entry` / `metric:sampled` 混在里面。
+
+**两种 JSON 形态的分工**：`--json` 的**视图**用**对象**（`jq` 好取），轨迹
+**文件**用**有序的字段对**（读回来能**逐条还原**，重复键不丢——见
+`systems/metrics/trace.py`）。
 
 ## `replay` 的输出
 
@@ -49,6 +67,9 @@ import json
 import sys
 from pathlib import Path
 
+from ..adapters.storage import FileSink
+from ..bus.envelope import Envelope
+from ..systems.metrics.trace import EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
 from .assembly import assemble
@@ -70,6 +91,15 @@ DEFAULT_FRAMES_UNTIL_GAME_OVER = 50_000
 
 #: `sim` 的默认种子。
 DEFAULT_SEED = 0
+
+#: `inspect` 的默认帧数（**跑多少帧**）。
+#:
+#: **为什么比 `sim` 少**：事件流是**每帧十几条**——100 帧就是一千多条，打印
+#: 出来没人看。**视图默认只看一小段**，要看全的用 `--export` 落文件。
+DEFAULT_INSPECT_FRAMES = 20
+
+#: `inspect` 默认最多显示多少条（`0` = 全部）。
+DEFAULT_INSPECT_LIMIT = 100
 
 
 def _force_utf8_output() -> None:
@@ -119,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_sim(args)
         case "replay":
             return _cmd_replay(args)
+        case "inspect":
+            return _cmd_inspect(args)
         case _:
             return _cmd_placeholder(args)
 
@@ -162,11 +194,51 @@ def _build_parser() -> argparse.ArgumentParser:
     replay.add_argument("file", help="录像文件路径")
     replay.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
-    for name, help_text in (
-        ("play", "交互式游玩（占位；输入适配器与渲染器属 M3–M4）"),
-        ("inspect", "查看内核状态（占位；属 M2 的 S11）"),
-    ):
-        subparsers.add_parser(name, help=help_text)
+    inspect = subparsers.add_parser(
+        "inspect",
+        help="只读事件流视图：跑 n 帧 → 按命名空间过滤事件流（M2 · FR-7.3）",
+    )
+    inspect.add_argument(
+        "--frames",
+        type=int,
+        default=DEFAULT_INSPECT_FRAMES,
+        help=f"跑多少帧（默认 {DEFAULT_INSPECT_FRAMES}）",
+    )
+    inspect.add_argument(
+        "--namespace",
+        action="append",
+        default=None,
+        help="只看这些命名空间的事件（可重复；省略 = 全部）",
+    )
+    inspect.add_argument(
+        "--pause-at",
+        type=int,
+        default=None,
+        help="跑到第几帧就暂停视图（内核照跑；视图只留该帧之前的事件）",
+    )
+    inspect.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_INSPECT_LIMIT,
+        help=f"最多显示多少条（0 = 全部；默认 {DEFAULT_INSPECT_LIMIT}）",
+    )
+    inspect.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help=f"内核随机源种子（默认 {DEFAULT_SEED}）",
+    )
+    inspect.add_argument(
+        "--export",
+        default=None,
+        help="把完整轨迹导出到这个文件（JSON Lines，一行一条）",
+    )
+    inspect.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
+
+    subparsers.add_parser(
+        "play",
+        help="交互式游玩（占位；输入适配器与渲染器属 M3–M4）",
+    )
     return parser
 
 
@@ -269,6 +341,97 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0 if equal is not False else 1
 
 
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    """`inspect`：跑 n 帧，把**只读**事件流打出来（FR-7.3 · FR-7.4）。
+
+    **可观测系统一律不装配**（`observability_enabled=False`）：面板要看的
+    是**内核的事件流**——多几个订阅者只会多几条 `log:entry` / `metric:sampled`
+    混在里面，看的人分不清哪条是内核发的。
+
+    **过滤按命名空间**（不是按事件名）：需求 §8.1 的约定就是"事件按命名空间
+    划分"，ADR-075 正是为了让 `replay:` 与 `game:` **在过滤时分开**。
+
+    **暂停的是视图，不是内核**：`--pause-at` 之后**不再有新事件进入视图**，
+    内核照跑（订阅者拦不住总线，也拦不住内核）。
+
+    **导出的是完整轨迹**（不过滤、不受 `--limit` 影响）——离线分析要的是
+    全量，视图的截断只影响**显示**。
+    """
+    frames = int(args.frames)
+    if frames < 0:
+        print("帧数不能为负", file=sys.stderr)
+        return 2
+    limit = int(args.limit)
+    if limit < 0:
+        print("条数上限不能为负", file=sys.stderr)
+        return 2
+    pause_at = args.pause_at
+    if pause_at is not None and int(pause_at) < 0:
+        print("暂停帧号不能为负", file=sys.stderr)
+        return 2
+
+    assembly = assemble(seed=int(args.seed), observability_enabled=False)
+    # **面板要在事件开始流动之前订阅**——晚订阅的从 `bus.history()` 里取，
+    # 面板**不自动补历史**（它是"从现在起看"的视图）。
+    panel = EventPanel(assembly.bus, pause_at=pause_at)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    loop.run_frames(frames)
+
+    namespaces = tuple(args.namespace) if args.namespace else ()
+    events = panel.by_namespaces(namespaces) if namespaces else panel.events
+
+    export_path = args.export
+    if export_path:
+        try:
+            FileSink(Path(export_path))(panel.export_bytes())
+        except OSError as error:
+            print(f"导出轨迹失败：{error}", file=sys.stderr)
+            return 2
+
+    shown = events if limit == 0 else events[:limit]
+    if bool(args.json):
+        payload: dict[str, object] = {
+            "frames": frames,
+            "events": len(events),
+            "shown": len(shown),
+            "paused": panel.paused,
+            "namespaces": list(namespaces),
+            "trace": [_event_dict(item) for item in shown],
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        for item in shown:
+            print(_render_event(item))
+        if len(shown) < len(events):
+            print(f"（共 {len(events)} 条，只显示前 {len(shown)} 条）")
+    return 0
+
+
+def _render_event(envelope: Envelope) -> str:
+    """一条事件的人读形态：`序号 帧号 类型 负载`。"""
+    payload = " ".join(
+        f"{name}={json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
+        for name, value in envelope.payload
+    )
+    return f"{envelope.seq:>6} {envelope.frame:>6}  {envelope.type:<22} {payload}".rstrip()
+
+
+def _event_dict(envelope: Envelope) -> dict[str, object]:
+    """一条事件的机器可读形态（**负载用对象**——`jq` 好取）。
+
+    **与轨迹文件的"有序字段对"不同**：那是**格式**（读回来要逐条还原），这里
+    是**视图**（给人与脚本看的）。
+    """
+    return {
+        "seq": envelope.seq,
+        "frame": envelope.frame,
+        "type": envelope.type,
+        "payload": {name: value for name, value in envelope.payload},
+        "metadata": {name: value for name, value in envelope.metadata},
+    }
+
+
 def _cmd_placeholder(args: argparse.Namespace) -> int:
     """占位子命令：**要能跑、不许报错**（M0 只要求 `sim` 跑通）。"""
     print(f"「{args.command}」在 M0 尚未实现（占位命令）。")
@@ -355,6 +518,8 @@ def _settlement_value(value: object) -> str:
 __all__ = [
     "DEFAULT_FRAMES",
     "DEFAULT_FRAMES_UNTIL_GAME_OVER",
+    "DEFAULT_INSPECT_FRAMES",
+    "DEFAULT_INSPECT_LIMIT",
     "DEFAULT_SEED",
     "main",
 ]
