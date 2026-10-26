@@ -1,0 +1,14 @@
+{
+  "files": {
+    "bus/__init__.py": "8884051be7e61340590b096ce4e14ab0",
+    "bus/bus.py": "035f474b0a796b5297c88e05131f971e",
+    "bus/envelope.py": "9f17ea73141da66af82b955c5293bd83",
+    "bus/subscriber.py": "aad90f72b2cd19fe77954a7b4e376124"
+  },
+  "meta": {
+    "fileCount": 4,
+    "generatedBy": "tools/check_frozen_baseline.py",
+    "hashAlgorithm": "blake2b-16",
+    "scope": "bus/"
+  }
+}

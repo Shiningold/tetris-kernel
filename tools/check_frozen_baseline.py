@@ -1,4 +1,5 @@
-"""冻结区内容哈希基线：`kernel/` + `rules/`（架构 §4.4 / §7.6 · G4-1 的裁判）。
+"""内容哈希基线：`kernel/` + `rules/`（架构 §4.4 / §7.6 · G4-1 的裁判）
+与 `bus/`（ADR-019 · M2 总线封板后启用）。
 
 ## 守什么
 
@@ -14,7 +15,20 @@
   默认会把 CRLF 吃成 LF，那样归一化就成了死代码，哪天有人改了读法，
   跨平台可比性会**静默**失效而注释还写着"这里归一化了"（批次 D 审查 D10）。
 - `bus/` **不冻结**（M2 要给总线加中间件与历史查询，批批刷新基线会变成
-  橡皮图章）——架构 §4.4 明说。
+  橡皮图章）——架构 §4.4 明说。**但它另有一份独立基线**（ADR-019：
+  "`bus/` 另列独立基线，等 M2 总线封板后再启用"）：**冻结区严格对齐
+  G4-1，`bus/` 不许混进去**——两套基线各管各的，比对基准才不是橡皮图章。
+
+## 两个范围（`--scope`）
+
+| `--scope` | 守什么 | 基线文件 |
+| --- | --- | --- |
+| `frozen`（默认） | `kernel/` + `rules/` | `tests/baseline/kernel_hashes.json` |
+| `bus` | `bus/` | `tests/baseline/bus_hashes.json` |
+
+**同一套比对逻辑，两个范围**——差别只有"扫哪些目录"与"基线文件在哪"。
+`meta.scope` 记着这个范围是谁（**冻结区那份的值不许改**：改了它就与
+既有基线文件对不上，冻结区基线会被迫重刷——M2-D5 不许刷冻结区）。
 
 ## 基线文件自己也要可信
 
@@ -41,11 +55,13 @@
 ## 用法
 
 ```
-python tools/check_frozen_baseline.py                # 校验（默认）
+python tools/check_frozen_baseline.py                # 校验冻结区（默认）
+python tools/check_frozen_baseline.py --scope bus    # 校验 bus/ 独立基线
 python tools/check_frozen_baseline.py --update-baseline --reason "<理由>"
+python tools/check_frozen_baseline.py --scope bus --update-baseline --reason "<理由>"
 ```
 
-退出码：0 = 一致（或基线尚未生成）；1 = 冻结区有差异 / 基线自身不可信；2 = 用法或 IO 错误。
+退出码：0 = 一致（或基线尚未生成）；1 = 有差异 / 基线自身不可信；2 = 用法或 IO 错误。
 """
 
 from __future__ import annotations
@@ -57,6 +73,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from _toolkit import (
+    BUS_BASELINE,
+    BUS_DIR,
     FROZEN_BASELINE,
     FROZEN_DIRS,
     HASH_ALGORITHM,
@@ -70,6 +88,49 @@ from _toolkit import (
 
 #: 冻结区键的基准目录（键写成 `kernel/xxx.py` 这样的相对路径）。
 KEY_ROOT = SRC_ROOT / "tetris_kernel"
+
+
+@dataclass(frozen=True)
+class Scope:
+    """一个受基线管辖的范围（冻结区 / `bus/`）。
+
+    **两个范围共用同一套比对逻辑**——差别只有"扫哪些目录""基线文件在哪"
+    "报告里怎么称呼它"。
+    """
+
+    name: str
+    dirs: tuple[Path, ...]
+    baseline: Path
+    label: str
+    scope_meta: str
+    changed_hint: str
+    pending_hint: str
+
+
+#: 冻结区（`kernel/` + `rules/`）——**G4-1 的裁判**，M2 全程只读。
+FROZEN_SCOPE = Scope(
+    name="frozen",
+    dirs=FROZEN_DIRS,
+    baseline=FROZEN_BASELINE,
+    label="冻结区",
+    scope_meta="kernel/ + rules/",
+    changed_hint="内核 / 规则的内容变了。",
+    pending_hint="（按计划在 M0 收尾 / S17 生成）",
+)
+
+#: `bus/` 独立基线（ADR-019）——**M2 总线封板后启用**。
+BUS_SCOPE = Scope(
+    name="bus",
+    dirs=(BUS_DIR,),
+    baseline=BUS_BASELINE,
+    label="bus/",
+    scope_meta="bus/",
+    changed_hint="bus/ 的内容变了——总线封板后不许随手改。",
+    pending_hint="（M2 总线封板后生成 · ADR-019）",
+)
+
+#: 范围名 → 范围。
+SCOPES: dict[str, Scope] = {FROZEN_SCOPE.name: FROZEN_SCOPE, BUS_SCOPE.name: BUS_SCOPE}
 
 
 @dataclass(frozen=True)
@@ -103,10 +164,10 @@ def _read_raw(path: Path) -> str:
         return handle.read()
 
 
-def collect_hashes() -> list[FileHash]:
-    """冻结区全部文件的内容哈希（换行符已归一）。"""
+def collect_hashes(scope: Scope) -> list[FileHash]:
+    """范围内全部文件的内容哈希（换行符已归一）。"""
     hashes: list[FileHash] = []
-    for root in FROZEN_DIRS:
+    for root in scope.dirs:
         for path in iter_files(root):
             key = path.resolve().relative_to(KEY_ROOT).as_posix()
             content = normalize_newlines(_read_raw(path))
@@ -114,18 +175,22 @@ def collect_hashes() -> list[FileHash]:
     return sorted(hashes, key=lambda item: item.key)
 
 
-def baseline_document(hashes: list[FileHash]) -> dict[str, object]:
+def baseline_document(hashes: list[FileHash], scope: Scope) -> dict[str, object]:
     """基线文件的内容（**不写时间戳**：逐字节可复现，git 里不产生噪声）。
 
     **自述块里记着基线自己有多少个文件**（`fileCount`）：口径与契约基线
     统一——条数对不上就是有人动过它（批次 D 审查 D1）。
+
+    `meta.scope` 记着**这个范围是谁**——冻结区那份的值是
+    `"kernel/ + rules/"`（**不许改**：改了就得重刷冻结区基线，而 M2-D5
+    明说 M2 不刷冻结区）。
     """
     return {
         "meta": {
             "fileCount": len(hashes),
             "hashAlgorithm": HASH_ALGORITHM,
             "generatedBy": "tools/check_frozen_baseline.py",
-            "scope": "kernel/ + rules/",
+            "scope": scope.scope_meta,
         },
         "files": {item.key: item.digest for item in hashes},
     }
@@ -168,10 +233,12 @@ def baseline_integrity_problems(baseline: BaselineDocument) -> list[str]:
     return problems
 
 
-def write_baseline(path: Path, hashes: list[FileHash]) -> None:
+def write_baseline(path: Path, hashes: list[FileHash], scope: Scope) -> None:
     """写基线文件。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(baseline_document(hashes), ensure_ascii=False, indent=2, sort_keys=True)
+    text = json.dumps(
+        baseline_document(hashes, scope), ensure_ascii=False, indent=2, sort_keys=True
+    )
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
@@ -209,12 +276,20 @@ def _print_update_diff(path: Path, hashes: list[FileHash], reason: str | None) -
 def main(argv: list[str] | None = None) -> int:
     """命令行入口。"""
     configure_output()
-    parser = argparse.ArgumentParser(description="冻结区内容哈希基线：kernel/ + rules/")
+    parser = argparse.ArgumentParser(
+        description="内容哈希基线：冻结区（kernel/ + rules/）与 bus/ 独立基线"
+    )
+    parser.add_argument(
+        "--scope",
+        choices=sorted(SCOPES),
+        default=FROZEN_SCOPE.name,
+        help="校验哪个范围（默认 frozen = 冻结区；bus = bus/ 独立基线）",
+    )
     parser.add_argument(
         "--baseline",
         type=Path,
-        default=FROZEN_BASELINE,
-        help=f"基线文件路径（默认 {relative_to_repo(FROZEN_BASELINE)}）",
+        default=None,
+        help="基线文件路径（默认随 --scope 走）",
     )
     parser.add_argument(
         "--update-baseline",
@@ -234,28 +309,31 @@ def main(argv: list[str] | None = None) -> int:
             '--update-baseline 必须带 --reason "<理由>"：基线刷新要写明理由，不做无声覆盖。'
         )
 
+    scope = SCOPES[args.scope]
+    baseline_path = scope.baseline if args.baseline is None else args.baseline
+
     try:
-        hashes = collect_hashes()
+        hashes = collect_hashes(scope)
     except OSError as error:
-        print(f"读冻结区失败：{error}", file=sys.stderr)
+        print(f"读{scope.label}失败：{error}", file=sys.stderr)
         return 2
     current = {item.key: item.digest for item in hashes}
 
     if args.update_baseline:
-        _print_update_diff(args.baseline, hashes, args.reason)
-        write_baseline(args.baseline, hashes)
-        print(f"已写入基线：{relative_to_repo(args.baseline)}（{len(hashes)} 个文件）")
+        _print_update_diff(baseline_path, hashes, args.reason)
+        write_baseline(baseline_path, hashes, scope)
+        print(f"已写入基线：{relative_to_repo(baseline_path)}（{len(hashes)} 个文件）")
         return 0
 
-    if not args.baseline.exists():
+    if not baseline_path.exists():
         print(
-            f"冻结区基线尚未生成：{relative_to_repo(args.baseline)} 不存在"
-            "（按计划在 M0 收尾 / S17 生成）"
+            f"{scope.label}基线尚未生成：{relative_to_repo(baseline_path)} 不存在"
+            f"{scope.pending_hint}"
         )
         return 0
 
     try:
-        baseline = load_baseline(args.baseline)
+        baseline = load_baseline(baseline_path)
     except (OSError, ValueError) as error:
         print(f"读基线失败：{error}", file=sys.stderr)
         return 2
@@ -264,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         for problem in problems:
             print(f"基线自身不可信（红）：{problem}")
-        print("冻结区基线校验失败：基线文件被清空 / 残缺。", file=sys.stderr)
+        print(f"{scope.label}基线校验失败：基线文件被清空 / 残缺。", file=sys.stderr)
         return 1
 
     added = sorted(key for key in current if key not in baseline.files)
@@ -274,20 +352,20 @@ def main(argv: list[str] | None = None) -> int:
     removed = sorted(key for key in baseline.files if key not in current)
 
     for key in added:
-        print(f"冻结区新增文件（红）：{key}")
+        print(f"{scope.label}新增文件（红）：{key}")
     for key in changed:
-        print(f"冻结区内容变化（红）：{key}")
+        print(f"{scope.label}内容变化（红）：{key}")
     for key in removed:
-        print(f"冻结区文件消失（红）：{key}")
+        print(f"{scope.label}文件消失（红）：{key}")
 
     print(
-        f"冻结区 {len(current)} 个文件：新增 {len(added)} · 变化 {len(changed)}"
+        f"{scope.label} {len(current)} 个文件：新增 {len(added)} · 变化 {len(changed)}"
         f" · 消失 {len(removed)}"
     )
     if added or changed or removed:
-        print("冻结区基线校验失败：内核 / 规则的内容变了。", file=sys.stderr)
+        print(f"{scope.label}基线校验失败：{scope.changed_hint}", file=sys.stderr)
         return 1
-    print("冻结区基线校验通过。")
+    print(f"{scope.label}基线校验通过。")
     return 0
 
 

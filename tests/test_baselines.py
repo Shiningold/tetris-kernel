@@ -1,10 +1,10 @@
-"""三份基线的门禁（S17 冻结的两道裁判 + S16 的事件数行为基线 · 批次 D 收口与修订）。
+"""四份基线的门禁（S17 冻结的两道裁判 + S16 的事件数行为基线 + M2 的 bus 独立基线）。
 
-## 为什么要这三道门
+## 为什么要这几道门
 
-`tools/` 下那三份基线（契约 v1 字段级哈希 · 冻结区 `kernel/` + `rules/` 内容哈希 ·
-每帧事件数与事件类型）**是工具**：没人跑它，它就只是躺在仓库里的一份 JSON。基线纪律要成立，
-就得**每一次跑测试都跑一遍它**。
+`tools/` 下那几份基线（契约 v1 字段级哈希 · 冻结区 `kernel/` + `rules/` 内容哈希 ·
+每帧事件数与事件类型 · **`bus/` 独立内容哈希**）**是工具**：没人跑它，它就只是躺在
+仓库里的一份 JSON。基线纪律要成立，就得**每一次跑测试都跑一遍它**。
 
 - **契约基线**（`tools/contract_baseline.py`）：契约面**只增不改**——新增键放行，
   **已有键的哈希变化或消失报红**（改名 / 改型 / 删字段 = major 变更）；
@@ -14,6 +14,9 @@
   **逐帧发出多少条事件、分别是哪些类型**——契约基线只看**声明**、冻结区基线只看
   **文件内容**，**行为恰好落在两者的缝里**（批次 D 审查 D5）。`bus/` 与 `host/`
   **不在冻结区**，宿主层多发一条事件，声明面与文件哈希面都看不出来。
+- **`bus/` 独立基线**（`tools/check_frozen_baseline.py --scope bus`）：**M2 总线封板
+  后启用**（ADR-019）——封板之后**改动 `bus/` 任一文件必红**。**它与冻结区基线各管
+  各的**：`bus/` 不许混进冻结区（冻结区严格对齐 G4-1），冻结区也不许混进 `bus/`。
 
 ## 每道门都要有**反向用例**
 
@@ -54,10 +57,13 @@ import pytest
 #: 仓库根目录（`tests/` 的上一级）。
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: 三份基线文件（**必须存在**——否则工具会"基线尚未生成"然后放行，守卫等于没跑）。
+#: 四份基线文件（**必须存在**——否则工具会"基线尚未生成"然后放行，守卫等于没跑）。
 CONTRACT_BASELINE = REPO_ROOT / "tests" / "baseline" / "contracts_baseline.json"
 FROZEN_BASELINE = REPO_ROOT / "tests" / "baseline" / "kernel_hashes.json"
 FRAME_EVENTS_BASELINE = REPO_ROOT / "tests" / "baseline" / "frame_events.json"
+
+#: `bus/` 独立基线（M2 总线封板后启用 · ADR-019）。
+BUS_BASELINE = REPO_ROOT / "tests" / "baseline" / "bus_hashes.json"
 
 #: 采集工具在 `tools/` 下，**它自己** import 同目录的 `_toolkit`，
 #: 所以要把 `tools/` 挂到 `sys.path` 上（与 `tests/test_rng.py` 同一手法）。
@@ -698,3 +704,127 @@ def test_the_contract_expected_list_refresh_requires_a_reason(tmp_path: Path) ->
         f"刷新期望清单没带 --reason，工具却放行了：\n{result.stdout}\n{result.stderr}"
     )
     assert not target.exists(), "没带 --reason 却把期望清单写出来了"
+
+
+# ---------------------------------------------------------------------------
+# `bus/` 独立基线（M2-S5 · ADR-019）
+# ---------------------------------------------------------------------------
+#
+# **封板的含义是"此后改动 `bus/` 任一文件必红"**——所以基线与**给它上牙齿的
+# 门禁用例**必须同笔落笔，否则中间那一刻基线只是躺在仓库里的一份 JSON。
+#
+# 反向用例一律**喂一份故意改坏的临时基线**给工具（不复制任何哈希实现），
+# 断言它退出码非 0——与本文件其余几节同一手法。
+
+
+def test_the_bus_baseline_matches_the_current_bus_sources() -> None:
+    """`bus/` 的内容与**独立基线**逐字节一致（封板之后不许随手改）。"""
+    assert BUS_BASELINE.exists(), f"bus/ 独立基线不存在：{BUS_BASELINE}"
+
+    result = _run_tool("tools/check_frozen_baseline.py", "--scope", "bus")
+
+    assert result.returncode == 0, (
+        f"bus/ 独立基线校验失败——总线封板后 bus/ 的内容变了：\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_the_bus_baseline_rejects_a_changed_file_hash(tmp_path: Path) -> None:
+    """`bus/` 基线里**某个文件的哈希**被改动时必须报红（内容变了）。"""
+    document = _read_json(BUS_BASELINE)
+    files = document["files"]
+    changed = sorted(files)[0]
+    files[changed] = "0" * 32
+    broken = _write_json(tmp_path / "bus_hashes.json", document)
+
+    result = _run_tool(
+        "tools/check_frozen_baseline.py",
+        "--scope",
+        "bus",
+        "--baseline",
+        str(broken),
+    )
+
+    assert result.returncode != 0, (
+        f"bus/ 基线里 {changed} 的哈希被改了，工具却放行了：\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_the_bus_baseline_rejects_a_baseline_with_one_file_removed(tmp_path: Path) -> None:
+    """`bus/` 基线**少一个文件**时必须报红。
+
+    **同步改 `fileCount`**——这样红的是"文件消失"那一层，而不是自述块那一层
+    （自述块那一层另有用例钉着）。
+    """
+    document = _read_json(BUS_BASELINE)
+    files = document["files"]
+    removed = sorted(files)[0]
+    del files[removed]
+    document["meta"]["fileCount"] = len(files)
+    broken = _write_json(tmp_path / "bus_hashes.json", document)
+
+    result = _run_tool(
+        "tools/check_frozen_baseline.py",
+        "--scope",
+        "bus",
+        "--baseline",
+        str(broken),
+    )
+
+    assert result.returncode != 0, (
+        f"bus/ 基线少了 {removed}，工具却放行了：\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_the_bus_baseline_rejects_a_tampered_file_count(tmp_path: Path) -> None:
+    """`bus/` 基线**自述块里的文件数**被改动时必须报红。"""
+    document = _read_json(BUS_BASELINE)
+    document["meta"]["fileCount"] = 1
+    broken = _write_json(tmp_path / "bus_hashes.json", document)
+
+    result = _run_tool(
+        "tools/check_frozen_baseline.py",
+        "--scope",
+        "bus",
+        "--baseline",
+        str(broken),
+    )
+
+    assert result.returncode != 0, (
+        f"bus/ 基线自述的文件数被改了，工具却放行了：\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_the_bus_baseline_refresh_requires_a_reason(tmp_path: Path) -> None:
+    """`bus/` 基线刷新**不带 `--reason`** 时必须拒绝，且不落盘。"""
+    target = tmp_path / "bus_hashes.json"
+
+    result = _run_tool(
+        "tools/check_frozen_baseline.py",
+        "--scope",
+        "bus",
+        "--update-baseline",
+        "--baseline",
+        str(target),
+    )
+
+    assert result.returncode != 0, (
+        f"刷新 bus/ 基线没带 --reason，工具却放行了：\n{result.stdout}\n{result.stderr}"
+    )
+    assert not target.exists(), "没带 --reason 却把 bus/ 基线写出来了"
+
+
+def test_the_bus_baseline_and_the_frozen_baseline_never_overlap() -> None:
+    """**两份基线各管各的**——`bus/` 不许混进冻结区，冻结区也不许混进 `bus/`。
+
+    ADR-019 的原话是"`bus/` 另列独立基线"，而 plan-M2 S5 的常见坑写着
+    **"把 `bus/` 并进冻结区基线"**——这条用例就是那颗钉子。
+    """
+    bus_files = _read_json(BUS_BASELINE)["files"]
+    frozen_files = _read_json(FROZEN_BASELINE)["files"]
+
+    assert bus_files, "bus/ 基线一个文件都没有——它被清空了"
+    assert all(key.startswith("bus/") for key in bus_files), sorted(bus_files)
+    assert not [key for key in frozen_files if key.startswith("bus/")], (
+        "bus/ 混进了冻结区基线——冻结区严格对齐 G4-1"
+    )
+    assert all(key.startswith(("kernel/", "rules/")) for key in frozen_files), sorted(frozen_files)
