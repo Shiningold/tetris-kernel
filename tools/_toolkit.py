@@ -1,7 +1,7 @@
 """tools/ 下的共享小工具。
 
 五个脚本各自独立可跑（`python tools/xxx.py`），彼此之间不互相 import；
-只有这一份低层工具是共享的：路径、稳定哈希、换行归一化、输出。
+只有这一份低层工具是共享的：路径、稳定哈希、换行归一化、输出、**git 取内容**。
 
 **共享的只有工具函数，不共享任何名单**——哪些名字合法、哪些取值域合法，
 一律从 `contracts/` 的声明推导（架构 §4.4 末条）。这里不存任何"名单"：
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -125,3 +126,55 @@ def relative_to_repo(path: Path) -> str:
         return path.resolve().relative_to(REPO_ROOT).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+# ---------------------------------------------------------------------------
+# git 取内容（ADR-077 的期望源背书）
+# ---------------------------------------------------------------------------
+
+
+def git_repo_root(anchor: Path) -> Path | None:
+    """锚点所在目录所属的 **git 仓库根**；不在 git 工作区里返回 `None`。
+
+    **锚点可以是文件**（用它的父目录去问）。问的是"**这个文件归哪个仓库管**"，
+    不是"工具自己在哪个仓库"——后者会让"拿一份仓外的文件来试工具"永远无法
+    验证（`tests/` 里的反向用例正需要这个自由度）。
+    """
+    directory = anchor if anchor.is_dir() else anchor.parent
+    if not directory.is_dir():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=directory,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    text = result.stdout.decode("utf-8", errors="replace").strip()
+    return Path(text) if text else None
+
+
+def git_head_bytes(repo_root: Path, relative_path: str) -> bytes | None:
+    """`git show HEAD:<相对路径>` 的**原始字节**；取不到返回 `None`。
+
+    **取的是 blob 原样，不做换行转换**——所以它和**工作区**的文件比之前
+    **必须归一化换行符**（见 `normalize_newlines`）：本仓库 `core.autocrlf=true`
+    且没有 `.gitattributes`，工作区是 CRLF、blob 是 LF，**逐字节比必然永远红**，
+    守卫会形同虚设。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "show", f"HEAD:{relative_path}"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout

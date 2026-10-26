@@ -1,6 +1,6 @@
 """契约声明测试（S2 事件 / S3 命令 / S4 快照与放置 / S5 规则签名 · S15 补全）。
 
-当前覆盖：事件注册表（44 条）、命名空间、产出者分布、信封与元数据声明、
+当前覆盖：事件注册表（49 条）、命名空间、产出者分布、信封与元数据声明、
 命令规格（16 条）与拒绝原因枚举（12 值）、快照字段声明（21 顶层 + board 5
 子字段 + active 4 子字段）、坐标系约定、M0 内核状态清单、PlacementInfo、
 规则接口签名（9 条）与四个中性交换结构、命名结构注册表、类型文法回验与
@@ -169,6 +169,12 @@ EXPECTED_EVENTS: dict[str, tuple[str, str]] = {
     "metric:sampled": ("metric", "metrics"),
     # achievement（1 条）
     "achievement:unlocked": ("achievement", "achievements"),
+    # replay（5 条 · M2 新开命名空间 · ADR-075）
+    "replay:recording-started": ("replay", "systems/replay/"),
+    "replay:recording-stopped": ("replay", "systems/replay/"),
+    "replay:playback-started": ("replay", "systems/replay/"),
+    "replay:playback-stopped": ("replay", "systems/replay/"),
+    "replay:frame-stepped": ("replay", "systems/replay/"),
 }
 
 #: 产出者分布（需求 §8.1 / 契约清单第 8 项）。
@@ -181,6 +187,7 @@ EXPECTED_PRODUCER_COUNTS: dict[str, int] = {
     "log": 1,
     "metrics": 1,
     "achievements": 1,
+    "systems/replay/": 5,
 }
 
 
@@ -416,12 +423,35 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         "triggerType": "str",
         "triggerSeq": "int",
     },
+    "replay:recording-started": {
+        "seed": "int",
+        "rule": "str",
+    },
+    "replay:recording-stopped": {
+        "commandCount": "int",
+        "frameCount": "int",
+    },
+    "replay:playback-started": {
+        "seed": "int",
+        "rule": "str",
+        "commandCount": "int",
+    },
+    "replay:playback-stopped": {
+        "fingerprint": "str",
+        "score": "int",
+        "lines": "int",
+        "piecesPlaced": "int",
+    },
+    "replay:frame-stepped": {
+        "frame": "int",
+        "commandCount": "int",
+    },
 }
 
 
 def test_event_registry_size() -> None:
-    """事件总数 = 44（需求 §8.1）。"""
-    assert len(EVENT_TYPES) == 44
+    """事件总数 = 49（需求 §8.1）。"""
+    assert len(EVENT_TYPES) == 49
 
 
 def test_event_registry_matches_requirement_table() -> None:
@@ -443,7 +473,10 @@ def test_event_registry_matches_requirement_table() -> None:
 
 
 def test_producer_distribution() -> None:
-    """产出者分布：内核 34 · 总线 1 · host 3 · 输入适配器 2 · 渲染器 1 · 日志/指标/成就各 1。"""
+    """产出者分布：内核 34 · 总线 1 · host 3 · 输入适配器 2 · 渲染器 1。
+
+    日志 / 指标 / 成就各 1（`replay:` 命名空间由回放系统产出 5 条 · ADR-075）。
+    """
     counts: dict[str, int] = {}
     for spec in EVENT_TYPES.values():
         counts[spec.producer] = counts.get(spec.producer, 0) + 1
