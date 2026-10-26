@@ -205,8 +205,13 @@ def test_the_host_forwards_every_draft_one_by_one(monkeypatch: pytest.MonkeyPatc
 
     帧末那条 `state:changed` 是**宿主自己**造的，不在内核产出的草稿里，两侧
     对拍时剔掉它。
+
+    **可观测系统关掉**：这条验的是「宿主 ↔ 内核」这条路径上的转发完整性。
+    可观测系统**自己也会往总线上发事件**（`log:entry` · `metric:sampled`），
+    那些**不是内核的草稿**，混进对拍里就不是对拍了。**断言一个字没削弱**：
+    两侧对拍照旧。
     """
-    assembly = assemble(seed=SEED)
+    assembly = assemble(seed=SEED, observability_enabled=False)
     kernel = assembly.kernel
 
     produced: list[str] = []
@@ -288,8 +293,14 @@ def test_run_frame_returns_the_number_of_events_it_published() -> None:
 
 
 def test_state_changed_is_emitted_once_per_frame_at_frame_end() -> None:
-    """帧末才产出 `state:changed`：**每帧至多一条**，版本没变就不发。"""
-    assembly = assemble(seed=SEED)
+    """帧末才产出 `state:changed`：**每帧至多一条**，版本没变就不发。
+
+    **可观测系统关掉**：日志系统会把每条事件变成一条 `log:entry`，而
+    `state:changed` 的那条日志**帧号相同**——它排在 `state:changed` 后面，
+    "帧末最后一条"就不成其为"帧末最后一条"了。这条验的是**宿主产出的**那条
+    `state:changed` 的位置，可观测系统不在被验范围里。
+    """
+    assembly = assemble(seed=SEED, observability_enabled=False)
     published: list[tuple[int, str]] = []
     assembly.bus.subscribe("*", lambda envelope: published.append((envelope.frame, envelope.type)))
 
@@ -569,8 +580,13 @@ def test_advance_frame_is_fully_consumed_without_error(monkeypatch: pytest.Monke
 
 
 def test_initial_events_are_published_on_construction() -> None:
-    """构造 `HeadlessLoop` 时把 `kernel:ready` · `game:created` 发到总线上。"""
-    assembly = assemble(seed=SEED)
+    """构造 `HeadlessLoop` 时把 `kernel:ready` · `game:created` 发到总线上。
+
+    **可观测系统关掉**：这条要的是「总线上**只有**那两条」。可观测系统会
+    对它们各自产出自己的事件（`log:entry` · `replay:recording-started`），
+    混进来就不是"只有那两条"了——它们的行为另有专门用例（下面那条）。
+    """
+    assembly = assemble(seed=SEED, observability_enabled=False)
     assert assembly.bus.last_seq == 0, "装配层不该自己发事件"
 
     HeadlessLoop(assembly)
@@ -578,6 +594,21 @@ def test_initial_events_are_published_on_construction() -> None:
     types = [envelope.type for envelope in assembly.bus.history()]
     assert types == ["kernel:ready", "game:created"]
     assert assembly.bus.last_seq == 2
+
+
+def test_the_assembly_layer_publishes_nothing_even_with_observability_enabled() -> None:
+    """**装配层一个事件都不发**——**开着可观测系统也一样**。
+
+    装配层只**造零件**：日志 / 指标 / 录制三个系统都是**只订阅**的订阅者，
+    它们的事件由**内核的事件**触发，不该由"装配"这个动作触发。
+
+    **这条就是"录制器改从 `kernel:ready` 取种子与规则集标识"的判据**：改回
+    "构造即发 `replay:recording-started`"，它必红。
+    """
+    assembly = assemble(seed=SEED, observability_enabled=True)
+
+    assert assembly.observable_systems, "可观测系统没装配上——这条就成空转了"
+    assert assembly.bus.last_seq == 0, "装配层自己发了事件"
 
 
 def test_assemble_defaults_to_a_virtual_clock() -> None:
@@ -729,7 +760,15 @@ def test_cli_output_stream_is_switched_to_utf8(monkeypatch: pytest.MonkeyPatch) 
     assert "帧数" in buffer.getvalue().decode("utf-8")
 
 
-@pytest.mark.parametrize("command", ["play", "replay", "inspect"])
+#: **仍是占位**的子命令。
+#:
+#: **`replay` 在 M2 变成真跑**（读录像 → 重放 → 输出四项比对）——它不再是占位
+#: 命令，用例挪到了 `tests/test_replay_playback.py`。这是一次**破坏性改动**：
+#: 依赖"`replay` 是占位"这个行为的调用方会失效（plan-M2 S9 的提交标题带 `!`）。
+PLACEHOLDER_COMMANDS = ["play", "inspect"]
+
+
+@pytest.mark.parametrize("command", PLACEHOLDER_COMMANDS)
 def test_placeholder_commands_run(command: str, capsys: pytest.CaptureFixture[str]) -> None:
     """占位子命令**要能跑、不许报错**。"""
     assert main([command]) == 0

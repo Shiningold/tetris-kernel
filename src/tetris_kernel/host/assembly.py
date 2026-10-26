@@ -54,6 +54,9 @@ from ..kernel.snapshot import Snapshot
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
+from ..systems.log import LogSystem, LogTarget, SinkTarget
+from ..systems.metrics import MetricsSystem
+from ..systems.replay import RecordingSystem
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 
 #: 落盘出口（**装配约定，不属于契约面** —— spec-M2 §3.3 · ADR-064 / ADR-074）。
@@ -158,15 +161,49 @@ def default_sink(
     return FileSink(directory.path / filename), directory
 
 
-#: 可观测系统的装配入口（**批次 C 往这张表里加**）。
+#: 可观测系统的装配入口（**批次 C 往这张表里填满了**）。
 #:
 #: 每个工厂的签名一致：`(bus, sink) -> 系统对象`。**开关关掉时这些工厂
 #: 一个都不许被调用**——不是"装配了再退订"（那是 `G2-3` 的假绿陷阱：
 #: 系统还在跑，只是不发事件）。
+#:
+#: **为什么只有两个参数**：种子与规则集标识**不进工厂**——它们由内核从
+#: `kernel:ready` 事件里带出来，录制系统自己去取（内核是那两项的权威）。
+#: 顺带**装配层一个事件都不发**（宿主的一条不变量：造零件不许自己造事件）。
 type ObservableFactory = Callable[[EventBus[Snapshot], Sink | None], object]
 
-#: 可观测系统的装配表（**批次 B 时是空的**：三个系统仍是空壳，批次 C 往里填）。
-OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = ()
+
+def _build_log_system(bus: EventBus[Snapshot], sink: Sink | None) -> LogSystem:
+    """日志系统（**普通订阅者** · 级别映射在系统内 · ADR-046）。
+
+    **默认不挂控制台目标**：控制台是**人读**的输出，日志系统的输出目标
+    **可插拔**——装配层默认只挂文件目标（经 sink），**要不要往控制台打由调用方
+    自己加目标**。
+    """
+    targets: tuple[LogTarget, ...] = () if sink is None else (SinkTarget(sink),)
+    return LogSystem(bus, targets)
+
+
+def _build_metrics_system(bus: EventBus[Snapshot], sink: Sink | None) -> MetricsSystem:
+    """指标系统（**普通订阅者** · 每帧一条 `metric:sampled`）。"""
+    return MetricsSystem(bus, sink)
+
+
+def _build_recording_system(bus: EventBus[Snapshot], sink: Sink | None) -> RecordingSystem:
+    """录像录制系统（**只录被接受的命令** · M2-D3）。"""
+    return RecordingSystem(bus, sink)
+
+
+#: 可观测系统的装配表（**批次 C 填上了三个系统**）。
+#:
+#: **顺序不影响结果**：三个系统都只**订阅**总线，谁先装谁后装看到的都是
+#: 同一串事件——**装配层不发事件**（见上面的签名说明），没有"谁先谁后能看见
+#: 谁的启动事件"这回事。
+OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = (
+    _build_log_system,
+    _build_metrics_system,
+    _build_recording_system,
+)
 
 
 @dataclass(frozen=True)
