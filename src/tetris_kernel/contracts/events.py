@@ -1,4 +1,4 @@
-"""事件契约声明（契约 v1 · 44 条事件 + 信封 + 元数据）。
+"""事件契约声明（契约 v1 · 49 条事件 + 信封 + 元数据）。
 
 公共叶子——**不 import 任何 `tetris_kernel.*` 模块，也不依赖第三方**；只用标准库
 （架构 §2.3 / §4.1）。本模块只做"声明"，不做"行为"：只构造声明用的 dataclass
@@ -114,7 +114,7 @@ METADATA_KEYS: tuple[PayloadField, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# 事件目录（44 条，需求 §8.1）
+# 事件目录（49 条，需求 §8.1）
 # ---------------------------------------------------------------------------
 
 _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
@@ -657,6 +657,73 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             ),
         ),
     ),
+    # ---------------- replay（5 条 · M2 新开命名空间 · ADR-075） ----------------
+    #
+    # **新开命名空间是写明的例外**：需求 §8.1 的约定原文是「新增事件必须登记到
+    # 本表并归入既有命名空间」——M2 在那条约定上加了一条指向 ADR-075 的例外。
+    # **约定与实现不许分家**（改了约定不写理由，下一个批次会以为新开命名空间
+    # 是违规的，而实现里已经有了）。
+    #
+    # **产出者填 `systems/replay/`**：回放系统有独立的生命周期与独立的产出者，
+    # 产出者**不等于**命名空间（ADR-063 的口径在新命名空间上同样成立）。
+    (
+        "replay:recording-started",
+        _spec(
+            "replay",
+            "systems/replay/",
+            (
+                PayloadField("seed", "int", "随机源种子；录像头里记它（文件名不带它）"),
+                PayloadField("rule", "str", "规则集标识；重放要按同一个规则集起内核"),
+            ),
+        ),
+    ),
+    (
+        "replay:recording-stopped",
+        _spec(
+            "replay",
+            "systems/replay/",
+            (
+                PayloadField("commandCount", "int", "录到的命令总数（**只数被接受的命令**）"),
+                PayloadField("frameCount", "int", "录到的帧数"),
+            ),
+        ),
+    ),
+    (
+        "replay:playback-started",
+        _spec(
+            "replay",
+            "systems/replay/",
+            (
+                PayloadField("seed", "int", "录像头里的随机源种子"),
+                PayloadField("rule", "str", "录像头里的规则集标识"),
+                PayloadField("commandCount", "int", "录像里的命令总数"),
+            ),
+        ),
+    ),
+    (
+        "replay:playback-stopped",
+        _spec(
+            "replay",
+            "systems/replay/",
+            (
+                PayloadField("fingerprint", "str", "棋盘指纹（重放结束后算得）"),
+                PayloadField("score", "int", "重放结束时的分数"),
+                PayloadField("lines", "int", "重放结束时的累计消行数"),
+                PayloadField("piecesPlaced", "int", "重放结束时的已放置方块数"),
+            ),
+        ),
+    ),
+    (
+        "replay:frame-stepped",
+        _spec(
+            "replay",
+            "systems/replay/",
+            (
+                PayloadField("frame", "int", "步进到的帧号"),
+                PayloadField("commandCount", "int", "该帧派发的命令数"),
+            ),
+        ),
+    ),
 )
 
 #: 事件类型注册表：键 = 事件类型名，值 = 该类型的声明（ADR-020）。
@@ -668,6 +735,12 @@ EVENT_TYPES: Mapping[str, EventSpec] = MappingProxyType(dict(_EVENT_SPECS))
 # ---------------------------------------------------------------------------
 
 #: 产出者代号 → 需求 §8.1「产出者」列的中文名。两边必须逐条相等。
+#:
+#: **`systems/replay/` 带路径与尾斜杠**——它与其余八个代号（`kernel` / `bus` /
+#: `host` / `input-adapter` / `renderer` / `log` / `metrics` / `achievements`）
+#: 的写法不同：那一组是**角色名**，这一条是**部件路径**。**按 ADR-075 的原文
+#: 填**，不为凑齐写法而改（改它 = 改一条已落定的决策，且产出者字段进了基线，
+#: 改它就是 major 变更）。
 PRODUCER_LABELS: Mapping[str, str] = MappingProxyType(
     {
         "kernel": "内核",
@@ -678,6 +751,7 @@ PRODUCER_LABELS: Mapping[str, str] = MappingProxyType(
         "log": "日志系统",
         "metrics": "指标系统",
         "achievements": "成就系统",
+        "systems/replay/": "回放系统",
     }
 )
 
