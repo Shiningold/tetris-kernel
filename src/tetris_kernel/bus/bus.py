@@ -17,6 +17,11 @@
 **错误事件自身不再产生错误事件**——否则"必然抛错"的订阅者会让总线陷入
 无限循环。
 
+**错误级联也要防（ADR-083）**：错误事件本身**会被别的订阅者变成新事件**——
+日志系统把错误写成 `log:entry`，那条新事件又落回抛错订阅者手里 → 又产生
+错误事件 → **无限级联**（实测：事件数无上界，宿主卡死）。所以**同一个订阅者
+在一轮排空里只报一次错**，再炸只记 trace。
+
 ## 待发布队列（架构 §5.1）
 
 分发期间产生的自产事件（`log:entry` / `metric:sampled` /
@@ -148,6 +153,8 @@ class EventBus[V]:
         self._middlewares: list[tuple[str, Middleware]] = []
         self._counts_by_type: dict[str, int] = {}
         self._counts_by_namespace: dict[str, int] = {}
+        # **这一轮排空里已经报过错事件的订阅者**（防错误级联 · ADR-083）。
+        self._errored_subscribers: set[str] = set()
         self._seq = 0
         self._dispatching = False
 
@@ -266,14 +273,21 @@ class EventBus[V]:
         self._drain_pending()
 
     def _drain_pending(self) -> None:
-        """把待发布队列按 FIFO 逐条发出（分发期间产生的自产事件）。"""
-        while self._pending:
-            envelope = self._pending.popleft()
-            self._dispatching = True
-            try:
-                self._deliver(envelope)
-            finally:
-                self._dispatching = False
+        """把待发布队列按 FIFO 逐条发出（分发期间产生的自产事件）。
+
+        **一轮排空结束时清零"已报错订阅者"**——错误级联的边界就是**这一轮**
+        （ADR-083）。
+        """
+        try:
+            while self._pending:
+                envelope = self._pending.popleft()
+                self._dispatching = True
+                try:
+                    self._deliver(envelope)
+                finally:
+                    self._dispatching = False
+        finally:
+            self._errored_subscribers.clear()
 
     def _deliver(self, envelope: Envelope) -> None:
         """把一条事件交给**中间件**与**全部命中**的订阅者（优先级已排好）。
@@ -346,9 +360,18 @@ class EventBus[V]:
         """
         summary = f"{type(error).__name__}: {error}"
         if is_error_event:
-            # 错误事件自身不再产生错误事件——否则必然抛错的订阅者会造成
-            # 无限循环。
+            # 错误事件自身不再产生错误事件——否则必然抛错的订阅者会让
+            # 总线陷入无限循环。
             self._trace(f"{role} {name} 处理错误事件时再次抛错：{summary}")
+            return
+        if name in self._errored_subscribers:
+            # **同一个订阅者在这一轮排空里只报一次错**（ADR-083）。
+            #
+            # **为什么**：错误事件本身会被**别的订阅者**变成新事件（日志系统
+            # 把错误写成 `log:entry`）——那个新事件又落回抛错订阅者手里 → 又
+            # 产生错误事件 → **无限级联**（实测：事件数无上界，宿主卡死）。
+            # 所以：**已经报过错事件的订阅者，再炸只记 trace**。
+            self._trace(f"{role} {name} 在错误级联里再次抛错：{summary}")
             return
         self._queue_error(name, envelope, summary)
 
@@ -359,6 +382,9 @@ class EventBus[V]:
         summary: str,
     ) -> None:
         """把 `kernel:error` 排进待发布队列（**不打断当前分发**）。"""
+        # **记下这个订阅者**：这一轮排空里它再炸就只记 trace（ADR-083 的
+        # 错误级联防线）。
+        self._errored_subscribers.add(name)
         producer = producer_of(ERROR_EVENT_TYPE) or "bus"
         metadata: Metadata = build_metadata((), producer, self._default_source)
         payload = (
