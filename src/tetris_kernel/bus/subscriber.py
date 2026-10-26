@@ -1,4 +1,4 @@
-"""订阅模式、优先级与注册表（总线层 · S11）。
+"""订阅模式、优先级与注册表（总线层 · S11 · M2-S5）。
 
 ## 三种订阅模式（FR-3.1）
 
@@ -10,6 +10,9 @@
 
 通配是**前缀匹配**：`piece:*` 命中 `piece:spawned` / `piece:locked` …；
 `kernel:system:*` 命中 `kernel:system:installed` / `kernel:system:removed`。
+
+**同一套模式词汇也用来写历史查询条件**（`HistoryQuery`）——订阅与查询
+用同一份写法，"按命名空间过滤"不用再学第二遍语法。
 
 ## 两个入口共享一张表（ADR-057）
 
@@ -32,6 +35,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from .envelope import Envelope
 
@@ -211,7 +215,60 @@ class SubscriberRegistry[V]:
         return len(self._subscriptions)
 
 
+# ---------------------------------------------------------------------------
+# 历史查询条件（M2-S5）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HistoryQuery:
+    """历史查询条件（**复用订阅模式的写法**）。
+
+    `pattern` 的三种写法与订阅**完全一致**（精确 · `命名空间:*` · `*`）——
+    同一套模式词汇用在订阅与查询上，"按命名空间过滤"不用再学一遍语法。
+
+    **不做按全局序号的随机访问**（spec §11.2 K1）：历史是环形缓冲，
+    随机跳转需要一套索引，M2 不做。
+
+    - `pattern`：事件类型模式；`None` = 不按类型过滤；
+    - `frame_from` / `frame_to`：帧号区间（**闭区间**）；`None` = 不限；
+    - `limit`：最多取**最近** N 条（`None` = 不限；`0` = 一条也不要）。
+    """
+
+    pattern: str | None = None
+    frame_from: int | None = None
+    frame_to: int | None = None
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        """域外值当场报错，不糊弄过去。"""
+        if self.limit is not None and self.limit < 0:
+            raise ValueError(f"limit 不能为负，实为 {self.limit}")
+        if (
+            self.frame_from is not None
+            and self.frame_to is not None
+            and self.frame_from > self.frame_to
+        ):
+            raise ValueError(
+                f"帧号区间反了：frame_from={self.frame_from} > frame_to={self.frame_to}"
+            )
+
+    def accepts(self, envelope: Envelope) -> bool:
+        """这条事件是否命中条件。
+
+        **`limit` 不在这里管**——它管"取几条"，不管"命中不命中"。
+        """
+        if self.pattern is not None and not matches(self.pattern, envelope.type):
+            return False
+        if self.frame_from is not None and envelope.frame < self.frame_from:
+            return False
+        if self.frame_to is not None and envelope.frame > self.frame_to:
+            return False
+        return True
+
+
 __all__ = [
+    "HistoryQuery",
     "SingleHandler",
     "SubscriberRegistry",
     "Subscription",
