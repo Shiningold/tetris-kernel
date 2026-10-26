@@ -5,15 +5,23 @@
 
 ## 四个子命令
 
-| 子命令 | M0 的状态 |
+| 子命令 | 状态 |
 | --- | --- |
 | `sim` | **跑通**：无头批量模拟，出统计 |
-| `play` | 占位（交互式游玩要渲染与输入适配器，M1 之后） |
-| `replay` | 占位（录像回放要落盘与录像格式，M1 之后） |
-| `inspect` | 占位 |
+| `play` | 占位（交互式游玩要渲染与输入适配器，M3–M4） |
+| `replay` | **跑通**（M2）：读录像 → 重放 → 输出四项比对 |
+| `inspect` | 占位（属 M2 的 S11） |
 
 占位子命令**要能跑、不许报错**：M0 的门是「无头闭环」，占位命令只是先把
 命令行骨架立起来。
+
+## `replay` 的输出
+
+**四项比对**：录像里的局末四项 vs 重放出来的四项——**逐条相等**才算过
+（AC-1 · spec §7.3）。录像里没有局末四项时，只输出重放的四项（没有基准就
+没有比对）。
+
+**四项不等时退出码是 1**——脚本能直接判成败。
 
 ## `sim` 的输出
 
@@ -39,9 +47,13 @@ import argparse
 import io
 import json
 import sys
+from pathlib import Path
 
+from ..systems.replay.format import recording_from_jsonl
+from ..systems.replay.playback import PlaybackSession
 from .assembly import assemble
 from .loop import HeadlessLoop, RunReport
+from .replay import REPLAY_LIMITS, KernelReplayDriver
 
 #: `sim` 的默认帧数（**不带 `--until` 时**）。
 DEFAULT_FRAMES = 100
@@ -105,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     match args.command:
         case "sim":
             return _cmd_sim(args)
+        case "replay":
+            return _cmd_replay(args)
         case _:
             return _cmd_placeholder(args)
 
@@ -141,10 +155,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sim.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
+    replay = subparsers.add_parser(
+        "replay",
+        help="录像回放：读录像 → 重放 → 输出四项比对（M2）",
+    )
+    replay.add_argument("file", help="录像文件路径")
+    replay.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
+
     for name, help_text in (
         ("play", "交互式游玩（占位；输入适配器与渲染器属 M3–M4）"),
-        ("replay", "录像回放（占位；属 M2）"),
-        ("inspect", "查看内核状态（占位；属 M2）"),
+        ("inspect", "查看内核状态（占位；属 M2 的 S11）"),
     ):
         subparsers.add_parser(name, help=help_text)
     return parser
@@ -182,6 +202,71 @@ def _cmd_sim(args: argparse.Namespace) -> int:
         for line in lines:
             print(line)
     return 0
+
+
+def _cmd_replay(args: argparse.Namespace) -> int:
+    """`replay`：读录像 → 重放 → 输出四项比对。
+
+    **重放要按录像头的种子与规则集起一个全新内核**（spec §7.2）——起错规则
+    集，重放出来的就不是同一局。
+
+    **可观测系统一律不装配**（`observability_enabled=False`）：重放要的是
+    **内核逐帧一致**，多几个订阅者只会多几条事件。
+
+    **四项不等时退出码是 1**——脚本能直接判成败。
+    """
+    path = Path(args.file)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        print(f"读录像失败：{error}", file=sys.stderr)
+        return 2
+    try:
+        recording = recording_from_jsonl(text)
+    except ValueError as error:
+        print(f"录像读不了：{error}", file=sys.stderr)
+        return 2
+
+    assembly = assemble(
+        seed=recording.seed,
+        rule_id=recording.rule,
+        mode="replay",
+        limits=REPLAY_LIMITS,
+        observability_enabled=False,
+    )
+    driver = KernelReplayDriver(assembly.kernel, assembly.bus)
+    session = PlaybackSession(assembly.bus, driver, recording)
+    items = session.run()
+
+    baseline = recording.outcome
+    equal = None if baseline is None else baseline.equals(items)
+    if bool(args.json):
+        payload: dict[str, object] = {
+            "seed": recording.seed,
+            "rule": recording.rule,
+            "commandCount": len(recording.commands),
+            "recorded": None if baseline is None else baseline.as_dict(),
+            "replayed": items.as_dict(),
+            "equal": equal,
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"种子：{recording.seed}")
+        print(f"规则集：{recording.rule}")
+        print(f"命令数：{len(recording.commands)}")
+        print(f"重放棋盘指纹：{items.fingerprint}")
+        print(f"重放分数：{items.score}")
+        print(f"重放行数：{items.lines}")
+        print(f"重放已放置方块数：{items.pieces_placed}")
+        if baseline is None:
+            print("录像里没有局末四项：无比对基准")
+        else:
+            print(f"录像棋盘指纹：{baseline.fingerprint}")
+            print(f"录像分数：{baseline.score}")
+            print(f"录像行数：{baseline.lines}")
+            print(f"录像已放置方块数：{baseline.pieces_placed}")
+            print(f"四项比对：{'全等' if equal else '不等'}")
+    return 0 if equal is not False else 1
 
 
 def _cmd_placeholder(args: argparse.Namespace) -> int:

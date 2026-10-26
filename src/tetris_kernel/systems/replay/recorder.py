@@ -45,7 +45,7 @@ from ...bus.bus import EventBus
 from ...bus.envelope import Envelope, JSONValue, Payload, metadata_value
 from ...kernel.commands import Args, ArgsValue
 from ...kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
-from .format import RecordedCommand, Recording, recording_to_jsonl
+from .format import FourItems, RecordedCommand, Recording, recording_to_jsonl
 
 #: 录制开始事件（契约已登记 · 产出者 `systems/replay/`）。
 RECORDING_STARTED_EVENT = "replay:recording-started"
@@ -73,6 +73,13 @@ CHECKPOINT_INTERVAL_FRAMES = 600
 #: 契约，不进基线**。
 type Sink = Callable[[bytes], None]
 
+#: 局末四项的**取法**（**宿主注入**）。
+#:
+#: **为什么由宿主取**：四项里的**棋盘指纹**只能从内核快照拿——系统层**不碰
+#: 内核状态**（M2-D1），指纹的算法也只有内核那一份（抄第二份就是第二个
+#: 真相）。所以宿主注入一个"给我四项"的可调用对象，系统层在局末问它一声。
+type OutcomeProvider = Callable[[], FourItems | None]
+
 
 class RecordingSystem[V]:
     """录像录制系统（**普通订阅者** · 只录被接受的命令 · M2-D3）。
@@ -82,7 +89,9 @@ class RecordingSystem[V]:
     - `bus`：事件总线（**只订不写内核状态**）；
     - `sink`：**落盘出口**（`None` = 不落盘）；**路径是宿主的事**；
     - `seed` / `rule`：**录像头的内容**（种子 + 规则集标识）；
-    - `checkpoint_interval`：**周期点间隔**（帧）。
+    - `checkpoint_interval`：**周期点间隔**（帧）；
+    - `outcome_provider`：**局末四项的取法**（宿主注入；`None` = 不取，录像头
+      里就没有比对基准）。
     """
 
     def __init__(
@@ -93,6 +102,7 @@ class RecordingSystem[V]:
         seed: int = 0,
         rule: str = "standard",
         checkpoint_interval: int = CHECKPOINT_INTERVAL_FRAMES,
+        outcome_provider: OutcomeProvider | None = None,
     ) -> None:
         if checkpoint_interval < 1:
             raise ValueError(f"checkpoint_interval 至少为 1，实为 {checkpoint_interval}")
@@ -101,6 +111,8 @@ class RecordingSystem[V]:
         self._seed = seed
         self._rule = rule
         self._checkpoint_interval = checkpoint_interval
+        self._outcome_provider = outcome_provider
+        self._outcome: FourItems | None = None
         self._commands: list[RecordedCommand] = []
         self._frame_count = 0
         self._stopped = False
@@ -132,8 +144,21 @@ class RecordingSystem[V]:
         return self._stopped
 
     def recording(self) -> Recording:
-        """当前这份录像（**头三件套 + 命令序列**）。"""
-        return Recording(seed=self._seed, rule=self._rule, commands=tuple(self._commands))
+        """当前这份录像（**头三件套 + 命令序列 + 局末四项**）。"""
+        return Recording(
+            seed=self._seed,
+            rule=self._rule,
+            commands=tuple(self._commands),
+            outcome=self._outcome,
+        )
+
+    def set_outcome(self, outcome: FourItems | None) -> None:
+        """**主动**写入局末四项（**比对基准**）。
+
+        **局末自动写入**：构造时给了 `outcome_provider` 的，局末会自动取一次
+        ——**先取四项再落盘**，否则录像头里就没有基准。
+        """
+        self._outcome = outcome
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -166,9 +191,15 @@ class RecordingSystem[V]:
             self.flush()
 
     def _on_game_over(self, envelope: Envelope) -> None:
-        """**局末**：落盘 + 发 `replay:recording-stopped`，然后停止录制。"""
+        """**局末**：取局末四项 → 落盘 → 发 `replay:recording-stopped`，然后停录。
+
+        **先取四项再落盘**——录像头里的局末四项是**四项比对的基准**，落盘时
+        还没取到就白录了。
+        """
         if self._stopped:
             return
+        if self._outcome_provider is not None:
+            self.set_outcome(self._outcome_provider())
         self.flush()
         self._stopped = True
         self._bus.publish(_recording_stopped_draft(len(self._commands), self._frame_count))
@@ -278,6 +309,7 @@ __all__ = [
     "GAME_OVER_EVENT",
     "RECORDING_STARTED_EVENT",
     "RECORDING_STOPPED_EVENT",
+    "OutcomeProvider",
     "RecordingSystem",
     "Sink",
 ]

@@ -729,7 +729,15 @@ def test_cli_output_stream_is_switched_to_utf8(monkeypatch: pytest.MonkeyPatch) 
     assert "帧数" in buffer.getvalue().decode("utf-8")
 
 
-@pytest.mark.parametrize("command", ["play", "replay", "inspect"])
+#: **仍是占位**的子命令。
+#:
+#: **`replay` 在 M2 变成真跑**（读录像 → 重放 → 输出四项比对）——它不再是占位
+#: 命令，用例挪到了 `tests/test_replay_playback.py`。这是一次**破坏性改动**：
+#: 依赖"`replay` 是占位"这个行为的调用方会失效（plan-M2 S9 的提交标题带 `!`）。
+PLACEHOLDER_COMMANDS = ["play", "inspect"]
+
+
+@pytest.mark.parametrize("command", PLACEHOLDER_COMMANDS)
 def test_placeholder_commands_run(command: str, capsys: pytest.CaptureFixture[str]) -> None:
     """占位子命令**要能跑、不许报错**。"""
     assert main([command]) == 0

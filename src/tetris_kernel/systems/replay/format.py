@@ -72,17 +72,59 @@ class RecordedCommand:
 
 
 @dataclass(frozen=True)
+class FourItems:
+    """四项比对（**棋盘指纹 · 分数 · 行数 · 方块数** · AC-1）。
+
+    - `fingerprint`：**棋盘内容的哈希**（不是棋盘本身）；
+    - `score`：分数；
+    - `lines`：累计消行数；
+    - `pieces_placed`：已放置方块数。
+
+    **"逐条相等"不是"最终态差不多"**：四项**各自**相等才算过（spec §7.3）。
+    """
+
+    fingerprint: str
+    score: int
+    lines: int
+    pieces_placed: int
+
+    def equals(self, other: FourItems) -> bool:
+        """**逐条相等**（不是"最终态差不多"）。"""
+        return (
+            self.fingerprint == other.fingerprint
+            and self.score == other.score
+            and self.lines == other.lines
+            and self.pieces_placed == other.pieces_placed
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """四项的字典形态（**键序固定**）。"""
+        return {
+            "fingerprint": self.fingerprint,
+            "score": self.score,
+            "lines": self.lines,
+            "piecesPlaced": self.pieces_placed,
+        }
+
+
+@dataclass(frozen=True)
 class Recording:
-    """一份录像（**头三件套 + 命令序列**）。
+    """一份录像（**头三件套 + 命令序列 + 局末四项**）。
 
     - `seed`：随机源种子；
     - `rule`：规则集标识；
-    - `commands`：**按录到顺序**排的命令序列。
+    - `commands`：**按录到顺序**排的命令序列；
+    - `outcome`：**局末四项**（`None` = 录的时候没取到）。
+
+    **为什么头里带局末四项**：四项比对（AC-1 · `G2-1`）需要**基准**——录像
+    不带基准，比对就没法做，`replay` 子命令也只能打印不能比。带上它，**一份
+    录像就能自证**：拿到文件就能验证它重放得对不对。
     """
 
     seed: int
     rule: str
     commands: tuple[RecordedCommand, ...] = ()
+    outcome: FourItems | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +162,7 @@ def recording_to_jsonl(recording: Recording) -> str:
                 "version": RECORDING_VERSION,
                 "seed": recording.seed,
                 "rule": recording.rule,
+                "outcome": None if recording.outcome is None else recording.outcome.as_dict(),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -161,7 +204,29 @@ def recording_from_jsonl(text: str) -> Recording:
     if not isinstance(rule, str):
         raise ValueError(f"录像头的 rule 不是字符串：{rule!r}")
     commands = tuple(_command_from_json(line) for line in lines[1:])
-    return Recording(seed=seed, rule=rule, commands=commands)
+    return Recording(
+        seed=seed,
+        rule=rule,
+        commands=commands,
+        outcome=_outcome_from_json(header.get("outcome")),
+    )
+
+
+def _outcome_from_json(raw: object) -> FourItems | None:
+    """头里的局末四项 → `FourItems`（**没有就是没有**，不当成全 0）。"""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"录像头的 outcome 不是对象：{raw!r}")
+    fingerprint = raw.get("fingerprint")
+    if not isinstance(fingerprint, str):
+        raise ValueError(f"录像头的 outcome 缺指纹：{raw!r}")
+    return FourItems(
+        fingerprint=fingerprint,
+        score=_as_int(raw.get("score")),
+        lines=_as_int(raw.get("lines")),
+        pieces_placed=_as_int(raw.get("piecesPlaced")),
+    )
 
 
 def _json_object(text: str, what: str) -> dict[str, object]:
@@ -279,6 +344,7 @@ __all__ = [
     "RECORDING_FILENAME_PREFIX",
     "RECORDING_SUFFIX",
     "RECORDING_VERSION",
+    "FourItems",
     "RecordedCommand",
     "Recording",
     "recording_filename",
