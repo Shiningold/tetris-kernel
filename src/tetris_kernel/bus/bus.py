@@ -39,6 +39,14 @@
 - **计数**（`counts`）：**累计**按事件类型 / 按命名空间的条数。它是独立
   累加器，**不靠环形历史算**——历史满了会忘，计数不会。
 
+## 历史缓冲的开关（降级第 ③ 档 · ADR-031）
+
+`set_history_enabled(False)` **只关缓冲，不关分发**——订阅者照常收到每一条
+事件，**状态变更仍伴随事件**。ADR-031 明写否决"引入关闭事件分发的快速模式"：
+那会破坏**事件完备性**。
+
+**计数不受影响**：`counts()` 是**独立累加器**（历史满了会忘，计数不会）。
+
 ## 不提供 `bus.view()`（ADR-021）
 
 只读视图**只**走系统层入口的 `ctx.view()`——总线上的访问器可以在任何时候
@@ -133,6 +141,8 @@ class EventBus[V]:
         self._default_source = default_source
         self._registry: SubscriberRegistry[V] = SubscriberRegistry[V]()
         self._history: deque[Envelope] = deque(maxlen=history_limit)
+        # **历史缓冲的开关**（降级第 ③ 档 · ADR-031）——关的是**缓冲**，不是分发。
+        self._history_enabled = True
         self._pending: deque[Envelope] = deque()
         self._traces: deque[str] = deque(maxlen=DEFAULT_TRACE_LIMIT)
         self._middlewares: list[tuple[str, Middleware]] = []
@@ -274,7 +284,8 @@ class EventBus[V]:
         **中间件先跑**（分发链上、分发给订阅者之前）；**中间件抛错不影响
         订阅者**——横切处理坏了，最多是它自己缺席。
         """
-        self._history.append(envelope)
+        if self._history_enabled:
+            self._history.append(envelope)
         self._count(envelope)
         ctx: SystemContext[V] = SystemContext[V](self._view_provider)
         is_error_event = envelope.type == ERROR_EVENT_TYPE
@@ -378,6 +389,24 @@ class EventBus[V]:
         """
         return tuple(self._history)
 
+    def set_history_enabled(self, enabled: bool) -> None:
+        """**开 / 关环形历史缓冲**（**降级第 ③ 档** · ADR-031）。
+
+        **关的是缓冲，不是分发**（ADR-031 明写否决"关闭事件分发"）：订阅者照常
+        收到每一条事件，**状态变更仍伴随事件**——**事件完备性不受损**。
+
+        **计数不受影响**：`counts()` 是**独立累加器**（历史满了会忘，计数不会）
+        ——指标系统聚合的是**事件**，不靠历史算。
+
+        **关掉时缓冲一并清空**：这一档的收益是省下每条事件的追加开销与内存占用
+        ——留着旧条目既占内存，又不给新证据。重新打开时缓冲从空开始。
+        """
+        if self._history_enabled == enabled:
+            return
+        self._history_enabled = enabled
+        if not enabled:
+            self._history.clear()
+
     def query_history(self, query: HistoryQuery | None = None) -> tuple[Envelope, ...]:
         """按条件检索环形历史（**由旧到新**）。
 
@@ -412,6 +441,11 @@ class EventBus[V]:
     def traces(self) -> tuple[str, ...]:
         """最近的轨迹记录（静默丢弃、二次抛错等）。"""
         return tuple(self._traces)
+
+    @property
+    def history_enabled(self) -> bool:
+        """环形历史缓冲**开着没有**（降级第 ③ 档会把它关掉）。"""
+        return self._history_enabled
 
     @property
     def last_seq(self) -> int:
