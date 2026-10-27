@@ -36,6 +36,7 @@ from tetris_kernel.kernel.commands import Args, Command
 from tetris_kernel.kernel.core import LOCK_DELAY_FRAMES, Kernel
 from tetris_kernel.kernel.drafts import EventDraft
 from tetris_kernel.kernel.snapshot import Snapshot
+from tetris_kernel.rules.standard import STANDARD_RULESET
 from tetris_kernel.rules.tables import PIECE_TYPES
 
 #: 固定种子（属性测试与门测试共用一个种子）。
@@ -49,14 +50,35 @@ COMMAND_LIFECYCLE_EVENTS = frozenset({"command:received", "command:accepted", "c
 
 #: 固定命令序列（**真的发命令**，不是只跑帧）。
 #:
-#: 顺序有意为之：开局 → 操作 → 落地 → 推进（锁定一块）→ 换块 → 暂存 → 推进 →
-#: 参数类命令 → 再推进。每条 `tick` 之后**完整消费**帧推进的五步。
+#: 顺序有意为之：**换规则集** → 开局 → 操作 → 落地 → 推进（锁定一块）→ 换块
+#: → 暂存 → 推进 → 参数类命令 → 再推进。每条 `tick` 之后**完整消费**帧推进
+#: 的五步。
 #:
 #: **硬降之后那一串 tick 是 31 条不是 1 条**：M1 起有 **30 帧的锁定延迟**
 #: （spec §7.5，硬降也一样——"方块落地后开始计时"没有例外），硬降只是把方块
 #: 按到地板上，**要等延迟到期才锁定**。M0 是落即锁，推进一帧就锁上了——
 #: 那时候这串命令里只需要 1 条 tick。
+#:
+#: **开头那条 `switchRuleSet`（M3 审查报告 M2）**：17 条命令里它**从来没进过
+#: 这条序列**——确定性指纹与回放因此**完全不含运行期换规则集路径**。
+#:
+#: **为什么放在开头而不是末尾**：**局中切换必拒**（`illegal_transition`）——
+#: 放在末尾只能覆盖「被拒」那一半；**开头是 `not_started` 态**，切换**被接
+#: 受** → **接受路径的整段进了指纹**（参数校验 → 解析器命中 → 换规则集 →
+#: **局面重置**（棋盘空 · 相位回待开始 · 随机源回种子）→ `kernel:rule-set-
+#: changed` + `game:reset` 两条语义事件）。
+#:
+#: **为什么四项统计一个都不变**：切换发生在**开局之前**，重置的是**本来就空
+#: 的棋盘**，随机源也回到初始种子——**后面的玩法逐帧照旧**（四项统计与事件
+#: 流里多出来的只是开头那两条换规则集事件）。
+#:
+#: **为什么换回同一条规则**（`fromRule == toRule`）：确定性的门要的是
+#: **这条命令的路径进了指纹**，不是「换成别的玩法」——**换回自己**时规则集
+#: 对象与标识都不变，**四项统计因此逐字不变**。**变体规则集**（换完按新规则
+#: 跑 + 录像重放逐帧一致）由 `tests/test_m3_rule_set.py` 的**替身规则集**验。
 COMMAND_SEQUENCE: tuple[tuple[str, Args], ...] = (
+    # **运行期换规则集**（M3 · ADR-061）——待开始态切换**被接受**。
+    ("switchRuleSet", (("rule", "standard"),)),
     ("start", ()),
     ("moveLeft", ()),
     ("rotateCW", ()),
@@ -109,8 +131,19 @@ def _record(drafts: tuple[EventDraft, ...]) -> list[tuple[str, tuple[tuple[str, 
 
 
 def _kernel() -> Kernel:
-    """造一个内核（待开始态，固定种子）。"""
-    return Kernel(seed=SEED, piece_types=PIECE_TYPES)
+    """造一个内核（待开始态，固定种子）。
+
+    **注入规则集解析器**（ADR-061）：`switchRuleSet` 的规则集**由宿主给**
+    ——**没注入解析器 = 一条都换不了**（`unknown_rule_set`）。这里给的是
+    **标准规则集自己**（换回同一条规则）——**确定性的门要的是「这条命令的
+    路径进了指纹」，不是「换成别的玩法」**（变体规则集由
+    `tests/test_m3_rule_set.py` 的替身规则集验）。
+    """
+    return Kernel(
+        seed=SEED,
+        piece_types=PIECE_TYPES,
+        rule_set_resolver=lambda rule_id: STANDARD_RULESET if rule_id == "standard" else None,
+    )
 
 
 def _run(commands: tuple[tuple[str, Args], ...]) -> tuple[tuple[object, ...], list[object]]:
