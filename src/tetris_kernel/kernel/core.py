@@ -747,9 +747,20 @@ class Kernel:
 
         **两类配额超限统一发 `kernel:quota-exceeded`**（靠负载里的配额名区分），
         `kernel:error` **只留给订阅者异常**（架构 §6.4）。
+
+        **键变化时冲刷出来的旧组必须在这里发出去**：合并器的键是
+        **(phase, 命令类型, 拒绝原因)**——被丢弃的一批命令**类型不同**时，
+        每换一个类型就冲刷一次旧组（`RejectCoalescer.record` **返回**它）。
+        **返回值丢了 = 那批命令的拒绝事件静默消失**——只有最后一种命令类型
+        能发出 `command:rejected`，其余凭空蒸发（可观测性失真，且违背
+        「被丢弃的**任何**命令都以 `quota_exceeded` 被拒」的承诺）。
+
+        所以这里**把冲刷出来的旧组逐个转成事件草稿**（成对：`received` +
+        `rejected`，计数一致），**与 `_reject` 路径同一套写法**。
         """
+        drafts: list[EventDraft] = []
         for command in commands:
-            self._coalescer.record(
+            flushed = self._coalescer.record(
                 phase=self._state.phase,
                 command_type=command.type,
                 reason=REJECT_QUOTA_EXCEEDED,
@@ -757,13 +768,17 @@ class Kernel:
                 source=command.source,
                 args=command.args,
             )
+            # **键变化冲刷出来的旧组**：这些命令的拒绝事件在这里发出去。
+            drafts.extend(self._group_drafts(flushed))
         event = make_draft(
             "kernel:quota-exceeded",
             (("quota", quota), ("limit", limit), ("actual", actual)),
             self._frame,
             ((METADATA_CAUSE, None),),
         )
-        return [event]
+        # **配额事件在前**（它解释"为什么丢"），**逐条拒绝明细在后**——
+        # 与单组丢弃时的既有次序一致。
+        return [event, *drafts]
 
     def execute(self, command: Command) -> tuple[EventDraft, ...]:
         """执行一条命令（**出队执行**这一步）。
