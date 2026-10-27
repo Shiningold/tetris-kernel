@@ -8,7 +8,7 @@
 | 子命令 | 状态 |
 | --- | --- |
 | `sim` | **跑通**：无头批量模拟，出统计 |
-| `play` | 占位（交互式游玩要渲染与输入适配器，M3–M4） |
+| `play` | 占位（交互式游玩要渲染与输入适配器，M4） |
 | `replay` | **跑通**（M2）：读录像 → 重放 → 输出四项比对 |
 | `inspect` | **跑通**（M2 · S11）：跑 n 帧 → 只读事件流视图（按命名空间过滤 · 可暂停） |
 
@@ -267,7 +267,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "play",
-        help="交互式游玩（占位；输入适配器与渲染器属 M3–M4）",
+        help="交互式游玩（占位；输入适配器与渲染器属 M4）",
     )
     return parser
 
@@ -551,7 +551,7 @@ def _cmd_systems(args: argparse.Namespace) -> int:
 def _cmd_placeholder(args: argparse.Namespace) -> int:
     """占位子命令：**要能跑、不许报错**（M0 的门是「无头闭环」）。
 
-    **M2 之后只剩 `play` 一个占位**（交互式游玩要渲染器与输入适配器，属 M3–M4）。
+    **M2 之后只剩 `play` 一个占位**（交互式游玩要渲染器与输入适配器，属 **M4**）。
     """
     print(f"「{args.command}」尚未实现（占位命令；M2 之后只剩 `play` 一个占位）。")
     return 0
