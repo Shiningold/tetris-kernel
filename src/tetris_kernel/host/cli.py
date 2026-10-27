@@ -90,7 +90,7 @@ from ..bus.envelope import Envelope
 from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
-from .assembly import assemble, rule_set_of
+from .assembly import ObservableSinks, assemble, default_sinks, rule_set_of
 from .discovery import declared_manifests, dependency_graph
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
@@ -207,6 +207,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="跑到顶出就停帧，并输出结算八项（M1 · spec §7.8）",
     )
     sim.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
+    sim.add_argument(
+        "--persist-log",
+        action="store_true",
+        help="把日志条目落盘（**追加**语义 · 落到数据目录的 log-<规则集>.jsonl）",
+    )
+    sim.add_argument(
+        "--persist-metrics",
+        action="store_true",
+        help="把指标采样落盘（**追加**语义 · 落到数据目录的 metrics-<规则集>.jsonl）",
+    )
+    sim.add_argument(
+        "--persist-recording",
+        action="store_true",
+        help="把录像落盘（**覆盖**语义 · 落到数据目录的 recording-<规则集>.jsonl）",
+    )
 
     replay = subparsers.add_parser(
         "replay",
@@ -272,6 +287,34 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _sinks_for(args: argparse.Namespace) -> ObservableSinks:
+    """按 `--persist-*` 的开关造三个落盘出口（**各走各的** · ADR-085）。
+
+    **默认不落盘**：三个开关都不给 → 三个出口都是 `None`——**既有调用的默认
+    行为一个字节都不变**（不改变既有调用的默认行为是 S9 的硬要求）。
+
+    **三个产物各有各的出口**（ADR-085）：日志与指标**追加**（一条一条往外冒）·
+    录像**覆盖**（整份交出）。**共用一个出口 = 用错语义 = 数据丢**——后写的
+    覆盖先写的。
+
+    **路径沿用既有策略**（项目优先 → 不可写时回落 home · ADR-074）——
+    **不另起一套**。
+    """
+    wanted = (
+        bool(args.persist_log),
+        bool(args.persist_metrics),
+        bool(args.persist_recording),
+    )
+    if not any(wanted):
+        return ObservableSinks()
+    sinks, _directory = default_sinks()
+    return ObservableSinks(
+        log=sinks.log if wanted[0] else None,
+        metrics=sinks.metrics if wanted[1] else None,
+        recording=sinks.recording if wanted[2] else None,
+    )
+
+
 def _cmd_sim(args: argparse.Namespace) -> int:
     """`sim`：无头跑 n 帧，出统计。
 
@@ -280,6 +323,9 @@ def _cmd_sim(args: argparse.Namespace) -> int:
 
     **默认帧数分两种**：`--frames` **没显式给**时，不带 `--until` 是 M0 的 100
     帧（**输出逐字一致**），带 `--until game-over` 是大得多的上限（要跑完整局）。
+
+    **落盘默认关闭**：三个 `--persist-*` 开关都不给 → **一个文件都不产生**
+    （S9 · M2 遗留的落盘接线）。
     """
     until = args.until
     frames = args.frames
@@ -291,7 +337,7 @@ def _cmd_sim(args: argparse.Namespace) -> int:
         print("帧数不能为负", file=sys.stderr)
         return 2
 
-    assembly = assemble(seed=seed)
+    assembly = assemble(seed=seed, sinks=_sinks_for(args))
     loop = HeadlessLoop(assembly)
     loop.start()
     report = loop.run_frames(frames, until_game_over=until == "game-over")
