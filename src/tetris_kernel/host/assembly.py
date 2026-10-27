@@ -61,6 +61,7 @@ from ..kernel.core import (
     DEFAULT_BOARD_WIDTH,
     DEFAULT_HIDDEN_ROWS,
     Kernel,
+    RuleSetResolver,
 )
 from ..kernel.quota import DEFAULT_LIMITS, QuotaLimits
 from ..kernel.snapshot import Snapshot
@@ -464,6 +465,16 @@ def rule_set_of(rule_id: str) -> RuleSet | None:
     return RULE_SETS.get(rule_id)
 
 
+def rule_set_resolver_of(rule_sets: Mapping[str, RuleSet]) -> RuleSetResolver:
+    """造一个**按标识取规则集**的解析器（ADR-061 · M3）。
+
+    **内核不许知道具体规则集**（NFR-5 的纯净度）——它只问"这个标识有没有
+    登记的规则集"，**问的是表，不是表里的东西**。取不到就是 `None`
+    （= 没登记 → `unknown_rule_set`，**明确拒绝，不顶替**）。
+    """
+    return rule_sets.get
+
+
 @dataclass(frozen=True)
 class Assembly:
     """装配好的三件套（**内核 / 总线 / 时钟**）+ M2 的可观测接线。
@@ -512,6 +523,7 @@ def assemble(
     degradation_enabled: bool = False,
     systems: Sequence[str] = (),
     system_catalog: Mapping[str, SystemEntry] | None = None,
+    rule_sets: Mapping[str, RuleSet] | None = None,
 ) -> Assembly:
     """把内核、总线、规则集与时钟拼成一件成品。
 
@@ -540,6 +552,10 @@ def assemble(
     - `system_catalog`：**额外的系统目录条目**（名字 → 声明 + 工厂）。省略时
       只有**内建系统**（日志 · 指标 · 录像）；**新系统由自动发现递进来**
       （`host/discovery.py`）。
+    - `rule_sets`：**规则集登记表**（标识 → 规则集 · ADR-061）。省略时用宿主层
+      的默认登记表（`RULE_SETS` · 只有标准规则集）。**这是运行期换规则集的
+      唯一来源**——内核只拿到一个"按标识取规则集"的解析器，**不知道表里有
+      什么**（NFR-5 的纯净度）。
 
     > **内建可观测系统要走注册表路径（好让它能被运行时摘下）**，就把
     > `observability_enabled` 关掉——**否则同一个系统会被装两遍**（可观测装配
@@ -557,6 +573,8 @@ def assemble(
         step_ms=step_ms,
         mode=mode,
         limits=limits,
+        # **换规则集的解析器**（ADR-061）：内核自己不知道有哪些规则集。
+        rule_set_resolver=rule_set_resolver_of(RULE_SETS if rule_sets is None else rule_sets),
     )
     bus: EventBus[Snapshot] = EventBus[Snapshot](
         # 视图 = 快照，**同一个 dataclass**（ADR-056）。

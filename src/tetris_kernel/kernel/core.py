@@ -166,6 +166,12 @@ REJECT_ILLEGAL_TRANSITION = "illegal_transition"
 REJECT_QUOTA_EXCEEDED = "quota_exceeded"
 REJECT_NOT_AUTHORIZED = "not_authorized"
 REJECT_WRITE_CONDITION_FAILED = "write_condition_failed"
+#: **规则集没登记**（契约 S1 登记的 13 个拒绝原因之一 · M3 新增）。
+#:
+#: **明确拒绝，不拿当前规则集顶替**——M2 的 `replay` 已经是"没登记就拒绝"的
+#: 口径，M3 沿用：**顶替会让重放静默分叉**（起错规则集，报出来的却是"四项
+#: 不等"，看不出根因）。
+REJECT_UNKNOWN_RULE_SET = "unknown_rule_set"
 
 #: `tick` 命令名（帧推进的开关）。
 COMMAND_TICK = "tick"
@@ -362,6 +368,17 @@ class _Outcome:
 #: 宿主给的发布回调：把一批草稿交给总线分发（**内核不 import 总线**）。
 PublishFn = Callable[[tuple[EventDraft, ...]], None]
 
+#: **规则集解析器**：按标识取规则集，**取不到就是 `None`**（= 没登记）。
+#:
+#: **为什么是解析器而不是一张表**：内核**不许知道具体规则集**（NFR-5 的
+#: 纯净度——`kernel/core.py` 里不许出现任何规则集的名字）。**登记表住在宿主
+#: 层**（`host/assembly.py` 的 `RULE_SETS`），内核只问"这个标识有没有登记
+#: 的规则集"——**问的是表，不是表里的东西**。
+#:
+#: **没注入解析器 = 一条都换不了**：内核不知道任何规则集，收到 `switchRuleSet`
+#: 一律按 `unknown_rule_set` 拒绝（**明确拒绝，不顶替**）。
+RuleSetResolver = Callable[[str], "RuleSet | None"]
+
 
 # ---------------------------------------------------------------------------
 # 内核
@@ -389,6 +406,7 @@ class Kernel:
         step_ms: int = 16,
         mode: str = "live",
         limits: QuotaLimits = DEFAULT_LIMITS,
+        rule_set_resolver: RuleSetResolver | None = None,
     ) -> None:
         """构造内核（**创建**迁移：初始状态是"待开始"）。
 
@@ -398,7 +416,11 @@ class Kernel:
         - `rule_set`：规则集（9 条接口，FR-4.9 可整体替换）；
         - `mode`：运行模式（只随 `kernel:ready` 透传，**内核不按它分支**）；
         - `limits`：配额上限（**必须是构造参数**——回放宿主注入大得多的上限，
-          否则回放超限会丢命令，违反 B-6）。
+          否则回放超限会丢命令，违反 B-6）；
+        - `rule_set_resolver`：**运行期换规则集的解析器**（ADR-061 · M3）——
+          宿主递给内核的"按标识取规则集"的能力。**内核自己不知道有哪些规则集**
+          （NFR-5 的纯净度）；**省略 = 一条都换不了**（`switchRuleSet` 一律被
+          `unknown_rule_set` 拒绝）。
         """
         if len(piece_types) < 2:
             raise ValueError(f"方块类型至少要有两种，收到 {len(piece_types)} 种")
@@ -411,6 +433,8 @@ class Kernel:
         self._piece_types = piece_types
         self._rules = rule_set
         self._rule_id = rule_id
+        #: **换规则集的解析器**（ADR-061）——`None` = 一条都换不了。
+        self._rule_set_resolver = rule_set_resolver
         self._width = board_width
         self._height = board_height
         self._hidden_rows = hidden_rows
@@ -1001,6 +1025,8 @@ class Kernel:
                 return self._cmd_inject_garbage(command)
             case "writeCells":
                 return self._cmd_write_cells(command)
+            case "switchRuleSet":
+                return self._cmd_switch_rule_set(command)
             case _:
                 # 契约之外的命令名：运行时的取值域校验归内核（契约 §3 的注）。
                 return _Outcome(False, REJECT_INVALID_ARGUMENT)
@@ -1052,6 +1078,58 @@ class Kernel:
         self._lifecycle = Lifecycle()
         self._rng = KernelRng(self._seed)
         return _Outcome(True, events=(("game:reset", (("seed", self._seed),)),))
+
+    def _cmd_switch_rule_set(self, command: Command) -> _Outcome:
+        """`switchRuleSet`：换规则集（ADR-061 · M3 · spec §7.5）。
+
+        **三条口径**：
+
+        - **局中不换**：`running` 态一律 `illegal_transition`——半局换规则集
+          → 同一局里前后两套规则 → **录像重放静默分叉**（破 AC-1 / NFR-1）；
+        - **没登记的不换**：`unknown_rule_set`——**明确拒绝，不拿当前规则集
+          顶替**（M2 的 `replay` 已经是这个口径，M3 沿用）；
+        - **换了就是重开一局**：局面重置到新规则集的初始态（**扩展槽清空**
+          ——变体状态与旧规则集绑定，带过去就串味），并发
+          `kernel:rule-set-changed` + `game:reset` 两条事件。
+
+        **帧号不归零**：`reset` 命令归零帧号，是因为它的语义就是"从头开始"；
+        换规则集换的是**规则**，时间轴照走（录像与重放靠帧号对齐）。
+
+        **内核不知道有哪些规则集**（NFR-5 的纯净度）：规则集由**宿主注入的
+        解析器**给出——没注入就是一条都换不了。
+        """
+        if self._state.phase == PHASE_RUNNING:
+            return _Outcome(False, REJECT_ILLEGAL_TRANSITION)
+        rule_id = command.args[0][1]
+        if not isinstance(rule_id, str):
+            # 参数类型由 `validate_args` 兜住（契约声明是 `str`）；走到这里
+            # 说明契约与实现分叉了——**当场报错，不猜**（架构 §6.8 同款纪律）。
+            raise KernelInvariantError(f"switchRuleSet 的参数不是字符串：{rule_id!r}")
+        resolver = self._rule_set_resolver
+        rule_set = None if resolver is None else resolver(rule_id)
+        if rule_set is None:
+            return _Outcome(False, REJECT_UNKNOWN_RULE_SET)
+
+        previous = self._rule_id
+        self._rules = rule_set
+        self._rule_id = rule_id
+        # **重置局面**：与首次启动等价（棋盘空 · 相位回"待开始" · 随机源回到
+        # 初始种子 · **扩展槽清空**）。
+        self._state = KernelState(
+            board=[[0] * self._width for _ in range(self._height)],
+        )
+        self._lifecycle = Lifecycle()
+        self._rng = KernelRng(self._seed)
+        return _Outcome(
+            True,
+            events=(
+                (
+                    "kernel:rule-set-changed",
+                    (("fromRule", previous), ("toRule", rule_id)),
+                ),
+                ("game:reset", (("seed", self._seed),)),
+            ),
+        )
 
     # ------------------------------------------------------------------
     # 内部：操作命令
@@ -2049,4 +2127,5 @@ __all__ = [
     "Kernel",
     "KernelArchive",
     "KernelState",
+    "RuleSetResolver",
 ]
