@@ -36,6 +36,7 @@ from collections.abc import Callable
 
 from ...bus.bus import EventBus
 from ...bus.envelope import Envelope
+from ...bus.subscriber import Subscription
 from ...kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
 from .aggregate import METRIC_NAMES, Aggregate, Metrics
 
@@ -91,6 +92,15 @@ class MetricsSystem[V]:
     def samples(self) -> tuple[tuple[int, Metrics], ...]:
         """最近的采样（**由旧到新**；每条是「帧号 · 指标」）。"""
         return tuple(self._samples)
+
+    @property
+    def subscriptions(self) -> tuple[Subscription[V], ...]:
+        """本系统的订阅句柄（**M3 摘系统时要退订的就是它**）。
+
+        **暴露它不是为了方便**——是 M3 的硬要求：**退订是系统级语义**，注册表
+        得拿得到句柄才摘得干净（只退订不到 = 摘不干净）。
+        """
+        return (self._subscription,)
 
     @property
     def metric_names(self) -> tuple[str, ...]:

@@ -56,6 +56,7 @@ from collections.abc import Callable
 
 from ...bus.bus import EventBus
 from ...bus.envelope import Envelope, JSONValue, Payload, metadata_value
+from ...bus.subscriber import Subscription
 from ...kernel.commands import Args, ArgsValue
 from ...kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
 from .format import FourItems, RecordedCommand, Recording, recording_to_jsonl
@@ -134,12 +135,14 @@ class RecordingSystem[V]:
         self._rule = "standard"
         self._announced = False
         # **只订阅被接受的命令**——`command:received` 含被拒的，录了会分叉。
-        self._subscription = bus.subscribe(
-            ACCEPTED_COMMAND_EVENT, self._on_command, name="录像系统"
+        # **四个句柄都留着**（M3）：注册表摘系统时要**逐个退订**——句柄丢了就
+        # 退不干净（订阅还在 = 系统还在听）。
+        self._subscriptions = (
+            bus.subscribe(ACCEPTED_COMMAND_EVENT, self._on_command, name="录像系统"),
+            bus.subscribe(CLOCK_TICK_EVENT, self._on_tick, name="录像系统"),
+            bus.subscribe(GAME_OVER_EVENT, self._on_game_over, name="录像系统"),
+            bus.subscribe(KERNEL_READY_EVENT, self._on_kernel_ready, name="录像系统"),
         )
-        bus.subscribe(CLOCK_TICK_EVENT, self._on_tick, name="录像系统")
-        bus.subscribe(GAME_OVER_EVENT, self._on_game_over, name="录像系统")
-        bus.subscribe(KERNEL_READY_EVENT, self._on_kernel_ready, name="录像系统")
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -149,6 +152,15 @@ class RecordingSystem[V]:
     def commands(self) -> tuple[RecordedCommand, ...]:
         """已录到的命令（**按录到顺序**）。"""
         return tuple(self._commands)
+
+    @property
+    def subscriptions(self) -> tuple[Subscription[V], ...]:
+        """本系统的订阅句柄（**四条** · M3 摘系统时要逐个退订）。
+
+        **暴露它不是为了方便**——是 M3 的硬要求：**退订是系统级语义**，注册表
+        得拿得到句柄才摘得干净（句柄丢一个 = 那个订阅还在 = 系统还在听）。
+        """
+        return self._subscriptions
 
     @property
     def frame_count(self) -> int:
