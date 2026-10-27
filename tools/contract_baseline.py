@@ -180,6 +180,7 @@ from tetris_kernel.contracts import (  # noqa: E402
     EVENT_TYPES,
     METADATA_KEYS,
     NAMED_STRUCTS,
+    PRODUCER_LABELS,
     REJECT_REASONS,
     RULE_SIGNATURES,
     SNAPSHOT_FIELDS,
@@ -338,13 +339,15 @@ def collect_entries() -> list[Entry]:
     # **声明的来源是各系统包里的 `SYSTEM_MANIFEST`**（静态扫描）——**不是运行时
     # 的已登记清单**：基线要的是**确定的**声明集，不能取决于谁装了什么系统。
     #
-    # **自证在这一层做**：声明里写的事件 / 命令类型必须已登记，写错名字当场
-    # 拒绝进基线（而不是挂一个永远收不到事件的订阅）。
+    # **自证在这一层做**：声明里写的事件 / 命令类型必须已登记，**产出者必须在
+    # 代号表里**（或就是系统自己的名字）——写错名字当场拒绝进基线（而不是挂
+    # 一个永远收不到事件的订阅，或让消费方按 producer 过滤时静默漏事件）。
     for system_name, manifest in discover_manifests().items():
         problems = check_manifest_types(
             manifest,
             known_events=EVENT_TYPES.keys(),
             known_commands=COMMANDS.keys(),
+            known_producers=PRODUCER_LABELS.keys(),
         )
         if problems:
             raise ValueError(f"系统 {system_name} 的声明不自证：{'；'.join(problems)}")

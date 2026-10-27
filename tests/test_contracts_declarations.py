@@ -2617,6 +2617,7 @@ def test_manifest_subscribes_and_commands_are_registered() -> None:
             manifest,
             known_events=EVENT_TYPES.keys(),
             known_commands=COMMANDS.keys(),
+            known_producers=PRODUCER_LABELS.keys(),
         )
         assert not problems, f"{name}: {problems}"
 
@@ -2663,9 +2664,57 @@ def test_check_manifest_types_catches_unknown_types() -> None:
         manifest,
         known_events=EVENT_TYPES.keys(),
         known_commands=COMMANDS.keys(),
+        known_producers=PRODUCER_LABELS.keys(),
     )
     assert any("piece:rotatd" in problem for problem in problems)
     assert any("noSuchCommand" in problem for problem in problems)
+
+
+def test_check_manifest_types_catches_a_misspelled_producer() -> None:
+    """**产出者拼错必须被报出来**（M3 审查报告 L1）。
+
+    **反向验证**：把产出者改成 `"achivements"`（少一个 e）→ 自证必须报它。
+
+    **为什么这条要有牙**：产出者拼错时**基线照收、安装照过**——而消费方按
+    producer 过滤事件时会**静默漏掉整个系统的事件**。
+    """
+    manifest = SystemManifest(
+        name="probe",
+        version="1",
+        subscribes=("piece:locked",),
+        commands=(),
+        producer="achivements",
+        needsSink=False,
+    )
+    problems = check_manifest_types(
+        manifest,
+        known_events=EVENT_TYPES.keys(),
+        known_commands=COMMANDS.keys(),
+        known_producers=PRODUCER_LABELS.keys(),
+    )
+    assert any("achivements" in problem for problem in problems), problems
+
+
+def test_check_manifest_types_accepts_the_system_own_name_as_producer() -> None:
+    """**系统自己的名字**是合法产出者（需求 §8.2 允许"系统名"）。
+
+    **不发事件**的系统（`rotations`——产出是计数文件）没有事件产出者可填。
+    """
+    manifest = SystemManifest(
+        name="probe",
+        version="1",
+        subscribes=("piece:locked",),
+        commands=(),
+        producer="probe",
+        needsSink=False,
+    )
+    problems = check_manifest_types(
+        manifest,
+        known_events=EVENT_TYPES.keys(),
+        known_commands=COMMANDS.keys(),
+        known_producers=PRODUCER_LABELS.keys(),
+    )
+    assert not problems, problems
 
 
 def test_system_manifest_rejects_invalid_declarations() -> None:

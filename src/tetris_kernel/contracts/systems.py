@@ -9,7 +9,8 @@
   派发的命令 · 产出者 · 是否需要宿主注入落盘出口。
 - `SYSTEM_MANIFESTS`：**已登记系统清单容器**（名字 → 声明）+ 登记 / 注销原语。
 - `manifest_canonical_text()`：声明的**规范化串**（契约基线哈希的输入口径）。
-- `check_manifest_types()`：声明的**自证**——订阅的事件与派发的命令必须已登记。
+- `check_manifest_types()`：声明的**自证**——订阅的事件与派发的命令必须已登记，
+  **产出者必须在代号表里（或就是它自己的名字）**。
 
 ## 声明为什么进契约面
 
@@ -45,6 +46,11 @@ FR-9.2 说「插件可声明其订阅的事件与发出的命令，**用于自�
 
 声明里写的事件类型 / 命令类型**必须在契约注册表里有**——写错名字（`"piece:rotatd"`）
 当场报错，不许安静地挂一个永远收不到事件的订阅。
+
+**产出者也在自证范围内**（M3 审查报告 L1）：**产出者代号表** ∪ **本系统自己的
+名字**（需求 §8.2 允许"系统名"——**不发事件**的系统，产出是文件而不是事件）。
+**拼错了没有任何一处会红**——基线照收、安装照过，而消费方按 producer 过滤时
+**静默漏掉整个系统的事件**。
 
 **自证放在本模块且不 import 注册表**：注册表（`events.py` / `commands.py`）与本模块
 是**同层**，互相 import 会形成环。取而代之，`check_manifest_types()` **收下已
@@ -181,6 +187,7 @@ def check_manifest_types(
     *,
     known_events: Iterable[str],
     known_commands: Iterable[str],
+    known_producers: Iterable[str],
 ) -> tuple[str, ...]:
     """自证：声明里的类型**必须已登记**——返回问题清单（空 = 通过）。
 
@@ -192,6 +199,14 @@ def check_manifest_types(
     `events.py` / `commands.py`（互相 import 会成环）。
 
     **全局订阅（`"*"`）不算类型名**，放行。
+
+    **产出者也在自证范围内**（M3 审查报告 L1）：合法值 = **产出者代号表** ∪
+    **本系统自己的名字**（后者是需求 §8.2 允许的"系统名"——**不发事件**的
+    系统，产出是文件而不是事件，它的产出者代号就是系统名）。
+
+    **为什么这条要有牙**：产出者拼错（`"achivements"`）时**基线照收、安装照过**
+    ——而消费方按 producer 过滤事件时会**静默漏掉整个系统的事件**。**声明与
+    实际发事件的人对不上**，没有任何一处会红。
     """
     problems: list[str] = []
     event_names = set(known_events)
@@ -204,6 +219,9 @@ def check_manifest_types(
     for command_type in manifest.commands:
         if command_type not in command_names:
             problems.append(f"派发了未登记的命令类型：{command_type}")
+    # **产出者**：代号表里的名字，**或者它自己**（需求 §8.2 允许"系统名"）。
+    if manifest.producer not in set(known_producers) | {manifest.name}:
+        problems.append(f"产出者不在代号表里：{manifest.producer}")
     return tuple(problems)
 
 

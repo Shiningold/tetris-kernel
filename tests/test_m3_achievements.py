@@ -28,7 +28,7 @@ from pathlib import Path
 
 from tetris_kernel.bus.bus import EventBus
 from tetris_kernel.bus.envelope import Envelope
-from tetris_kernel.contracts.events import EVENT_TYPES
+from tetris_kernel.contracts.events import EVENT_TYPES, PRODUCER_LABELS
 from tetris_kernel.contracts.systems import GLOBAL_SUBSCRIPTION, check_manifest_types
 from tetris_kernel.kernel.drafts import EventDraft, make_draft
 from tetris_kernel.kernel.snapshot import Snapshot
@@ -243,6 +243,7 @@ def test_the_declaration_self_proves() -> None:
         SYSTEM_MANIFEST,
         known_events=EVENT_TYPES.keys(),
         known_commands=(),
+        known_producers=PRODUCER_LABELS.keys(),
     )
     assert not problems, f"声明不自证：{problems}"
 
