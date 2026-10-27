@@ -26,6 +26,10 @@
   进入视图**，**内核照跑**（订阅者拦不住总线，也拦不住内核）；
 - **可导出**（`--export`）：把**完整轨迹**落成文件（JSON Lines）。
 
+**面板的留存有界**（审查 M4）：面板是环形缓冲，默认只留**最新的 4096 条**
+（`DEFAULT_PANEL_LIMIT`）——长跑不会驻留百万级信封。**`--export` 时放开成
+不限**：那是用户自己点的"全量轨迹"，内存代价自己担。
+
 **可观测系统一律不装配**（`observability_enabled=False`）：面板要看的是**内核
 的事件流**——多几个订阅者只会多几条 `log:entry` / `metric:sampled` 混在里面。
 
@@ -78,7 +82,7 @@ from pathlib import Path
 
 from ..adapters.storage import FileSink
 from ..bus.envelope import Envelope
-from ..systems.metrics.trace import EventPanel
+from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
 from .assembly import assemble, rule_set_of
@@ -229,7 +233,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=DEFAULT_INSPECT_LIMIT,
-        help=f"最多显示多少条（0 = 全部；默认 {DEFAULT_INSPECT_LIMIT}）",
+        help=(f"最多显示多少条（0 = 面板留住的全部；默认 {DEFAULT_INSPECT_LIMIT}）"),
     )
     inspect.add_argument(
         "--seed",
@@ -402,11 +406,20 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     if pause_at is not None and int(pause_at) < 0:
         print("暂停帧号不能为负", file=sys.stderr)
         return 2
+    export_path = args.export
 
     assembly = assemble(seed=int(args.seed), observability_enabled=False)
     # **面板要在事件开始流动之前订阅**——晚订阅的从 `bus.history()` 里取，
     # 面板**不自动补历史**（它是"从现在起看"的视图）。
-    panel = EventPanel(assembly.bus, pause_at=pause_at)
+    #
+    # **留存上限必须显式给**（审查 M4）：面板是环形缓冲——"长跑驻留百万级信封"
+    # 是内存负担，不是特性。**要导出就放开上限**（`limit=None`）：那是用户
+    # 自己点的"全量轨迹"，代价自己担；**不导出就用默认上限**。
+    panel = EventPanel(
+        assembly.bus,
+        limit=None if export_path else DEFAULT_PANEL_LIMIT,
+        pause_at=pause_at,
+    )
     loop = HeadlessLoop(assembly)
     loop.start()
     loop.run_frames(frames)
@@ -414,7 +427,6 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     namespaces = tuple(args.namespace) if args.namespace else ()
     events = panel.by_namespaces(namespaces) if namespaces else panel.events
 
-    export_path = args.export
     if export_path:
         try:
             FileSink(Path(export_path))(panel.export_bytes())

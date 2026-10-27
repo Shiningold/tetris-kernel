@@ -30,7 +30,12 @@ from tetris_kernel.contracts.events import namespace_of
 from tetris_kernel.host.assembly import assemble
 from tetris_kernel.host.cli import main
 from tetris_kernel.host.loop import HeadlessLoop
-from tetris_kernel.systems.metrics.trace import EventPanel, trace_from_jsonl, trace_to_jsonl
+from tetris_kernel.systems.metrics.trace import (
+    DEFAULT_PANEL_LIMIT,
+    EventPanel,
+    trace_from_jsonl,
+    trace_to_jsonl,
+)
 
 #: 固定种子（**同一个种子 → 同一串事件**）。
 SEED = 20261026
@@ -323,3 +328,59 @@ def test_the_panel_limit_keeps_the_newest_events() -> None:
     panel, _ = _panel(FRAMES, limit=3)
     assert len(panel.events) == 3
     assert panel.events[-1].seq > panel.events[0].seq
+
+
+# ---------------------------------------------------------------------------
+# 留存有界（审查 M4）
+# ---------------------------------------------------------------------------
+
+
+def test_the_panel_default_retention_is_bounded() -> None:
+    """**默认留存有界**（审查 M4）——长跑不会驻留百万级信封。
+
+    **这条就是 M4 的判据**：把默认上限去掉（`limit=None`），它必红。
+
+    **面板是"从现在起看"的视图，不是全量存档**——全量留着是内存负担（与
+    `MetricsSystem` 的采样环形缓冲同族口径）。
+    """
+    assembly = assemble(seed=SEED, observability_enabled=False)
+    panel = EventPanel(assembly.bus)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    # **跑够超过上限的事件数**（每帧十几条 → 一千帧足够越过 4096 条）。
+    loop.run_frames(1000)
+
+    assert len(panel.events) == DEFAULT_PANEL_LIMIT, (
+        f"面板留了 {len(panel.events)} 条——默认上限没生效"
+    )
+    # 留的是**最新的**那些（环形）。
+    assert panel.events[-1].seq > panel.events[0].seq
+
+
+def test_the_inspect_command_does_not_retain_everything(capsys) -> None:
+    """**`inspect` 不导出时，面板留存有界**（审查 M4）。
+
+    **CLI 不用面板自己的上限**，是这条发现的另一半——所以这里从**命令这一
+    层**验：跑一千帧，面板留的条数不超过上限。
+    """
+    exit_code = main(["inspect", "--frames", "1000", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["events"] <= DEFAULT_PANEL_LIMIT, (
+        f"面板留了 {payload['events']} 条——CLI 没把上限给面板"
+    )
+
+
+def test_the_inspect_command_still_exports_the_whole_trace_when_asked(tmp_path: Path) -> None:
+    """**要导出就放开上限**——全量轨迹是用户自己点的，代价自己担。
+
+    **这条是上一条的对偶**：上限是给"随便看看"的默认档，**导出是另一档**。
+    **跑够越过上限的事件数**——否则"没被截短"根本验不出来。
+    """
+    target = tmp_path / "trace.jsonl"
+    exit_code = main(["inspect", "--frames", "1000", "--export", str(target)])
+
+    assert exit_code == 0
+    events = trace_from_jsonl(target.read_text(encoding="utf-8"))
+    assert len(events) > DEFAULT_PANEL_LIMIT, f"导出的轨迹只有 {len(events)} 条——被默认上限截短了"
