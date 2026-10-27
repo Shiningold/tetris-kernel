@@ -13,7 +13,7 @@
 | `inspect` | **跑通**（M2 · S11）：跑 n 帧 → 只读事件流视图（按命名空间过滤 · 可暂停） |
 
 占位子命令**要能跑、不许报错**：M0 的门是「无头闭环」，占位命令只是先把
-命令行骨架立起来。
+命令行骨架立起来。**M2 之后只剩 `play` 一个占位。**
 
 ## `inspect` 的输出
 
@@ -177,11 +177,11 @@ def _build_parser() -> argparse.ArgumentParser:
     """建解析器（四个子命令）。"""
     parser = argparse.ArgumentParser(
         prog="tetris",
-        description="俄罗斯方块内核 · 命令行（M1 · 标准玩法可无头玩到底）",
+        description="俄罗斯方块内核 · 命令行（M2 · 可观测：录像与回放 · 日志与指标 · 只读事件流）",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    sim = subparsers.add_parser("sim", help="无头批量模拟（唯一跑通的子命令）")
+    sim = subparsers.add_parser("sim", help="无头批量模拟：跑 n 帧，出统计（M1 · 标准玩法）")
     sim.add_argument(
         "--frames",
         type=int,
@@ -496,8 +496,11 @@ def _event_dict(envelope: Envelope) -> dict[str, object]:
 
 
 def _cmd_placeholder(args: argparse.Namespace) -> int:
-    """占位子命令：**要能跑、不许报错**（M0 只要求 `sim` 跑通）。"""
-    print(f"「{args.command}」在 M0 尚未实现（占位命令）。")
+    """占位子命令：**要能跑、不许报错**（M0 的门是「无头闭环」）。
+
+    **M2 之后只剩 `play` 一个占位**（交互式游玩要渲染器与输入适配器，属 M3–M4）。
+    """
+    print(f"「{args.command}」尚未实现（占位命令；M2 之后只剩 `play` 一个占位）。")
     return 0
 
 
