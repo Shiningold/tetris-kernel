@@ -63,6 +63,10 @@ from support.policy import POLICY_SOURCE, ReferencePolicy
 from tetris_kernel.bus.envelope import Envelope
 from tetris_kernel.host.assembly import Assembly, assemble
 from tetris_kernel.host.loop import HeadlessLoop
+from tetris_kernel.host.performance import THOUSAND_BASE_SEED
+from tetris_kernel.host.performance import (
+    THOUSAND_BUDGET_SECONDS as PERFORMANCE_THOUSAND_BUDGET_SECONDS,
+)
 from tetris_kernel.host.replay import REPLAY_LIMITS, KernelReplayDriver
 from tetris_kernel.kernel.commands import Command
 from tetris_kernel.kernel.lifecycle import PHASE_GAME_OVER
@@ -78,7 +82,12 @@ from tetris_kernel.systems.replay import (
 SOURCE_PATH = Path(__file__)
 
 #: 千局基准的种子表起点（**固定**：种子是门判据的一部分，不是随手挑的）。
-BASE_SEED = 20261000
+#:
+#: **从唯一真相处取**（`host/performance.py`）：**千局基准的定义**
+#: （种子表起点 · 预算）只有一处真相——**测量工具与门判据用例都从这里取**，
+#: 谁也不许另抄一份。**同一个起点 + 同一个局数 = 同一批局**——两档跑的是
+#: 同一批局，两个数才可比（跨批次的绝对值不可引用）。
+BASE_SEED = THOUSAND_BASE_SEED
 
 #: `G2-1` 的局数（spec §7.3 · AC-1）。
 GATE_GAMES = 200
@@ -87,15 +96,23 @@ GATE_GAMES = 200
 THOUSAND_GAMES = 1000
 
 #: `G2-4` 的预算：千局模拟总时长 ≤ **30 分钟**（秒）。
-THOUSAND_BUDGET_SECONDS = 30 * 60
+#:
+#: **从唯一真相处取**（`host/performance.py`）：降级阈值（`DEGRADE_P99_MS`）与
+#: 千局预算都是**性能预算**，**一个地方一处真相**——测量工具与门判据用例都
+#: 从那里取，谁也不许另抄一份。
+THOUSAND_BUDGET_SECONDS = PERFORMANCE_THOUSAND_BUDGET_SECONDS
 
-#: 逐帧比对与隔离用例用的种子。
+#: 逐帧比对与隔离用例用的种子（**独立场景**：不在千局批次里）。
 SCENARIO_SEED = 20261000
 
 #: 隔离用例跑的帧数。
 ISOLATION_FRAMES = 240
 
 #: **手抄**期望值那一局的种子。
+#:
+#: **必须在批次种子表范围内**（当前 == `BASE_SEED`）——不在的话
+#: `test_m2_replay_four_items_the_hand_transcribed_expectation_holds`
+#: 会当场报红（"这一批里没有手抄那一局的种子"），**不会静默失效**。
 HAND_SEED = 20261000
 
 #: **手抄**的四项期望值（种子 `HAND_SEED` 那一局）。

@@ -92,29 +92,81 @@ python tools/measure_frame_cost.py --frames 10000        # 采真实值
 python tools/measure_frame_cost.py --frames 10000 --warmup 1000 --out out.json
 python tools/measure_frame_cost.py --baseline-check tests/baseline/frame_events.json
 python tools/measure_frame_cost.py --baseline-out tests/baseline/frame_events.json --reason "<理由>"
+python tools/measure_frame_cost.py --thousand-games 1000 # 千局基准（`G2-4`）
+python tools/measure_frame_cost.py --frames 10000 --no-observability  # 内核裸跑（配对 A/B 用）
 ```
 
-退出码：0 = 采到了 / 校验通过 / 自检通过；1 = 基线不一致 / 自检失败；2 = 用法错误或采样口径被破坏。
+退出码：0 = 采到了 / 校验通过 / 自检通过 / 千局在预算内；
+1 = 基线不一致 / 自检失败 / 千局超预算；
+2 = 用法错误或采样口径被破坏。
+
+## 千局基准（`G2-4` · ADR-018）
+
+**多进程**：每局一个任务，进程池大小 = CPU 核数，`chunksize > 1`，
+**汇总前按种子排序**（`pool.map` 保序）。
+
+**"关闭事件分发"的快速模式被明确否决**（ADR-018 · B-1 · B-10）——那会破坏
+**事件完备性**（AC-2）。
+
+**判的是墙钟总时长**（并行跑完 N 局用了多久）。**每局耗时之和**也报出来，
+**但它不是判据**：30 分钟的预算是"并行跑完 1000 局"的预算。**那串和还含
+并行争用**（16 个进程抢同一台机器）——它是**串行时间的上界**，不是串行实测值。
+
+### 局必须是**带策略的局**（纯重力局不行）
+
+**纯重力局**（宿主只派 `tick`）每局 **7671 帧**——1000 局并行跑完约 **31 分钟**，
+**卡在预算线上**（预算 30 分钟）。**参考策略局**每局约 **2800 帧** → 1000 局
+约 **4 分钟**，**留足了余量**。
+
+**更关键的是"同一批局"**：种子表起点从 `host/performance.py` 的
+`THOUSAND_BASE_SEED` 取（**与门判据同一张**）——一局的帧数随种子在
+1755–3300 之间波动，种子表不同 → 总工作量不同 → 两个数**不可比**。
+
+**参考策略住在 `tests/support/policy.py`**——那是**测试件**，`src/` 里**不放**
+它（库里不 shipping 一个"参考 AI"：`systems/ai` 是将来 AI 系统的位置，不是
+现在塞一个参考策略的地方）。所以这里**动态载入**：载入不到就**明确报错**，
+**不静默退化成"纯重力局"**——那量的是另一件事。
+
+### 这个数与门判据那个数的关系
+
+| | 量的是 | 用途 |
+| --- | --- | --- |
+| 本工具 | **玩**（标准装配 · 跑完整局） | 探机器的余量 |
+| `tests/test_m2_gates.py` 的 `G2-4` | **录 + 放**（含重放） | **判据** |
+
+**门判据那个数才是判据**（它把重放的时间也算进去了，**更保守**）；本工具
+那个数是**同一批局的工作量子集**——它不重放，所以它量的是"玩完这 1000 局"
+的机器余量。
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
+import os
 import random
 import sys
 import time
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, cast
 
-from _toolkit import SRC_ROOT, configure_output, relative_to_repo
+from _toolkit import REPO_ROOT, SRC_ROOT, configure_output, relative_to_repo
 
 sys.path.insert(0, str(SRC_ROOT))
 
 from tetris_kernel.host import HeadlessLoop, assemble  # noqa: E402
+from tetris_kernel.host.performance import (  # noqa: E402
+    THOUSAND_BASE_SEED,
+    THOUSAND_BUDGET_SECONDS,
+)
 from tetris_kernel.kernel import PHASE_GAME_OVER, PHASE_RUNNING  # noqa: E402
+from tetris_kernel.kernel.commands import Command  # noqa: E402
+from tetris_kernel.kernel.snapshot import Snapshot  # noqa: E402
 
 #: NFR-2 的单帧逻辑预算（微秒）：60fps 帧步长 16.67ms 的 10% = 1.6ms。
 #: 需求 NFR-2 · spec-M0.md 验收表「性能」行。**M0 只标定真实值**，
@@ -123,6 +175,17 @@ BUDGET_US = 1600
 
 #: 默认预热帧数（不计入样本）。
 DEFAULT_WARMUP = 1000
+
+#: 千局基准的默认局数（`G2-4`）。
+DEFAULT_THOUSAND_GAMES = 1000
+
+#: 千局基准的**每局任务**进进程池时的分块大小（ADR-018：`chunksize > 1`）。
+THOUSAND_CHUNKSIZE = 8
+
+#: 测试树目录（**参考策略住在里面**：`tests/support/policy.py`）。
+#:
+#: **只在千局基准模式里用到**——参考策略是**测试件**，`src/` 里不放它。
+TESTS_DIR = REPO_ROOT / "tests"
 
 # ---------------------------------------------------------------------------
 # 事件数基线的固定场景
@@ -320,7 +383,13 @@ def summarize(costs_us: list[int], event_counts: list[int]) -> Summary:
     )
 
 
-def _collect(*, seed: int, frames: int, warmup: int) -> list[FrameSample]:
+def _collect(
+    *,
+    seed: int,
+    frames: int,
+    warmup: int,
+    observability: bool = True,
+) -> list[FrameSample]:
     """跑真实的无头帧循环，收逐帧样本。
 
     **计时只包住 `run_frame()`**：phase 的读取在计时区外——它是分类依据，
@@ -335,8 +404,11 @@ def _collect(*, seed: int, frames: int, warmup: int) -> list[FrameSample]:
 
     **采集到的类型条数必须与 `run_frame()` 给的事件数相等**：不等就说明
     采集口径坏了（漏订阅 / 多订阅）——当场报错，不给出一份自相矛盾的基线。
+
+    **`observability=False`**：关掉三个可观测系统——**M2 才有这个开关**
+    （M1 的代码里没有），所以**配对 A/B 的"内核裸跑"那一档只能跑 M2 一侧**。
     """
-    assembly = assemble(seed=seed)
+    assembly = assemble(seed=seed, observability_enabled=observability)
     published: list[str] = []
     assembly.bus.subscribe("*", lambda envelope: published.append(envelope.type))
     loop = HeadlessLoop(assembly)
@@ -618,6 +690,116 @@ def _compare_baseline(
     return problems
 
 
+class _ReferencePolicy(Protocol):
+    """参考策略的**最小接口**（只要求 `decide`）。
+
+    **为什么写 Protocol 而不是直接 import 那个类**：`tools/` **不静态 import
+    `tests/`**（那会让类型检查去管一棵测试树），动态载入的模块拿不到静态
+    类型——所以这里**只声明用得到的那一个方法**。
+    """
+
+    def decide(self, snapshot: Snapshot) -> tuple[str, ...]:
+        """按当前快照给出**要派发的命令类型名**（不带参数）。"""
+        ...
+
+
+def _load_reference_policy() -> tuple[_ReferencePolicy, str]:
+    """从**测试树**里取参考策略（`tests/support/policy.py`）。
+
+    **为什么从测试树取**：参考策略是**测试件**——门判据与基准都用它，但
+    `src/` 里**不放**它（库里不 shipping 一个"参考 AI"：`systems/ai` 是将来
+    AI 系统的位置，不是现在塞一个参考策略的地方）。
+
+    **动态载入**：`tools/` 不静态 import `tests/`（那会让类型检查去管一棵
+    测试树）。**载入不到就明确报错**——**不静默退化成"纯重力局"**：那量的是
+    另一件事（每局 7671 帧 vs 参考策略的约 2800 帧），两个数对不上，
+    `G2-4` 的预算就失去意义了。
+    """
+    if str(TESTS_DIR) not in sys.path:
+        sys.path.insert(0, str(TESTS_DIR))
+    try:
+        module = importlib.import_module("support.policy")
+    except ImportError as error:  # pragma: no cover - 环境不对才会走到
+        raise RuntimeError(
+            f"取参考策略失败（{TESTS_DIR / 'support' / 'policy.py'}）：{error}"
+        ) from error
+    policy = cast(_ReferencePolicy, module.ReferencePolicy())
+    return policy, cast(str, module.POLICY_SOURCE)
+
+
+def _play_one_game(seed: int) -> tuple[int, float]:
+    """**一局的任务**：按参考策略玩到顶出，返回（帧数 · 耗时秒）。
+
+    **进程池里的那个任务**（ADR-018：每局一个任务）。
+
+    **与门判据那一批同源**：同一份参考策略、同一张种子表（`THOUSAND_BASE_SEED`
+    起）——所以工具量出来的数与 `G2-4` 判的那个数**可以互相印证**（spec §7.3：
+    两档跑的是同一批局）。**少的那一段是"重放"**：工具只量"玩"，
+    门判据量的是"录 + 放"——**工具的数一定不大于门判据的数**。
+    """
+    policy, source = _load_reference_policy()
+    assembly = assemble(seed=seed)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    kernel = assembly.kernel
+    started = time.perf_counter()
+    while kernel.phase != PHASE_GAME_OVER:
+        for name in policy.decide(kernel.snapshot()):
+            kernel.submit(Command(type=name, source=source))
+        loop.run_frame()
+    elapsed = time.perf_counter() - started
+    return kernel.snapshot().frame, elapsed
+
+
+def _thousand_games_mode(args: argparse.Namespace) -> int:
+    """千局基准模式：跑 N 局无头模拟，报总时长与预算对照。
+
+    **多进程**（ADR-018）：每局一个任务，进程池大小 = CPU 核数，
+    `chunksize > 1`，**汇总前按种子排序**（`pool.map` 保序，结果天然按种子
+    排好）。
+
+    **"关闭事件分发"的快速模式被明确否决**（ADR-018 · B-1 · B-10）——那会
+    破坏事件完备性。
+
+    **判的是墙钟总时长**：并行跑完 N 局用了多久。**每局耗时之和**也报出来
+    （那是串行跑同样的活要多久），**但它不是判据**——`G2-4` 的 30 分钟预算是
+    "并行跑完 1000 局"的预算（串行要 54 分钟，超预算）。
+    """
+    games = args.thousand_games
+    if games <= 0:
+        print("--thousand-games 必须为正", file=sys.stderr)
+        return 2
+    budget = args.budget_seconds
+    workers = min(games, args.workers if args.workers > 0 else (os.cpu_count() or 1))
+    seeds = tuple(args.thousand_seed + index for index in range(games))
+
+    started = time.perf_counter()
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_play_one_game, seeds, chunksize=THOUSAND_CHUNKSIZE))
+    elapsed = time.perf_counter() - started
+
+    total_frames = sum(frames for frames, _seconds in results)
+    serial_seconds = sum(seconds for _frames, seconds in results)
+    per_game = serial_seconds / games
+
+    print(f"局数：{games}（种子 {args.thousand_seed} 起 · 参考策略局）")
+    print(f"进程池大小：{workers}（CPU 核数 {os.cpu_count()}）")
+    print(f"每局帧数：合计 {total_frames} · 平均 {total_frames // games}")
+    print(
+        f"每局耗时：平均 {per_game:.3f}s · 合计 {serial_seconds:.1f}s"
+        "（**含并行争用**——它是串行时间的上界，不是串行实测值）"
+    )
+    print(f"墙钟总时长（并行跑完 {games} 局）：{elapsed:.1f}s")
+    print(f"对照 `G2-4` 预算 {budget}s：{'在预算内' if elapsed <= budget else '超预算'}")
+    if elapsed > budget:
+        print(
+            f"千局基准超预算：{elapsed:.1f}s > {budget}s。",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def _baseline_mode(args: argparse.Namespace) -> int:
     """基线模式：跑固定场景，比对或写盘事件数基线。
 
@@ -711,6 +893,44 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="刷新基线的理由（--baseline-out 必须带）",
     )
+    parser.add_argument(
+        "--no-observability",
+        action="store_true",
+        help=(
+            "关掉三个可观测系统（**M2 才有这个开关**；配对 A/B 的「内核裸跑」那一档"
+            " · **只作用于单帧采样**，不影响千局基准）"
+        ),
+    )
+    parser.add_argument(
+        "--thousand-games",
+        type=int,
+        default=0,
+        help=(
+            "千局基准模式：跑这么多局无头模拟，报总时长与 `G2-4` 预算的对照"
+            f"（默认局数 {DEFAULT_THOUSAND_GAMES}，给 0 表示不开这个模式）"
+        ),
+    )
+    parser.add_argument(
+        "--thousand-seed",
+        type=int,
+        default=THOUSAND_BASE_SEED,
+        help=(
+            "千局基准的种子表起点"
+            f"（默认 {THOUSAND_BASE_SEED} = 门判据的 `THOUSAND_BASE_SEED`，**同一批局**）"
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="进程池大小（0 = CPU 核数 · ADR-018）",
+    )
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=float(THOUSAND_BUDGET_SECONDS),
+        help=f"千局基准的预算秒数（默认 {THOUSAND_BUDGET_SECONDS} = `G2-4` 的 30 分钟）",
+    )
     args = parser.parse_args(argv)
 
     if args.baseline_out is not None and args.baseline_check is not None:
@@ -720,6 +940,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error('--baseline-out 必须带 --reason "<理由>"：基线刷新要写明理由，不做无声覆盖。')
     if args.baseline_out is not None or args.baseline_check is not None:
         return _baseline_mode(args)
+
+    if args.thousand_games > 0:
+        return _thousand_games_mode(args)
 
     if args.frames <= 0:
         print("--frames 必须为正", file=sys.stderr)
@@ -736,7 +959,12 @@ def main(argv: list[str] | None = None) -> int:
             source = "合成样本（自检口径，非内核真实值）"
             warmup = 0
         else:
-            samples = _collect(seed=args.seed, frames=args.frames, warmup=args.warmup)
+            samples = _collect(
+                seed=args.seed,
+                frames=args.frames,
+                warmup=args.warmup,
+                observability=not args.no_observability,
+            )
             source = "内核无头帧循环（tetris_kernel.host.HeadlessLoop）"
             warmup = args.warmup
     except RuntimeError as error:

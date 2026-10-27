@@ -85,6 +85,25 @@ RECOVER_FRAMES = 1800
 #: 第 ② 档把日志阈值抬到哪一级。
 DEGRADED_MIN_LEVEL = "info"
 
+#: `G2-4` 的预算：千局模拟总时长 ≤ **30 分钟**（秒）。
+#:
+#: **这是工程预算，不是某台机的测量值**——同 `DEGRADE_P99_MS` 一个道理
+#: （NFR-2 的 1.6ms 是预算，`measure_frame_cost.py` 量的是本机的真实值）。
+#:
+#: **它住在这里**：降级阈值（`DEGRADE_P99_MS`）与千局预算都是**性能预算**，
+#: **一个地方一处真相**——测量工具与门判据用例都从这里取，谁也不许另抄一份。
+THOUSAND_BUDGET_SECONDS = 30 * 60
+
+#: 千局基准的**种子表起点**（**固定**：种子是基准的一部分，不是随手挑的）。
+#:
+#: **工具与门判据共用这一张种子表**：同一个起点 + 同一个局数 = **同一批局**。
+#: **为什么必须同一批局**：一局的帧数随种子在 1755–3300 之间波动（参考策略
+#: 局），种子表不同 → 总工作量不同 → 两个数**不可比**（跨批次的绝对值不可引用）。
+#:
+#: **它住在这里**的理由同 `THOUSAND_BUDGET_SECONDS`：**千局基准的定义**
+#: （局数起点 · 预算 · 种子表）只有一处真相，测量工具与门判据用例都从这里取。
+THOUSAND_BASE_SEED = 20261000
+
 
 class FrameCostWindow:
     """帧开销的滚动窗口（**P99 的口径** · ADR-031）。
@@ -304,6 +323,8 @@ __all__ = [
     "DEGRADED_MIN_LEVEL",
     "RECOVER_FRAMES",
     "RECOVER_P99_MS",
+    "THOUSAND_BASE_SEED",
+    "THOUSAND_BUDGET_SECONDS",
     "TIERS",
     "TIER_DEBUG_EVENTS",
     "TIER_EVENT_HISTORY",
