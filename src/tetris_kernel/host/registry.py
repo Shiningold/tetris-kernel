@@ -42,6 +42,8 @@ M3 的系统生命周期**只有两个动作**：**装上** 与 **摘下**（spe
 
 - **注册表住在宿主层**（`host/`）——**内核永不持有系统表**（N6）：装配是宿主的
   事，内核只认「当前这一套」；
+- **上下文与契约形状住在系统层**（`systems/context.py`）——**系统包里的工厂要用
+  它**，而系统层不许 import 宿主层；
 - **声明与工厂住在系统自己的包里**（`systems/<名字>/manifest.py`）——**新增能力 =
   新增文件**（M3-D2 / `G3-1`）：集中登记在一张名单里的话，每个新系统都要改一个
   既有文件，那条判据当场失去牙齿；
@@ -50,7 +52,7 @@ M3 的系统生命周期**只有两个动作**：**装上** 与 **摘下**（spe
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import cast
@@ -58,19 +60,17 @@ from typing import cast
 from ..bus.bus import EventBus
 from ..bus.subscriber import Subscription
 from ..contracts.systems import SystemManifest
-from ..kernel.commands import Command
 from ..kernel.core import Kernel
 from ..kernel.drafts import Payload, make_draft
 from ..kernel.snapshot import Snapshot
-
-#: 配置值（**扁平标量** · 契约的 `SCALAR_MAP` 口径：不可序列化对象一律不进事件）。
-type ConfigValue = int | float | str | bool | None
-
-#: 系统的配置（键 → 值 · **顺序固定**的不可变元组）。
-type SystemConfig = tuple[tuple[str, ConfigValue], ...]
-
-#: 系统的工厂：拿一份安装上下文，造出系统实例。
-type SystemFactory = Callable[["SystemContext"], object]
+from ..systems.context import (
+    CommandChannel,
+    ConfigValue,
+    InstallContext,
+    SystemConfig,
+    SystemEntry,
+    SystemFactory,
+)
 
 #: 装卸事件（契约已登记 · 产出者 `host`）。
 SYSTEM_INSTALLED_EVENT = "kernel:system:installed"
@@ -93,94 +93,13 @@ class SystemNotInstalledError(SystemRegistryError):
     """**要摘的系统没装** —— 明确报错，不静默跳过。"""
 
 
-# ---------------------------------------------------------------------------
-# 命令通道（可撤销）
-# ---------------------------------------------------------------------------
-
-
-class SystemCommandChannel:
-    """系统派命令的通道 —— **可撤销**（M3-D1 的核心）。
-
-    **为什么是对象而不是一个函数**：撤销必须是**状态**。「把提交函数换成空函数」
-    那种做法撤不干净——系统还攥着旧引用，还能派命令。
-
-    **撤销之后提交的命令被丢弃**（并计数）：**丢弃不报错**——系统不知道宿主
-    什么时候摘了它，报错会让订阅者的异常处理把「已卸载」误当成「出错了」。
-    """
-
-    def __init__(self, submit: Callable[[Command], None]) -> None:
-        self._submit = submit
-        self._active = True
-        self._revoked_count = 0
-
-    def submit(self, command: Command) -> None:
-        """派一条命令（**撤销后是空操作**）。"""
-        if not self._active:
-            self._revoked_count += 1
-            return
-        self._submit(command)
-
-    @property
-    def active(self) -> bool:
-        """通道是否还开着（**撤销后为 `False`**）。"""
-        return self._active
-
-    @property
-    def revoked_count(self) -> int:
-        """撤销之后被丢弃的命令条数（**可观测**：被摘下的系统还在派命令就看这里）。"""
-        return self._revoked_count
-
-    def revoke(self) -> None:
-        """**撤掉通道**（幂等）。撤了之后这个系统就再也改不动内核状态。"""
-        self._active = False
-
-
-# ---------------------------------------------------------------------------
-# 安装上下文与目录条目
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SystemContext:
-    """装系统时递给工厂的**上下文**。
-
-    字段：**名字** · **总线** · **命令通道** · **配置**。
-
-    **上下文里没有内核**：系统层**只订阅事件 + 派发命令**（M3-D3），它连内核
-    对象都不该看见——**最窄能力原则**。要派命令就派命令（走通道），要读状态就
-    读事件负载。
-    """
-
-    name: str
-    bus: EventBus[Snapshot]
-    commands: SystemCommandChannel
-    config: SystemConfig
-
-
-@dataclass(frozen=True)
-class SystemEntry:
-    """目录里的一个系统：**声明 + 工厂**。
-
-    **声明与工厂必须同源**（同一个包里的同一份承诺）——声明说订阅什么、派发什么，
-    工厂就照着做；**两处各写一份**时，承诺与行为会悄悄分叉，而基线只钉住声明。
-    """
-
-    manifest: SystemManifest
-    factory: SystemFactory
-
-
 @dataclass(frozen=True)
 class InstalledSystem:
     """**已装上**的系统的记录（注册表内部用）。"""
 
     instance: object
-    channel: SystemCommandChannel
+    channel: CommandChannel
     subscriptions: tuple[Subscription[Snapshot], ...]
-
-
-# ---------------------------------------------------------------------------
-# 注册表
-# ---------------------------------------------------------------------------
 
 
 class SystemRegistry:
@@ -226,7 +145,7 @@ class SystemRegistry:
             raise SystemNotInstalledError(f"系统没装：{name}")
         return record.instance
 
-    def channel_of(self, name: str) -> SystemCommandChannel:
+    def channel_of(self, name: str) -> CommandChannel:
         """取已装系统的命令通道（**没装就报错**）。"""
         record = self._installed.get(name)
         if record is None:
@@ -254,8 +173,8 @@ class SystemRegistry:
         if name in self._installed:
             raise SystemAlreadyInstalledError(f"系统已经装上了：{name}")
 
-        channel = SystemCommandChannel(self._kernel.submit)
-        context = SystemContext(
+        channel = CommandChannel(self._kernel.submit)
+        context = InstallContext(
             name=name,
             bus=self._bus,
             commands=channel,
@@ -287,7 +206,8 @@ class SystemRegistry:
         - **自己订阅的系统**（M2 的三个内建系统）：它们在构造时自己订阅，句柄由
           系统自己暴露（`subscriptions` 属性）——**注册表只负责摘干净**。
 
-        **不订阅 `GLOBAL_SUBSCRIPTION` 以外的通配**：`"*"` 走总线自己的全局匹配。
+        **注册表不替系统发明订阅**：声明之外的东西，系统自己去订阅并把句柄交出来
+        ——**订阅集仍然只有一个真相**（声明 + 系统自己交出来的那些）。
         """
         handler = getattr(instance, "on_event", None)
         if handler is None:
@@ -331,7 +251,7 @@ class SystemRegistry:
             return True
         try:
             closer()
-        except Exception as error:  # noqa: BLE001 - 卸载期任何异常都只记错
+        except Exception as error:
             # **不占用 `kernel:error`**（架构 §6.4）：那一条只留给订阅者异常隔离。
             self._problems.append(f"系统 {name} 卸载时不干净：{error}")
             return False
@@ -365,12 +285,12 @@ def _as_payload(config: SystemConfig) -> Payload:
 __all__ = [
     "SYSTEM_INSTALLED_EVENT",
     "SYSTEM_REMOVED_EVENT",
+    "CommandChannel",
     "ConfigValue",
+    "InstallContext",
     "InstalledSystem",
     "SystemAlreadyInstalledError",
-    "SystemCommandChannel",
     "SystemConfig",
-    "SystemContext",
     "SystemEntry",
     "SystemFactory",
     "SystemNotInstalledError",

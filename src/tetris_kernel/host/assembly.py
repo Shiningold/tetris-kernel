@@ -67,6 +67,7 @@ from ..kernel.snapshot import Snapshot
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
+from ..systems.context import InstallContext, SystemEntry, SystemFactory
 from ..systems.log import LogSystem, LogTarget, SinkTarget
 from ..systems.log.manifest import SYSTEM_MANIFEST as LOG_MANIFEST
 from ..systems.metrics import MetricsSystem
@@ -76,7 +77,7 @@ from ..systems.replay.format import recording_filename
 from ..systems.replay.manifest import SYSTEM_MANIFEST as REPLAY_MANIFEST
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 from .performance import DegradationController
-from .registry import SystemContext, SystemEntry, SystemFactory, SystemRegistry
+from .registry import SystemRegistry
 from .replay import four_items_of
 
 #: 落盘出口（**装配约定，不属于契约面** —— spec-M2 §3.3 · ADR-064 / ADR-074）。
@@ -426,7 +427,7 @@ def _adapt_factory(
 ) -> SystemFactory:
     """把 M2 的工厂签名适配成注册表的 `(context)` 签名。"""
 
-    def create(context: SystemContext) -> object:
+    def create(context: InstallContext) -> object:
         return factory(context.bus, sinks, outcome_provider)
 
     return create

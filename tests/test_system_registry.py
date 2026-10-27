@@ -36,8 +36,8 @@ from tetris_kernel.bus.envelope import Envelope
 from tetris_kernel.contracts.systems import SystemManifest
 from tetris_kernel.host.assembly import assemble
 from tetris_kernel.host.registry import (
+    InstallContext,
     SystemAlreadyInstalledError,
-    SystemContext,
     SystemEntry,
     SystemNotInstalledError,
     SystemRegistry,
@@ -67,7 +67,7 @@ class ProbeSystem:
     **它带 `on_event`** —— 注册表按**声明**接订阅（订阅集只有一个真相）。
     """
 
-    def __init__(self, context: SystemContext) -> None:
+    def __init__(self, context: InstallContext) -> None:
         self.context = context
         self.received: list[str] = []
         #: 收到 `kernel:system:removed` 时，命令通道**是不是还开着**——
@@ -295,7 +295,7 @@ def test_an_unclean_uninstall_is_recorded_without_using_kernel_error() -> None:
     class StubbornSystem:
         """**释放资源时抛错**的系统（模拟卸载不干净）。"""
 
-        def __init__(self, context: SystemContext) -> None:
+        def __init__(self, context: InstallContext) -> None:
             """装上（**不需要上下文里的东西**，但签名得对）。"""
 
         def on_event(self, envelope: Envelope) -> None:
@@ -355,7 +355,7 @@ def test_the_channel_is_already_revoked_when_the_removed_event_arrives() -> None
     class ObserverSystem:
         """**观察者**：收到 `removed` 时看一眼被摘系统的通道是不是还开着。"""
 
-        def __init__(self, context: SystemContext) -> None:
+        def __init__(self, context: InstallContext) -> None:
             """装上（**不需要上下文里的东西**，但签名得对）。"""
 
         def on_event(self, envelope: Envelope) -> None:

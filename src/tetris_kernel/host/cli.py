@@ -91,6 +91,7 @@ from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
 from .assembly import assemble, rule_set_of
+from .discovery import declared_manifests, dependency_graph
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
 
@@ -169,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_replay(args)
         case "inspect":
             return _cmd_inspect(args)
+        case "systems":
+            return _cmd_systems(args)
         case _:
             return _cmd_placeholder(args)
 
@@ -255,6 +258,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     inspect.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
+
+    systems = subparsers.add_parser(
+        "systems",
+        help="系统清单与依赖图：谁订阅了什么、谁发出什么命令（M3 · FR-9.2）",
+    )
+    systems.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
     subparsers.add_parser(
         "play",
@@ -493,6 +502,50 @@ def _event_dict(envelope: Envelope) -> dict[str, object]:
         "payload": {name: value for name, value in envelope.payload},
         "metadata": {name: value for name, value in envelope.metadata},
     }
+
+
+def _cmd_systems(args: argparse.Namespace) -> int:
+    """`systems`：**系统清单与依赖图**（M3 · FR-9.2）。
+
+    **清单是「扫描」出来的**（`host/discovery.py`）——**宿主不维护手写名单**
+    （M3-D2）：名单一旦成为必经之路，每个新系统都要改一个既有文件，`G3-1`
+    （新增能力 = 新增文件）就永久失去牙齿。
+
+    **输出两种形态**：人读的清单 · `--json` 的机器可读结构（**"给人看的图"不算
+    依赖图**——依赖图要能被测试直接断言）。
+    """
+    manifests = declared_manifests()
+    graph = dependency_graph(manifests)
+    if bool(args.json):
+        payload: dict[str, object] = {
+            "systems": [
+                {
+                    "name": name,
+                    "version": manifest.version,
+                    "subscribes": list(manifest.subscribes),
+                    "commands": list(manifest.commands),
+                    "producer": manifest.producer,
+                    "needsSink": manifest.needsSink,
+                }
+                for name, manifest in manifests.items()
+            ],
+            "graph": graph.as_dict(),
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    print(f"系统清单（{len(manifests)} 个）：")
+    for name, manifest in manifests.items():
+        subscribes = " · ".join(manifest.subscribes) or "—"
+        commands = " · ".join(manifest.commands) or "—"
+        print(f"  {name}（v{manifest.version}）  订阅：{subscribes}  命令：{commands}")
+    print("依赖图：")
+    for event_type in sorted({item for values in graph.subscriptions.values() for item in values}):
+        subscribers = " · ".join(graph.subscribers_of(event_type)) or "—"
+        print(f"  {event_type} ← {subscribers}")
+    for command_type in sorted({item for values in graph.commands.values() for item in values}):
+        dispatchers = " · ".join(graph.dispatchers_of(command_type)) or "—"
+        print(f"  {command_type} → {dispatchers}")
+    return 0
 
 
 def _cmd_placeholder(args: argparse.Namespace) -> int:
