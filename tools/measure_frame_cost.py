@@ -160,6 +160,7 @@ from _toolkit import REPO_ROOT, SRC_ROOT, configure_output, relative_to_repo
 sys.path.insert(0, str(SRC_ROOT))
 
 from tetris_kernel.host import HeadlessLoop, assemble  # noqa: E402
+from tetris_kernel.host.discovery import system_catalog  # noqa: E402
 from tetris_kernel.host.performance import (  # noqa: E402
     THOUSAND_BASE_SEED,
     THOUSAND_BUDGET_SECONDS,
@@ -389,6 +390,7 @@ def _collect(
     frames: int,
     warmup: int,
     observability: bool = True,
+    systems: tuple[str, ...] = (),
 ) -> list[FrameSample]:
     """跑真实的无头帧循环，收逐帧样本。
 
@@ -407,8 +409,19 @@ def _collect(
 
     **`observability=False`**：关掉三个可观测系统——**M2 才有这个开关**
     （M1 的代码里没有），所以**配对 A/B 的"内核裸跑"那一档只能跑 M2 一侧**。
+
+    **`systems`**（M3 起）：**额外装上哪些 M3 系统**（`achievements` ·
+    `rotations`）——**分发成本记账要单独记这一项**（M2 记的是"三系统全开 vs
+    裸跑"，M3 加了订阅者之后**这一项的账要另记**）。**目录走自动发现**
+    （`system_catalog()`），**不给就不装**（默认一个都不装 → 行为与 M2 一致）。
     """
-    assembly = assemble(seed=seed, observability_enabled=observability)
+    assembly = assemble(
+        seed=seed,
+        observability_enabled=observability,
+        systems=systems,
+        # **系统目录走自动发现**（宿主不维护手写名单 · M3-D2）。
+        system_catalog=system_catalog() if systems else None,
+    )
     published: list[str] = []
     assembly.bus.subscribe("*", lambda envelope: published.append(envelope.type))
     loop = HeadlessLoop(assembly)
@@ -902,6 +915,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--systems",
+        type=str,
+        default="",
+        help=(
+            "额外装上哪些 M3 系统（逗号分隔 · 如 `achievements,rotations`）"
+            "——**分发成本记账**：M2 记的是「三系统全开 vs 裸跑」，M3 加了订阅者"
+            "之后**这一项的账要另记**（默认一个都不装 → 行为与 M2 一致）"
+        ),
+    )
+    parser.add_argument(
         "--thousand-games",
         type=int,
         default=0,
@@ -964,6 +987,7 @@ def main(argv: list[str] | None = None) -> int:
                 frames=args.frames,
                 warmup=args.warmup,
                 observability=not args.no_observability,
+                systems=tuple(name for name in args.systems.split(",") if name),
             )
             source = "内核无头帧循环（tetris_kernel.host.HeadlessLoop）"
             warmup = args.warmup
