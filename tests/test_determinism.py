@@ -187,6 +187,27 @@ def test_determinism_same_seed() -> None:
     assert first_stats[3] >= 1, f"命令序列没锁定过任何方块：{first_stats}"
     assert any(name == "piece:locked" for name, _ in first_events), "序列里没有锁定事件"
 
+    # **换规则集那条命令走的是接受路径**（M3 审查报告 M2 的「有牙」处）。
+    #
+    # **为什么必须钉这一条**：光把 `switchRuleSet` 放进序列**不够**——它被
+    # **拒**掉时序列照样跑得通、指纹照样一致（局中切换必拒）。**那样这条
+    # 修订就是白改**：确定性指纹里依然**不含换规则集的接受路径**。
+    #
+    # 这里钉住两件事：**它被接受了**（`command:accepted` 出现）**且语义事件
+    # 真的发了**（`kernel:rule-set-changed` + `game:reset`）。
+    assert any(name == "kernel:rule-set-changed" for name, _ in first_events), (
+        "序列里没有换规则集的语义事件——这条路径没进指纹"
+    )
+    assert any(name == "game:reset" for name, _ in first_events), "换规则集没有伴随局面重置"
+    rejected_types = [
+        dict(payload).get("commandType")
+        for name, payload in first_events
+        if name == "command:rejected"
+    ]
+    assert "switchRuleSet" not in rejected_types, (
+        f"switchRuleSet 被拒了：{rejected_types}——接受路径没进指纹"
+    )
+
     for index, (stats, events) in enumerate(results[1:], start=2):
         assert stats == first_stats, f"第 {index} 次的四项与第 1 次不等：{stats} ≠ {first_stats}"
         assert events == first_events, f"第 {index} 次的事件流与第 1 次不等"
