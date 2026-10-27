@@ -282,6 +282,25 @@ def test_the_frozen_zone_is_untouched() -> None:
     assert result.returncode == 0, f"冻结区变了：\n{message}"
 
 
+def test_the_built_in_definitions_unlock_as_written() -> None:
+    """**内建成就清单**照写的那样能解锁（不是只校验字段合法）。
+
+    **为什么这条不许省**：只校验「编号非空 · 事件类型已登记」的话，
+    清单里写一个**永远达不到的阈值**照样全绿——**内建清单自己就废了**，
+    而没人看得出来。这条用例拿**内建清单**跑一遍最浅的那个成就。
+    """
+    bus = _bus()
+    system = AchievementsSystem(bus)
+    bus.subscribe(GLOBAL_SUBSCRIPTION, system.on_event)
+
+    bus.publish(_draft("piece:locked"))
+
+    assert "first-lock" in system.unlocked, "内建成就清单照写的那样解锁不了"
+    events = _unlocked_events(bus)
+    assert len(events) == 1
+    assert dict(events[0].payload)["id"] == "first-lock"
+
+
 def test_the_definitions_are_written_by_event_type_and_count() -> None:
     """成就定义**按事件类型与计数写**（不写死「标准玩法」的名字）。
 
