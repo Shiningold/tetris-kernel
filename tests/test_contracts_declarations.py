@@ -38,6 +38,7 @@ from tetris_kernel.contracts import (
     CONTRACT_VERSION,
     COORD_CELLS,
     COORDINATE_CONVENTIONS,
+    CROSS_CUT_REJECT_REASONS,
     ENVELOPE_FIELDS,
     EVENT_TYPES,
     GLOBAL_SUBSCRIPTION,
@@ -75,6 +76,7 @@ from tetris_kernel.contracts import (
     check_manifest_types,
     is_lifecycle_gated,
     manifest_canonical_text,
+    missing_cross_cut_reasons,
     namespace_of,
     register_system_manifest,
     unregister_system_manifest,
@@ -681,10 +683,11 @@ EXPECTED_REJECT_CATEGORIES: dict[str, tuple[str, ...]] = {
 #: **加上三条跨切规则**（统一生命周期门禁 · 配额 · 参数不合规格）。
 EXPECTED_COMMAND_REJECT_REASONS: dict[str, frozenset[str]] = {
     # 生命周期命令：状态问题走 illegal_transition，不是门禁三值
-    "start": frozenset({"invalid_argument", "illegal_transition"}),
-    "pause": frozenset({"invalid_argument", "illegal_transition"}),
-    "resume": frozenset({"invalid_argument", "illegal_transition"}),
-    "reset": frozenset({"invalid_argument", "illegal_transition"}),
+    # 生命周期命令：配额跨切 + 参数 + 状态（**M3-C2 补齐 quota_exceeded**）
+    "start": frozenset({"quota_exceeded", "invalid_argument", "illegal_transition"}),
+    "pause": frozenset({"quota_exceeded", "invalid_argument", "illegal_transition"}),
+    "resume": frozenset({"quota_exceeded", "invalid_argument", "illegal_transition"}),
+    "reset": frozenset({"quota_exceeded", "invalid_argument", "illegal_transition"}),
     # 移动 / 下落 / 旋转：门禁三值 + 无活动方块
     "moveLeft": frozenset(
         {
@@ -803,7 +806,15 @@ EXPECTED_COMMAND_REJECT_REASONS: dict[str, frozenset[str]] = {
         }
     ),
     # 换规则集：不走统一生命周期门禁（局中切换由内核自判 illegal_transition）
-    "switchRuleSet": frozenset({"invalid_argument", "illegal_transition", "unknown_rule_set"}),
+    # **M3-C2 补齐 quota_exceeded**（配额跨切 · 内核对被丢弃的它照发）。
+    "switchRuleSet": frozenset(
+        {
+            "quota_exceeded",
+            "invalid_argument",
+            "illegal_transition",
+            "unknown_rule_set",
+        }
+    ),
 }
 
 #: 受统一生命周期门禁约束的命令（需求 §8.2 的门禁注）。
@@ -933,6 +944,25 @@ def test_lifecycle_gate_is_explicit() -> None:
     """
     for name, spec in COMMANDS.items():
         assert spec.lifecycle_gated == (name in EXPECTED_GATED_COMMANDS), name
+
+
+def test_every_command_declares_the_cross_cut_reasons() -> None:
+    """**跨切的拒绝原因每条命令都要声明**（M3-C2 · 审查报告 M1）。
+
+    **配额是跨切的**（架构 §6.4）：配额超限时，被丢弃的**任何**命令都以
+    `quota_exceeded` 被拒——**内核对 `start` / `pause` / `resume` / `reset`
+    也照发**，而 M3 之前那四条**从 M0 起就没声明**（`switchRuleSet` 沿用了
+    同一处遗漏）。**声明与内核行为分家**时，消费方按 `reject_reasons` 枚举
+    拒绝面就会漏。
+
+    **这条规则以前只活在 docstring 里**——**没有任何一处机器守着**，所以漏了
+    四年。现在它有牙了：契约面**导入期当场炸**（`_assert_cross_cut_reasons_
+    declared`），这里再钉一道。
+    """
+    assert missing_cross_cut_reasons() == (), missing_cross_cut_reasons()
+    for name, spec in COMMANDS.items():
+        for reason in CROSS_CUT_REJECT_REASONS:
+            assert reason in spec.reject_reasons, f"{name} 缺 {reason}"
 
 
 def test_command_type_fields_carry_command_names() -> None:
@@ -2540,7 +2570,10 @@ def test_switch_rule_set_is_not_lifecycle_gated() -> None:
     spec: CommandSpec = COMMANDS["switchRuleSet"]
     assert spec.lifecycle_gated is False
     assert not set(spec.reject_reasons) & set(LIFECYCLE_REJECT_REASONS)
+    # **配额跨切也在里面**（M3-C2）：配额超限时**任何**命令都可能被丢弃，
+    # 内核对它照发 `quota_exceeded`——**声明必须与内核行为一致**。
     assert set(spec.reject_reasons) == {
+        "quota_exceeded",
         "invalid_argument",
         "illegal_transition",
         "unknown_rule_set",
