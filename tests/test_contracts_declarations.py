@@ -1,10 +1,10 @@
-"""契约声明测试（S2 事件 / S3 命令 / S4 快照与放置 / S5 规则签名 · S15 补全）。
+"""契约声明测试（S2 事件 / S3 命令 / S4 快照与放置 / S5 规则签名 · S15 补全 · M3-S1 系统声明面）。
 
-当前覆盖：事件注册表（49 条）、命名空间、产出者分布、信封与元数据声明、
-命令规格（16 条）与拒绝原因枚举（12 值）、快照字段声明（21 顶层 + board 5
+当前覆盖：事件注册表（50 条）、命名空间、产出者分布、信封与元数据声明、
+命令规格（17 条）与拒绝原因枚举（13 值）、快照字段声明（21 顶层 + board 5
 子字段 + active 4 子字段）、坐标系约定、M0 内核状态清单、PlacementInfo、
-规则接口签名（9 条）与四个中性交换结构、命名结构注册表、类型文法回验与
-公共叶子纯净度。
+规则接口签名（9 条）与四个中性交换结构、命名结构注册表、系统声明面（M3）、
+类型文法回验与公共叶子纯净度。
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from tetris_kernel.contracts import (
     COORDINATE_CONVENTIONS,
     ENVELOPE_FIELDS,
     EVENT_TYPES,
+    GLOBAL_SUBSCRIPTION,
     INT_TUPLE,
     JSON_VALUE,
     KERNEL_STATE_TO_SNAPSHOT,
@@ -60,6 +61,7 @@ from tetris_kernel.contracts import (
     SCALAR_MAP,
     SNAPSHOT_FIELD_NAMES,
     SNAPSHOT_FIELDS,
+    SYSTEM_MANIFESTS,
     VECTOR2,
     ClearGroup,
     CommandSpec,
@@ -69,8 +71,13 @@ from tetris_kernel.contracts import (
     RuleContext,
     ScoreDelta,
     ScoreState,
+    SystemManifest,
+    check_manifest_types,
     is_lifecycle_gated,
+    manifest_canonical_text,
     namespace_of,
+    register_system_manifest,
+    unregister_system_manifest,
 )
 from tetris_kernel.contracts.types import Phase, literal_enum
 from tetris_kernel.host.assembly import assemble
@@ -78,6 +85,7 @@ from tetris_kernel.kernel.commands import Command
 from tetris_kernel.kernel.core import Kernel, KernelState
 from tetris_kernel.rules.standard import STANDARD_RULESET
 from tetris_kernel.rules.tables import PIECE_TYPES
+from tetris_kernel.systems.manifests import discover_manifests
 
 # ---------------------------------------------------------------------------
 # 取值域收口：四条（+事件侧同域）字段的类型串，**独立转录**一份做交叉核对。
@@ -95,11 +103,11 @@ EXPECTED_AXIS_LITERAL = "Literal['down', 'left', 'right', 'up']"
 #: 消行轴的类型串。
 EXPECTED_CLEAR_AXIS_LITERAL = "Literal['row', 'column']"
 
-#: 命令名的类型串（16 个命令名按需求 §8.2 的表格顺序）。
+#: 命令名的类型串（17 个命令名按需求 §8.2 的表格顺序）。
 EXPECTED_COMMAND_TYPE_LITERAL = (
     "Literal['start', 'pause', 'resume', 'reset', 'moveLeft', 'moveRight', "
     "'softDrop', 'hardDrop', 'rotateCW', 'rotateCCW', 'rotate180', 'hold', "
-    "'tick', 'setLevel', 'injectGarbage', 'writeCells']"
+    "'tick', 'setLevel', 'injectGarbage', 'writeCells', 'switchRuleSet']"
 )
 
 # ---------------------------------------------------------------------------
@@ -109,12 +117,13 @@ EXPECTED_COMMAND_TYPE_LITERAL = (
 # ---------------------------------------------------------------------------
 
 EXPECTED_EVENTS: dict[str, tuple[str, str]] = {
-    # kernel（5 条）
+    # kernel（6 条）
     "kernel:ready": ("kernel", "kernel"),
     "kernel:system:installed": ("kernel", "host"),
     "kernel:system:removed": ("kernel", "host"),
     "kernel:error": ("kernel", "bus"),
     "kernel:quota-exceeded": ("kernel", "kernel"),
+    "kernel:rule-set-changed": ("kernel", "kernel"),
     # command（3 条）
     "command:received": ("command", "kernel"),
     "command:accepted": ("command", "kernel"),
@@ -179,7 +188,7 @@ EXPECTED_EVENTS: dict[str, tuple[str, str]] = {
 
 #: 产出者分布（需求 §8.1 / 契约清单第 8 项）。
 EXPECTED_PRODUCER_COUNTS: dict[str, int] = {
-    "kernel": 34,
+    "kernel": 35,
     "bus": 1,
     "host": 3,
     "input-adapter": 2,
@@ -220,6 +229,10 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
         "quota": "str",
         "limit": "int",
         "actual": "int",
+    },
+    "kernel:rule-set-changed": {
+        "fromRule": "str",
+        "toRule": "str",
     },
     "command:received": {
         "commandType": EXPECTED_COMMAND_TYPE_LITERAL,
@@ -450,8 +463,8 @@ EXPECTED_PAYLOAD: dict[str, dict[str, str]] = {
 
 
 def test_event_registry_size() -> None:
-    """事件总数 = 49（需求 §8.1）。"""
-    assert len(EVENT_TYPES) == 49
+    """事件总数 = 50（需求 §8.1）。"""
+    assert len(EVENT_TYPES) == 50
 
 
 def test_event_registry_matches_requirement_table() -> None:
@@ -591,7 +604,7 @@ def test_same_field_name_means_same_type() -> None:
 # 两者相等才有意义。
 # ---------------------------------------------------------------------------
 
-#: 16 条命令的参数规格。键 = 命令名，值 = ((参数名, 类型, 是否可空), ...)。
+#: 17 条命令的参数规格。键 = 命令名，值 = ((参数名, 类型, 是否可空), ...)。
 EXPECTED_COMMAND_ARGS: dict[str, tuple[tuple[str, str, bool], ...]] = {
     # 生命周期（4 条）——全无参
     "start": (),
@@ -615,9 +628,11 @@ EXPECTED_COMMAND_ARGS: dict[str, tuple[tuple[str, str, bool], ...]] = {
     # 外部写入（2 条）
     "injectGarbage": (("rows", "int", False), ("holes", "tuple[int, ...]", False)),
     "writeCells": (("cells", "tuple[tuple[int, int, int], ...]", False),),
+    # 运行期（1 条）
+    "switchRuleSet": (("rule", "str", False),),
 }
 
-#: 拒绝原因枚举（12 值），转录自需求 §8.2 的分类表。
+#: 拒绝原因枚举（13 值），转录自需求 §8.2 的分类表。
 EXPECTED_REJECT_REASONS: tuple[str, ...] = (
     "not_started",
     "paused",
@@ -629,6 +644,7 @@ EXPECTED_REJECT_REASONS: tuple[str, ...] = (
     "illegal_transition",
     "no_active_piece",
     "hold_already_used",
+    "unknown_rule_set",
     "not_authorized",
     "write_condition_failed",
 )
@@ -638,7 +654,12 @@ EXPECTED_REJECT_CATEGORIES: dict[str, tuple[str, ...]] = {
     "lifecycle": ("not_started", "paused", "game_over"),
     "quota": ("quota_exceeded",),
     "parameter": ("invalid_argument", "level_out_of_range", "out_of_bounds"),
-    "state": ("illegal_transition", "no_active_piece", "hold_already_used"),
+    "state": (
+        "illegal_transition",
+        "no_active_piece",
+        "hold_already_used",
+        "unknown_rule_set",
+    ),
     "controlled_write": ("not_authorized", "write_condition_failed"),
 }
 
@@ -767,6 +788,8 @@ EXPECTED_COMMAND_REJECT_REASONS: dict[str, frozenset[str]] = {
             "write_condition_failed",
         }
     ),
+    # 换规则集：不走统一生命周期门禁（局中切换由内核自判 illegal_transition）
+    "switchRuleSet": frozenset({"invalid_argument", "illegal_transition", "unknown_rule_set"}),
 }
 
 #: 受统一生命周期门禁约束的命令（需求 §8.2 的门禁注）。
@@ -789,8 +812,8 @@ EXPECTED_GATED_COMMANDS: frozenset[str] = frozenset(
 
 
 def test_command_registry_size() -> None:
-    """命令总数 = 16（需求 §8.2）。"""
-    assert len(COMMANDS) == 16
+    """命令总数 = 17（需求 §8.2）。"""
+    assert len(COMMANDS) == 17
 
 
 def test_command_registry_is_closed_and_enumerable() -> None:
@@ -815,16 +838,17 @@ def test_command_args_match_requirement_table() -> None:
             assert arg.doc, f"{name}.{arg.name}"
 
 
-def test_only_three_commands_take_args() -> None:
-    """三条**有参**（`setLevel` / `injectGarbage` / `writeCells`），其余 13 条无参。"""
+def test_only_four_commands_take_args() -> None:
+    """四条**有参**（`setLevel` / `injectGarbage` / `writeCells` /
+    `switchRuleSet`），其余 13 条无参。"""
     with_args = {name for name, spec in COMMANDS.items() if spec.args}
-    assert with_args == {"setLevel", "injectGarbage", "writeCells"}
+    assert with_args == {"setLevel", "injectGarbage", "writeCells", "switchRuleSet"}
     assert len(COMMANDS) - len(with_args) == 13
 
 
 def test_reject_reason_enum() -> None:
-    """拒绝原因集合 = 12 个值，与需求 §8.2 逐条相等（契约清单第 6 项）。"""
-    assert len(REJECT_REASONS) == 12
+    """拒绝原因集合 = 13 个值，与需求 §8.2 逐条相等（契约清单第 6 项）。"""
+    assert len(REJECT_REASONS) == 13
     assert set(REJECT_REASONS) == set(EXPECTED_REJECT_REASONS)
 
 
@@ -937,7 +961,7 @@ def test_set_level_arg_type() -> None:
 
 
 def test_no_arg_is_nullable_in_v1() -> None:
-    """契约 v1 的 16 条命令**没有可空参数**——`holes` 用空元组表示"无空洞"。"""
+    """契约 v1 的 17 条命令**没有可空参数**——`holes` 用空元组表示"无空洞"。"""
     for name, spec in COMMANDS.items():
         for arg in spec.args:
             assert not arg.nullable, f"{name}.{arg.name}"
@@ -2024,6 +2048,7 @@ def test_package_all_matches_actual_exports() -> None:
         "rules",
         "snapshot",
         "structures",
+        "systems",
         "types",
     }
     public = {n for n in dir(contracts_pkg) if not n.startswith("_") and n not in submodule_names}
@@ -2463,3 +2488,165 @@ def test_the_phase_values_are_written_down_in_one_place_only() -> None:
                     continue
                 offenders.append(f"{folder}/{path.name}:{node.lineno} {node.value!r}")
     assert not offenders, f"生命周期取值被抄了第二份：{offenders}"
+
+
+# ---------------------------------------------------------------------------
+# M3-S1：系统声明面（FR-9.1 / FR-9.2 · spec-M3 §6.4）
+#
+# 下面这张表**独立转录**自 `docs/spec-M3.md` §6.4 的系统声明面——键 = 系统名，
+# 值 = (版本, 订阅集, 命令集, 产出者, 是否需要 sink)。转录的是「规格写了什么」，
+# 不是「实现写了什么」——两者相等才有意义。
+# ---------------------------------------------------------------------------
+
+#: 已声明系统的规格转录（系统名 → 规格）。
+EXPECTED_SYSTEM_MANIFESTS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...], str, bool]] = {
+    # M2 的三个既有系统（本批次补上声明——**声明是新增文件，既有实现零改动**）
+    "log": ("1", (GLOBAL_SUBSCRIPTION,), (), "log", True),
+    "metrics": ("1", (GLOBAL_SUBSCRIPTION,), (), "metrics", True),
+    "replay": (
+        "1",
+        ("command:accepted", "clock:tick", "game:over", "kernel:ready"),
+        (),
+        "systems/replay/",
+        True,
+    ),
+}
+
+
+def test_switch_rule_set_is_not_lifecycle_gated() -> None:
+    """`switchRuleSet` **不受统一生命周期门禁约束**——它有自己的门禁。
+
+    通用门禁是「phase ≠ running 一律拒」，而换规则集**恰恰要在非 running 态
+    被接受**（待开始 / 已结束）——写成 `lifecycle_gated=True` 就会在
+    `not_started` 态被拒，那条命令就没用了。
+    """
+    spec: CommandSpec = COMMANDS["switchRuleSet"]
+    assert spec.lifecycle_gated is False
+    assert not set(spec.reject_reasons) & set(LIFECYCLE_REJECT_REASONS)
+    assert set(spec.reject_reasons) == {
+        "invalid_argument",
+        "illegal_transition",
+        "unknown_rule_set",
+    }
+
+
+def test_switch_rule_set_takes_one_str_arg() -> None:
+    """`switchRuleSet` 只有一个参数 `rule: str`（禁浮点 · 只含 JSON 标量）。"""
+    args = COMMANDS["switchRuleSet"].args
+    assert [(arg.name, arg.type, arg.nullable) for arg in args] == [("rule", "str", False)]
+
+
+def test_rule_set_changed_event_payload() -> None:
+    """`kernel:rule-set-changed` 负载 = 新旧两个规则集标识（**产出者是内核**）。"""
+    spec = EVENT_TYPES["kernel:rule-set-changed"]
+    assert (spec.namespace, spec.producer) == ("kernel", "kernel")
+    assert {field.name: field.type for field in spec.payload} == {
+        "fromRule": "str",
+        "toRule": "str",
+    }
+
+
+def test_discovered_manifests_match_specification() -> None:
+    """发现到的系统声明**逐条等于规格转录**（FR-9.2 的依赖图靠它生成）。"""
+    found = discover_manifests()
+    actual = {
+        name: (m.version, m.subscribes, m.commands, m.producer, m.needsSink)
+        for name, m in found.items()
+    }
+    assert actual == EXPECTED_SYSTEM_MANIFESTS
+
+
+def test_manifest_subscribes_and_commands_are_registered() -> None:
+    """**自证**：声明里的事件 / 命令类型必须已登记（跨文件自证）。
+
+    写错一个名字（`"piece:rotatd"`）当场被抓住——不然它会挂一个永远收不到
+    事件的订阅，而系统看上去「装上了」。
+    """
+    for name, manifest in discover_manifests().items():
+        problems = check_manifest_types(
+            manifest,
+            known_events=EVENT_TYPES.keys(),
+            known_commands=COMMANDS.keys(),
+        )
+        assert not problems, f"{name}: {problems}"
+
+
+def test_manifest_producers_are_known_producers() -> None:
+    """声明里的产出者必须是需求 §8.1 已登记的产出者代号（**产出者 ≠ 命名空间**）。"""
+    for name, manifest in discover_manifests().items():
+        assert manifest.producer in PRODUCER_LABELS, name
+
+
+def test_manifest_canonical_text_is_stable_and_sensitive() -> None:
+    """规范化串：同样的声明 → 同样的串；**改了订阅集 → 串就变**（基线的牙齿）。"""
+    manifest = discover_manifests()["log"]
+    assert manifest_canonical_text(manifest) == manifest_canonical_text(manifest)
+    changed = SystemManifest(
+        name=manifest.name,
+        version=manifest.version,
+        subscribes=("piece:locked",),
+        commands=manifest.commands,
+        producer=manifest.producer,
+        needsSink=manifest.needsSink,
+    )
+    assert manifest_canonical_text(changed) != manifest_canonical_text(manifest)
+
+
+def test_check_manifest_types_catches_unknown_types() -> None:
+    """自证本身要**抓得住**：未登记的事件 / 命令类型必须被报出来。"""
+    manifest = SystemManifest(
+        name="probe",
+        version="1",
+        subscribes=("piece:rotatd",),
+        commands=("noSuchCommand",),
+        producer="log",
+        needsSink=False,
+    )
+    problems = check_manifest_types(
+        manifest,
+        known_events=EVENT_TYPES.keys(),
+        known_commands=COMMANDS.keys(),
+    )
+    assert any("piece:rotatd" in problem for problem in problems)
+    assert any("noSuchCommand" in problem for problem in problems)
+
+
+def test_system_manifest_rejects_invalid_declarations() -> None:
+    """非法声明**当场报错**：空名字 · 空订阅集 · 重复项。"""
+    with pytest.raises(ValueError):
+        SystemManifest(
+            name="", version="1", subscribes=("*",), commands=(), producer="log", needsSink=False
+        )
+    with pytest.raises(ValueError):
+        SystemManifest(
+            name="x", version="1", subscribes=(), commands=(), producer="log", needsSink=False
+        )
+    with pytest.raises(ValueError):
+        SystemManifest(
+            name="x",
+            version="1",
+            subscribes=("a", "a"),
+            commands=(),
+            producer="log",
+            needsSink=False,
+        )
+
+
+def test_registered_system_manifest_container() -> None:
+    """已登记系统清单容器：登记 → 可见 → 注销 → 消失；**重名即报错**。"""
+    manifest = SystemManifest(
+        name="probe-system",
+        version="1",
+        subscribes=("*",),
+        commands=(),
+        producer="log",
+        needsSink=False,
+    )
+    try:
+        register_system_manifest(manifest)
+        assert SYSTEM_MANIFESTS["probe-system"] == manifest
+        with pytest.raises(ValueError):
+            register_system_manifest(manifest)
+    finally:
+        unregister_system_manifest("probe-system")
+    assert "probe-system" not in SYSTEM_MANIFESTS

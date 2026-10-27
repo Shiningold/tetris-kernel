@@ -1,4 +1,4 @@
-"""事件契约声明（契约 v1 · 49 条事件 + 信封 + 元数据）。
+"""事件契约声明（契约 v1 · 50 条事件 + 信封 + 元数据）。
 
 公共叶子——**不 import 任何 `tetris_kernel.*` 模块，也不依赖第三方**；只用标准库
 （架构 §2.3 / §4.1）。本模块只做"声明"，不做"行为"：只构造声明用的 dataclass
@@ -114,11 +114,11 @@ METADATA_KEYS: tuple[PayloadField, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# 事件目录（49 条，需求 §8.1）
+# 事件目录（50 条，需求 §8.1）
 # ---------------------------------------------------------------------------
 
 _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
-    # ---------------- kernel（5 条） ----------------
+    # ---------------- kernel（6 条） ----------------
     (
         "kernel:ready",
         _spec(
@@ -182,6 +182,17 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             ),
         ),
     ),
+    (
+        "kernel:rule-set-changed",
+        _spec(
+            "kernel",
+            "kernel",
+            (
+                PayloadField("fromRule", "str", "切换前的规则集标识"),
+                PayloadField("toRule", "str", "切换后的规则集标识（必须已在宿主侧登记）"),
+            ),
+        ),
+    ),
     # ---------------- command（3 条） ----------------
     (
         "command:received",
@@ -214,7 +225,7 @@ _EVENT_SPECS: tuple[tuple[str, EventSpec], ...] = (
             "kernel",
             (
                 PayloadField("commandType", COMMAND_TYPE_LITERAL, "命令类型"),
-                PayloadField("reason", "str", "拒绝原因，取 12 值枚举之一"),
+                PayloadField("reason", "str", "拒绝原因，取 13 值枚举之一"),
                 PayloadField("args", ARGS, "命令参数，不可变；拒绝不改状态但参数必须齐全"),
                 PayloadField("mergedCount", "int", "本次代表多少次同因拒绝，起始值 1"),
             ),
