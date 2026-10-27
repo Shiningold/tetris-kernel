@@ -27,6 +27,11 @@ lint-imports 守着），**它知道有 sink，不知道路径**。
 那些工厂**一个都不许被调用**——"装配了再退订"会让 `G2-3` 假绿（系统还在
 跑，只是不发事件）。
 
+**降级控制器是可选接线**（ADR-031）：`degradation_enabled=True` 才装配
+`DegradationController`——它要一个**日志系统**（第 ① 档关 debug 事件 · 第 ② 档
+抬阈值），那个系统从装配出来的可观测系统里挑。**默认不装**：M2 是**无头批次**，
+没有实时宿主去测每帧耗时，**喂帧开销的接线留给 M3**。
+
 ## 默认值从各自的地盘取
 
 棋盘尺寸取 `kernel.core` 的常量、步长取 `host.clock` 的常量、历史容量取
@@ -58,6 +63,7 @@ from ..systems.log import LogSystem, LogTarget, SinkTarget
 from ..systems.metrics import MetricsSystem
 from ..systems.replay import RecordingSystem
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
+from .performance import DegradationController
 
 #: 落盘出口（**装配约定，不属于契约面** —— spec-M2 §3.3 · ADR-064 / ADR-074）。
 #:
@@ -219,7 +225,8 @@ class Assembly:
     - `sink`：**宿主注入的落盘出口**（`None` = 不落盘）；**路径由宿主定**
       （ADR-064 / ADR-074）——部件自己不 `open()`；
     - `observable_systems`：装配出来的可观测系统（**开关关掉时为空**）；
-    - `observability_enabled`：可观测总开关的取值（**关掉 = 一个都不装配**）。
+    - `observability_enabled`：可观测总开关的取值（**关掉 = 一个都不装配**）；
+    - `degradation_controller`：降级控制器（**没装配就是 `None`** · ADR-031）。
     """
 
     kernel: Kernel
@@ -228,6 +235,7 @@ class Assembly:
     sink: Sink | None = None
     observable_systems: tuple[object, ...] = ()
     observability_enabled: bool = True
+    degradation_controller: DegradationController[Snapshot] | None = None
 
 
 def assemble(
@@ -246,6 +254,7 @@ def assemble(
     history_limit: int = DEFAULT_HISTORY_LIMIT,
     sink: Sink | None = None,
     observability_enabled: bool = True,
+    degradation_enabled: bool = False,
 ) -> Assembly:
     """把内核、总线、规则集与时钟拼成一件成品。
 
@@ -264,7 +273,10 @@ def assemble(
     - `sink`：**宿主注入的落盘出口**（`None` = 不落盘）。**路径由宿主定**
       （M2-D2）——部件自己不 `open()`、不用 `Path.home()`；
     - `observability_enabled`：**可观测总开关**。关掉时那些工厂**一个都不被
-      调用**——`G2-3`（关闭全部可观测系统后内核逐帧一致）的前提。
+      调用**——`G2-3`（关闭全部可观测系统后内核逐帧一致）的前提；
+    - `degradation_enabled`：**是否装配降级控制器**（ADR-031）。**默认不装**——
+      M2 是**无头批次**，没有实时宿主去测每帧耗时；**喂帧开销的接线留给 M3
+      的实时宿主**（那才是"用户手关"的地方）。
     """
     kernel = Kernel(
         seed=seed,
@@ -287,6 +299,19 @@ def assemble(
     if observability_enabled:
         # **开关关掉时这些工厂一个都不被调用**——不是"装配了再退订"。
         observable_systems = tuple(factory(bus, sink) for factory in OBSERVABLE_SYSTEM_FACTORIES)
+    degradation_controller: DegradationController[Snapshot] | None = None
+    if degradation_enabled:
+        # **降级控制器要一个日志系统**（第 ① 档关 debug 事件 · 第 ② 档抬阈值）
+        # ——从装配出来的系统里挑；**没有日志系统时那两档无事可做**，其余照常。
+        log_system: LogSystem[Snapshot] | None = None
+        for system in observable_systems:
+            if isinstance(system, LogSystem):
+                log_system = system
+                break
+        degradation_controller = DegradationController[Snapshot](
+            bus=bus,
+            log_system=log_system,
+        )
     return Assembly(
         kernel=kernel,
         bus=bus,
@@ -294,6 +319,7 @@ def assemble(
         sink=sink,
         observable_systems=observable_systems,
         observability_enabled=observability_enabled,
+        degradation_controller=degradation_controller,
     )
 
 

@@ -258,6 +258,98 @@ class KernelState:
 
 
 @dataclass(frozen=True)
+class KernelArchive:
+    """内核的**存档点**（FR-10.1 · FR-10.2 · M2-S10）。
+
+    - `seed`：**建内核时的种子**——内核自己的那个。`KernelRng` 的种子在状态
+      恢复后作废（那一局不是它播出来的），**两者是不同的东西**；
+    - `rule`：规则集标识（恢复时**必须与内核一致**）；
+    - `state`：局面状态（**导出时深拷贝**——存档与内核此后互不影响）；
+    - `frame`：逻辑帧号（**不在 `KernelState` 里**——它是内核的普通属性）；
+    - `rng_state`：随机源的扁平化状态 `(version, *state)`（**存它才不断序列**）；
+    - `width` / `height` / `hidden_rows`：**棋盘几何**（内核的构造参数，不是
+      状态字段——但快照的 `board` 子结构带它们，存档要能重建同一块棋盘）。
+
+    **为什么这个 dataclass 住在内核层**：恢复要写内核的私有状态，而**只有内核
+    能写状态**（架构 §7.1）。宿主不能拿着存档去改内核的字段——那正是"宿主写
+    内核状态"这条禁令要挡的事。
+    """
+
+    seed: int
+    rule: str
+    state: KernelState
+    frame: int
+    rng_state: tuple[int, ...]
+    width: int
+    height: int
+    hidden_rows: int
+
+
+def _copy_state(state: KernelState) -> KernelState:
+    """深拷贝一份局面状态（**棋盘逐行复制** · ADR-058 同一条纪律）。
+
+    **为什么要拷**：存档点是"某一刻的局面"——导出之后内核继续跑，**存档不
+    该跟着变**。不拷的话，恢复之后内核改一下棋盘，存档里的棋盘也跟着改，
+    那份存档就不再是"那一刻的局面"。
+    """
+    active = state.active
+    return KernelState(
+        version=state.version,
+        phase=state.phase,
+        board=[list(row) for row in state.board],
+        active=None if active is None else replace(active),
+        ghost_delta=state.ghost_delta,
+        hold=state.hold,
+        hold_used=state.hold_used,
+        next_queue=state.next_queue,
+        score=state.score,
+        lines=state.lines,
+        level=state.level,
+        combo=state.combo,
+        b2b=state.b2b,
+        pieces_placed=state.pieces_placed,
+        grounded=state.grounded,
+        lock_timer=state.lock_timer,
+        gravity_timer=state.gravity_timer,
+        extensions=state.extensions,
+    )
+
+
+def _rebuild_lifecycle(phase: Phase) -> Lifecycle:
+    """按目标相位**走合法迁移**重建生命周期状态机（**不改私有状态**）。
+
+    **为什么不直接改 `Lifecycle._phase`**：那等于绕过状态机——状态机存在的
+    意义就是"迁移合不合法由它裁决"。这里从 `not_started` 出发，只走合法迁移：
+
+    | 目标相位 | 迁移序列 |
+    | --- | --- |
+    | `not_started` | 不用迁（构造即 `not_started`） |
+    | `running` | `start` |
+    | `paused` | `start` → `pause` |
+    | `game_over` | `start` → `end` |
+
+    **走不通就报错**：合法迁移串覆盖全部四个相位，走不通说明相位取值域变了
+    ——当场报错，不静默留在 `not_started`（那会让恢复后的内核门禁全错）。
+    """
+    lifecycle = Lifecycle()
+    if phase == PHASE_NOT_STARTED:
+        return lifecycle
+    if not lifecycle.apply(TRANSITION_START):
+        raise KernelInvariantError(f"重建生命周期失败：{phase!r} 的迁移序列走不通")
+    if phase == PHASE_PAUSED:
+        lifecycle.apply(TRANSITION_PAUSE)
+    elif phase == PHASE_GAME_OVER:
+        lifecycle.apply(TRANSITION_END)
+    elif phase != PHASE_RUNNING:
+        raise KernelInvariantError(f"重建生命周期失败：认不出的相位 {phase!r}")
+    if lifecycle.phase != phase:
+        raise KernelInvariantError(
+            f"重建生命周期失败：走完迁移后是 {lifecycle.phase!r}，要的是 {phase!r}"
+        )
+    return lifecycle
+
+
+@dataclass(frozen=True)
 class _Outcome:
     """一条命令的执行结果（内部用）。"""
 
@@ -279,8 +371,9 @@ PublishFn = Callable[[tuple[EventDraft, ...]], None]
 class Kernel:
     """俄罗斯方块内核：**唯一的状态所有者**。
 
-    对外只有三个入口：`execute`（执行一条命令）· `advance_frame`（帧推进五步，
-    S12 补上）· `snapshot`（导出只读快照）。
+    对外只有五个入口：`execute`（执行一条命令）· `advance_frame`（帧推进五步，
+    S12 补上）· `snapshot`（导出只读快照）· `export_state` / `restore_state`
+    （局面存档点 · FR-10.1 / FR-10.2 · M2-S10）。
     """
 
     def __init__(
@@ -408,6 +501,95 @@ class Kernel:
             gravity_timer=self._state.gravity_timer,
             extensions=self._state.extensions,
         )
+
+    # ------------------------------------------------------------------
+    # 存档点（FR-10.1 · FR-10.2 · M2-S10）
+    # ------------------------------------------------------------------
+
+    def export_state(self) -> KernelArchive:
+        """导出存档点（**纯读 + 深拷贝**）。
+
+        **存档点是"某一刻的局面"**：导出之后内核继续跑，**存档不受影响**
+        （棋盘逐行深拷贝，与快照同一条纪律 · ADR-058）。
+
+        **随机源状态必须带上**（FR-10.1）：不存 → 恢复后的随机序列从头开始
+        → **后续每一帧都可能不同** → FR-10.2 直接不成立。
+
+        **不碰随机源本身**：`export()` 只读状态，不取值——导出不该改变这局
+        的走向。
+        """
+        return KernelArchive(
+            seed=self._seed,
+            rule=self._rule_id,
+            state=_copy_state(self._state),
+            frame=self._frame,
+            rng_state=self._rng.export(),
+            width=self._width,
+            height=self._height,
+            hidden_rows=self._hidden_rows,
+        )
+
+    def restore_state(self, archive: KernelArchive) -> None:
+        """从存档点恢复（**只有内核能写状态** · FR-10.2）。
+
+        **规则集与种子必须与内核一致**：存档是某个内核实例的局面，换一个
+        规则集或种子恢复 → **这已经不是同一局** → 逐帧一致无从谈起 → 当场
+        报错（NFR-9：不猜、不静默降级）。
+
+        **恢复的是"帧末"的局面**：帧级标志（推进许可 · 锁定标记 · 帧内序号）
+        一律归零——**下一帧的 `tick` 会重新开一帧**（ADR-022），这些标志本来
+        就只活在一帧里。
+
+        **不重置随机源的取值计数**：`rng:next` 的 `seq` 是**实例内记账**
+        （`KernelRng` 的 docstring 明写"存档恢复后它继续往上走"）——恢复用的
+        是内核**自己**这一份随机源实例，计数接着往上走。
+
+        **不碰事件流**：恢复是**内核状态层面**的动作，**不发新事件**（契约面
+        只增不改 · M2-D4）。恢复之后帧照走、事件照发——那条"恢复路径逐条有
+        事件"由**恢复之后的帧**兑现。
+        """
+        if archive.rule != self._rule_id:
+            raise ValueError(
+                f"存档的规则集与内核不一致：存档是 {archive.rule!r}，内核是 {self._rule_id!r}"
+                "（换规则集恢复不是同一局）"
+            )
+        if archive.seed != self._seed:
+            raise ValueError(
+                f"存档的种子与内核不一致：存档是 {archive.seed}，内核是 {self._seed}"
+                "（用存档里的种子建内核才能恢复）"
+            )
+        if archive.width != self._width or archive.height != self._height:
+            raise ValueError(
+                f"存档的棋盘尺寸与内核不一致：存档是 {archive.width}×{archive.height}，"
+                f"内核是 {self._width}×{self._height}（尺寸不符的棋盘碰撞判定会全错）"
+            )
+        state = _copy_state(archive.state)
+        if len(state.board) != archive.height or any(
+            len(row) != archive.width for row in state.board
+        ):
+            # 尺寸与内容必须对得上（与 `build_board` 同一条纪律）：尺寸不符的
+            # 棋盘碰撞判定全错，而**指纹照样算得出来**——事后查指纹太晚。
+            raise ValueError(
+                f"存档的棋盘内容与尺寸不符：声明 {archive.width}×{archive.height}，"
+                f"实际 {len(state.board)} 行 × {len(state.board[0]) if state.board else 0} 列"
+            )
+        if state.phase == PHASE_RUNNING and state.active is None:
+            # 活动方块不变量（架构 §6.8）：`running` 态必然持有活动方块。
+            # 存档说"在跑"却没有方块 → 这份存档不是内核自己导出的。
+            raise ValueError("存档的相位是 running 却没有活动方块：这份存档不合法")
+        self._state = state
+        self._frame = archive.frame
+        self._rng.import_state(archive.rng_state)
+        self._lifecycle = _rebuild_lifecycle(state.phase)
+        # 帧级标志归零（见上面的说明）。
+        self._advance_permitted = False
+        self._advance_cause = None
+        self._advance_source = "host"
+        self._locked_in_frame = False
+        self._seq = 0
+        self._queue.clear()
+        self._coalescer = RejectCoalescer()
+        self._quota.start_frame()
 
     def initial_events(self) -> tuple[EventDraft, ...]:
         """内核创建时的那两条事件（`kernel:ready` · `game:created`）。
@@ -1865,5 +2047,6 @@ __all__ = [
     "PREVIEW_SIZE",
     "ActivePiece",
     "Kernel",
+    "KernelArchive",
     "KernelState",
 ]

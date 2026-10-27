@@ -44,6 +44,9 @@ from .targets import LogTarget
 #: 日志条目的事件类型（契约已登记 · 产出者 `log`）。
 LOG_ENTRY_EVENT = "log:entry"
 
+#: **debug 级**的级别名（降级第 ① 档关的就是这一级 · ADR-031）。
+DEBUG_LEVEL = "debug"
+
 #: 默认级别映射（**事件类型 → 级别**；查不到落到命名空间，再落到兜底级别）。
 #:
 #: **为什么这几条不一样级**：`kernel:error` 是出错 · `command:rejected` 与
@@ -92,6 +95,8 @@ class LogSystem[V]:
         self._default_level = default_level
         self._min_level = min_level
         self._channel_map: ChannelMap = dict({} if channel_map is None else channel_map)
+        # **debug 级事件默认开着**（降级第 ① 档才关 · ADR-031）。
+        self._debug_events_enabled = True
         # 级别取值当场校验（**域外值不糊弄过去**）。
         level_rank(default_level)
         level_rank(min_level)
@@ -126,6 +131,22 @@ class LogSystem[V]:
         level_rank(level)
         self._min_level = level
 
+    def set_debug_events_enabled(self, enabled: bool) -> None:
+        """**开 / 关 debug 级事件**（**降级第 ① 档** · ADR-031）。
+
+        **关掉的是"debug 级的事件不产日志条目"**——**总线照常派发**（不碰
+        `bus/`）、**指标系统照常聚合**（空洞率不受影响）。
+
+        **为什么第 ① 档是"类型级精确黑名单"而不是抬阈值**：抬阈值（第 ② 档）
+        会把 **trace 级**一起关掉——`rng:next` 是 trace 级，而 ADR-060 明写它
+        **不随调试事件一起关**。第 ① 档只切 **debug 级**（默认映射下是
+        `board:changed` · `board:collapsed` · `piece:moved` · `piece:spawned`
+        ——**高频噪声**）。
+
+        **这一档的清单从本系统的级别映射里推**，不另抄一份名单（架构 §4.4）。
+        """
+        self._debug_events_enabled = enabled
+
     # ------------------------------------------------------------------
     # 订阅回调
     # ------------------------------------------------------------------
@@ -136,6 +157,9 @@ class LogSystem[V]:
         if envelope.type == LOG_ENTRY_EVENT:
             return
         level = resolve_level(envelope.type, self._level_map, self._default_level)
+        if not self._debug_events_enabled and level == DEBUG_LEVEL:
+            # **第 ① 档**：debug 级的事件不产日志条目——**但事件照常派发**。
+            return
         if level_rank(level) < level_rank(self._min_level):
             return
         for channel in resolve_channels(envelope.type, self._channel_map):

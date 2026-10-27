@@ -5,6 +5,9 @@
 
 **口径写在指标系统内**（与 ADR-046 同一把尺子）——事件只说"发生了什么"，
 "怎么统计"是消费方的事。
+
+**同族的还有事件轨迹**（`trace.py` · M2-S11）：FR-7.3 的只读事件流面板与
+FR-7.4 的离线轨迹导出——同样是**只订阅事件流、只产出派生文件**。
 """
 
 from .aggregate import (
@@ -21,6 +24,13 @@ from .system import (
     MetricsSystem,
     Sink,
 )
+from .trace import (
+    TRACE_SUFFIX,
+    EventPanel,
+    TraceValue,
+    trace_from_jsonl,
+    trace_to_jsonl,
+)
 
 __all__ = [
     "CLEAR_METRIC_NAMES",
@@ -28,9 +38,14 @@ __all__ = [
     "DEFAULT_SAMPLE_LIMIT",
     "METRIC_NAMES",
     "METRIC_SAMPLED_EVENT",
+    "TRACE_SUFFIX",
     "Aggregate",
+    "EventPanel",
     "MetricValue",
     "Metrics",
     "MetricsSystem",
     "Sink",
+    "TraceValue",
+    "trace_from_jsonl",
+    "trace_to_jsonl",
 ]

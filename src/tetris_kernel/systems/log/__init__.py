@@ -17,10 +17,11 @@ from .entry import (
     resolve_channels,
     resolve_level,
 )
-from .system import DEFAULT_LEVEL_MAP, LOG_ENTRY_EVENT, LogSystem
+from .system import DEBUG_LEVEL, DEFAULT_LEVEL_MAP, LOG_ENTRY_EVENT, LogSystem
 from .targets import ConsoleTarget, LogTarget, MemoryTarget, Sink, SinkTarget, format_entry
 
 __all__ = [
+    "DEBUG_LEVEL",
     "DEFAULT_LEVEL_MAP",
     "LEVELS",
     "LEVEL_RANKS",

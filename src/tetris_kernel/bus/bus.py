@@ -17,6 +17,11 @@
 **错误事件自身不再产生错误事件**——否则"必然抛错"的订阅者会让总线陷入
 无限循环。
 
+**错误级联也要防（ADR-083）**：错误事件本身**会被别的订阅者变成新事件**——
+日志系统把错误写成 `log:entry`，那条新事件又落回抛错订阅者手里 → 又产生
+错误事件 → **无限级联**（实测：事件数无上界，宿主卡死）。所以**同一个订阅者
+在一轮排空里只报一次错**，再炸只记 trace。
+
 ## 待发布队列（架构 §5.1）
 
 分发期间产生的自产事件（`log:entry` / `metric:sampled` /
@@ -38,6 +43,14 @@
   一套索引，M2 不做）。
 - **计数**（`counts`）：**累计**按事件类型 / 按命名空间的条数。它是独立
   累加器，**不靠环形历史算**——历史满了会忘，计数不会。
+
+## 历史缓冲的开关（降级第 ③ 档 · ADR-031）
+
+`set_history_enabled(False)` **只关缓冲，不关分发**——订阅者照常收到每一条
+事件，**状态变更仍伴随事件**。ADR-031 明写否决"引入关闭事件分发的快速模式"：
+那会破坏**事件完备性**。
+
+**计数不受影响**：`counts()` 是**独立累加器**（历史满了会忘，计数不会）。
 
 ## 不提供 `bus.view()`（ADR-021）
 
@@ -133,11 +146,15 @@ class EventBus[V]:
         self._default_source = default_source
         self._registry: SubscriberRegistry[V] = SubscriberRegistry[V]()
         self._history: deque[Envelope] = deque(maxlen=history_limit)
+        # **历史缓冲的开关**（降级第 ③ 档 · ADR-031）——关的是**缓冲**，不是分发。
+        self._history_enabled = True
         self._pending: deque[Envelope] = deque()
         self._traces: deque[str] = deque(maxlen=DEFAULT_TRACE_LIMIT)
         self._middlewares: list[tuple[str, Middleware]] = []
         self._counts_by_type: dict[str, int] = {}
         self._counts_by_namespace: dict[str, int] = {}
+        # **这一轮排空里已经报过错事件的订阅者**（防错误级联 · ADR-083）。
+        self._errored_subscribers: set[str] = set()
         self._seq = 0
         self._dispatching = False
 
@@ -256,14 +273,21 @@ class EventBus[V]:
         self._drain_pending()
 
     def _drain_pending(self) -> None:
-        """把待发布队列按 FIFO 逐条发出（分发期间产生的自产事件）。"""
-        while self._pending:
-            envelope = self._pending.popleft()
-            self._dispatching = True
-            try:
-                self._deliver(envelope)
-            finally:
-                self._dispatching = False
+        """把待发布队列按 FIFO 逐条发出（分发期间产生的自产事件）。
+
+        **一轮排空结束时清零"已报错订阅者"**——错误级联的边界就是**这一轮**
+        （ADR-083）。
+        """
+        try:
+            while self._pending:
+                envelope = self._pending.popleft()
+                self._dispatching = True
+                try:
+                    self._deliver(envelope)
+                finally:
+                    self._dispatching = False
+        finally:
+            self._errored_subscribers.clear()
 
     def _deliver(self, envelope: Envelope) -> None:
         """把一条事件交给**中间件**与**全部命中**的订阅者（优先级已排好）。
@@ -274,7 +298,8 @@ class EventBus[V]:
         **中间件先跑**（分发链上、分发给订阅者之前）；**中间件抛错不影响
         订阅者**——横切处理坏了，最多是它自己缺席。
         """
-        self._history.append(envelope)
+        if self._history_enabled:
+            self._history.append(envelope)
         self._count(envelope)
         ctx: SystemContext[V] = SystemContext[V](self._view_provider)
         is_error_event = envelope.type == ERROR_EVENT_TYPE
@@ -335,9 +360,18 @@ class EventBus[V]:
         """
         summary = f"{type(error).__name__}: {error}"
         if is_error_event:
-            # 错误事件自身不再产生错误事件——否则必然抛错的订阅者会造成
-            # 无限循环。
+            # 错误事件自身不再产生错误事件——否则必然抛错的订阅者会让
+            # 总线陷入无限循环。
             self._trace(f"{role} {name} 处理错误事件时再次抛错：{summary}")
+            return
+        if name in self._errored_subscribers:
+            # **同一个订阅者在这一轮排空里只报一次错**（ADR-083）。
+            #
+            # **为什么**：错误事件本身会被**别的订阅者**变成新事件（日志系统
+            # 把错误写成 `log:entry`）——那个新事件又落回抛错订阅者手里 → 又
+            # 产生错误事件 → **无限级联**（实测：事件数无上界，宿主卡死）。
+            # 所以：**已经报过错事件的订阅者，再炸只记 trace**。
+            self._trace(f"{role} {name} 在错误级联里再次抛错：{summary}")
             return
         self._queue_error(name, envelope, summary)
 
@@ -348,6 +382,9 @@ class EventBus[V]:
         summary: str,
     ) -> None:
         """把 `kernel:error` 排进待发布队列（**不打断当前分发**）。"""
+        # **记下这个订阅者**：这一轮排空里它再炸就只记 trace（ADR-083 的
+        # 错误级联防线）。
+        self._errored_subscribers.add(name)
         producer = producer_of(ERROR_EVENT_TYPE) or "bus"
         metadata: Metadata = build_metadata((), producer, self._default_source)
         payload = (
@@ -377,6 +414,24 @@ class EventBus[V]:
         不做**（spec §11.2 K1——历史是环形缓冲，随机访问需要一套索引）。
         """
         return tuple(self._history)
+
+    def set_history_enabled(self, enabled: bool) -> None:
+        """**开 / 关环形历史缓冲**（**降级第 ③ 档** · ADR-031）。
+
+        **关的是缓冲，不是分发**（ADR-031 明写否决"关闭事件分发"）：订阅者照常
+        收到每一条事件，**状态变更仍伴随事件**——**事件完备性不受损**。
+
+        **计数不受影响**：`counts()` 是**独立累加器**（历史满了会忘，计数不会）
+        ——指标系统聚合的是**事件**，不靠历史算。
+
+        **关掉时缓冲一并清空**：这一档的收益是省下每条事件的追加开销与内存占用
+        ——留着旧条目既占内存，又不给新证据。重新打开时缓冲从空开始。
+        """
+        if self._history_enabled == enabled:
+            return
+        self._history_enabled = enabled
+        if not enabled:
+            self._history.clear()
 
     def query_history(self, query: HistoryQuery | None = None) -> tuple[Envelope, ...]:
         """按条件检索环形历史（**由旧到新**）。
@@ -412,6 +467,11 @@ class EventBus[V]:
     def traces(self) -> tuple[str, ...]:
         """最近的轨迹记录（静默丢弃、二次抛错等）。"""
         return tuple(self._traces)
+
+    @property
+    def history_enabled(self) -> bool:
+        """环形历史缓冲**开着没有**（降级第 ③ 档会把它关掉）。"""
+        return self._history_enabled
 
     @property
     def last_seq(self) -> int:
