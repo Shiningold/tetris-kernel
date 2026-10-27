@@ -4,7 +4,7 @@
 
 不是"做一个俄罗斯方块"，而是"做一个能让俄罗斯方块被反复重构的底座"——任何一次玩法创新（重力翻转、落地后生长、塌方物理），都应当只表现为**新增一个订阅者**，而不需要修改内核。
 
-> **项目状态：M1（可玩）已完成，M2（可观测）进行中。** M1 交付了标准玩法——形状表 · SRS 踢墙表（含 180° 扩展）· T-Spin 五档 · 完整计分表（基础分 + 连击 + B2B + 升级）· 锁定延迟 30 帧 / 重置上限 15 次 · 顶出判定，全部逐条验过，**无头可玩到底**。M2 正在做录像与回放 · 日志与指标 · 事件轨迹导出 · 局面序列化，规格与计划见 [`docs/spec-M2.md`](docs/spec-M2.md) / [`docs/plan-M2.md`](docs/plan-M2.md)。**仍然没有画面**：渲染器与输入适配器属 M3–M4，变体落地属 M4。仓库里的代码目前是**会玩的内核**，不是游戏。
+> **项目状态：M1（可玩）已完成，M2（可观测）已完成。** M1 交付了标准玩法——形状表 · SRS 踢墙表（含 180° 扩展）· T-Spin 五档 · 完整计分表（基础分 + 连击 + B2B + 升级）· 锁定延迟 30 帧 / 重置上限 15 次 · 顶出判定，全部逐条验过，**无头可玩到底**。M2 交付了可观测的另一半——录像与回放（**200 局四项全等** + **1000 局回放指纹零差异**）· 结构化日志 · 按帧采样的指标 · 事件轨迹导出与只读事件流视图 · 局面序列化与恢复 · 降级三档，**五道门 `G2-1`…`G2-5` 全绿**，规格与计划见 [`docs/spec-M2.md`](docs/spec-M2.md) / [`docs/plan-M2.md`](docs/plan-M2.md)。**仍然没有画面**：渲染器与输入适配器属 M3–M4，变体落地属 M4。仓库里的代码目前是**可观测的内核**，不是游戏。
 
 ## 解决什么问题
 
@@ -36,11 +36,11 @@ pip install .
 ## 使用
 
 ```bash
-tetris sim          # 批量模拟，输出统计（唯一跑通的子命令）
+tetris sim          # 无头批量模拟，输出统计
 tetris sim --until game-over   # 跑到顶出就停帧，输出结算八项（M1 · 标准玩法）
+tetris inspect      # 只读事件流视图：跑 n 帧 → 按命名空间过滤事件流（M2）
+tetris replay <录像文件>  # 读录像 → 重放 → 输出四项比对（M2）
 tetris play         # 交互式游玩（占位；输入适配器与渲染器属 M3–M4）
-tetris replay       # 回放录像（占位；属 M2）
-tetris inspect      # 检视事件流（占位；属 M2）
 ```
 
 也可以用模块入口：
@@ -49,7 +49,21 @@ tetris inspect      # 检视事件流（占位；属 M2）
 python -m tetris_kernel
 ```
 
-> `tetris` **不带子命令会直接报错退出**——子命令必填。只有 `sim` 是真的能跑的；`sim --until game-over` 会用确定性策略打完整局到顶出，并输出结算八项（分数 / 行数 / 方块数 / 连击 / B2B / 等级 / 最终棋盘指纹 / 事件数）。
+> `tetris` **不带子命令会直接报错退出**——子命令必填。**`sim` / `inspect` / `replay` 三个都能跑**（`play` 仍占位）；`sim --until game-over` 会用确定性策略打完整局到顶出，并输出结算八项（分数 / 行数 / 方块数 / 连击 / B2B / 等级 / 最终棋盘指纹 / 事件数）。
+
+> **录像文件从哪来**：**命令行不落盘**——日志 / 指标 / 录像三个产物的落盘出口**由宿主注入**（ADR-064 / ADR-085），默认落点是项目下的 `.tetris-data/`（不可写时回落 `~/.tetris/`）。录像由 Python API 产出：
+>
+> ```python
+> from tetris_kernel.host import HeadlessLoop, assemble, default_sinks
+>
+> sinks, directory = default_sinks()           # 三个产物各一个文件
+> assembly = assemble(sinks=sinks, seed=42)    # 装上三个可观测系统
+> loop = HeadlessLoop(assembly)
+> loop.start()
+> loop.run_frames(20000, until_game_over=True) # 跑到顶出 → 录像落盘
+> ```
+>
+> 跑完后 `directory.path` 里就有 `recording-standard.jsonl`——`tetris replay <那个文件>` 直接读它（**四项全等时退出码 0**，不等 1，**没有比对基准 2**）。**落盘接线的另一半留给 M3 的实时宿主。**
 
 ## 架构
 
