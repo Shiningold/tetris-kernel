@@ -46,8 +46,8 @@ lint-imports 守着），**它知道有 sink，不知道路径**。
 
 from __future__ import annotations
 
-import os
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,11 +126,20 @@ class DataDirectory:
 
 
 def _is_writable_dir(path: Path) -> bool:
-    """目录（或其最近的**已存在**祖先）是否可写。
+    """目录（或其最近的**已存在**祖先）是否**真能写**。
 
     **看祖先**：目标目录多半还不存在（要自建），那能不能建取决于**它上面
-    那个已存在的目录**能不能写。`os.access` 只问"这个目录能不能写"，不问
-    "能不能在里面建东西"。
+    那个已存在的目录**能不能写。
+
+    **真写一次，不问 `os.access`**（审查 L3）：Windows 上目录 **ACL** 存在时
+    `os.access` 的结果**不可靠**——可能认为可写，真写时抛 `PermissionError`；
+    `Path.exists()` 对权限不足的目录也可能返回 `False`。**真写一次**才是
+    ADR-074「不可写时回落 home」这条承诺的兑现。
+
+    **探针不留残骸**：在目录里建一个临时文件**立刻删掉**——建不出来就是
+    不可写。**它确实动过文件系统**（建 + 删一个临时文件）——这与
+    "解析路径不创建任何目录"不冲突（**不建目录**），但**动过**这件事写
+    在这里，不瞒。
     """
     probe = path
     while not probe.exists():
@@ -138,7 +147,25 @@ def _is_writable_dir(path: Path) -> bool:
         if parent == probe:
             return False
         probe = parent
-    return probe.is_dir() and os.access(probe, os.W_OK)
+    if not probe.is_dir():
+        return False
+    return _can_write_in(probe)
+
+
+def _can_write_in(directory: Path) -> bool:
+    """在目录里**真写一次**（建个临时文件再删掉）——能不能写，问文件系统。
+
+    **失败一律当不可写**：权限不足、磁盘满、只读挂载……**判不准就当不可
+    写**（ADR-074 的回落路径是安全的那一侧）。
+    """
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=".tetris-writable-probe-", delete=True
+        ):
+            pass
+    except OSError:
+        return False
+    return True
 
 
 def resolve_data_dir(
@@ -159,6 +186,8 @@ def resolve_data_dir(
       用户干活的那个目录）；`home`：用户主目录（省略时取 `Path.home()`）；
     - `writable`：可写性判定（**注入点**——"项目目录不可写"这件事在
       Windows 上很难可靠地造出来，测试靠注入判定函数，而不是靠改文件属性）。
+      **省略时走真写探针**（`_is_writable_dir`：建个临时文件再删掉）——不是
+      问 `os.access`（ACL 场景下不可靠 · 审查 L3）。
     """
     root = Path.cwd() if project_root is None else Path(project_root)
     user_home = Path.home() if home is None else Path(home)

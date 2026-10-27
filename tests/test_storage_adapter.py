@@ -36,6 +36,7 @@ Windows 上把目录设成只读**拦不住本进程的写入**（ACL 与只读�
 from __future__ import annotations
 
 import ast
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -205,6 +206,54 @@ def test_only_one_place_is_written_to(tmp_path: Path) -> None:
     home_dir = home / ".tetris"
     other = home_dir if directory.path == project_dir else project_dir
     assert not other.exists(), f"另一处也写了文件：{other}——写入只有一处"
+
+
+# ---------------------------------------------------------------------------
+# 可写性判定：真写一次（审查 L3）
+# ---------------------------------------------------------------------------
+
+
+def test_the_writability_probe_does_not_ask_the_operating_system(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**真写一次**，不靠 `os.access` 的一句话（审查 L3）。
+
+    Windows 上目录 **ACL** 存在时 `os.access` 的结果**不可靠**——可能认为可写、
+    真写时抛 `PermissionError`。判定**必须**自己写一次，ADR-074「不可写时
+    回落 home」这条承诺才兑现得了。
+
+    **这条把 `os.access` 顶掉**：顶掉之后仍判"可写"，说明判定走的是真写。
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(os, "access", lambda path, mode: False)
+
+    directory = resolve_data_dir(project_root=project, home=tmp_path / "home")
+
+    assert directory.fell_back is False, "判定还在听 os.access 的"
+    assert directory.path == project / ".tetris-data"
+
+
+def test_the_writability_probe_leaves_no_residue(tmp_path: Path) -> None:
+    """**探针不留残骸**——建了临时文件就删掉。"""
+    project = tmp_path / "project"
+    project.mkdir()
+
+    directory = resolve_data_dir(project_root=project, home=tmp_path / "home")
+
+    assert directory.fell_back is False
+    assert list(project.iterdir()) == [], "探针留下了残骸"
+
+
+def test_a_project_root_that_is_a_file_is_not_writable(tmp_path: Path) -> None:
+    """项目根**不是目录** → 不可写 → **回落 home**（ADR-074）。"""
+    blocker = tmp_path / "project"
+    blocker.write_text("我是个文件，不是目录", encoding="utf-8")
+
+    directory = resolve_data_dir(project_root=blocker, home=tmp_path / "home")
+
+    assert directory.fell_back is True
+    assert directory.path == tmp_path / "home" / ".tetris"
 
 
 # ---------------------------------------------------------------------------
