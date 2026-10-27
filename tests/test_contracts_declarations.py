@@ -497,9 +497,23 @@ def test_producer_distribution() -> None:
 
 
 def test_producer_labels_cover_all_producers() -> None:
-    """每个产出者代号都有对应名称（`host` 在需求 §8.1 里就是 `host`），反之亦然。"""
+    """每个产出者代号都有对应名称，**且每个代号都有人用**（双向有牙）。
+
+    **两类代号**（M3 增补第二类）：
+
+    - **事件的产出者**（九个）：与需求 §8.1 的「产出者」列**逐条相等**；
+    - **不发事件的系统**的产出者（`rotations`）：它的产出是**计数文件**
+      而不是事件，**产出者代号取系统名**——需求 §8.2 的元数据 `producer`
+      本来就允许「系统名」。
+
+    **少一个该有的代号红**（往事件里填了个没登记的产出者），
+    **多一个没人用的代号也红**（表里挂着一个谁都不用的名字）。
+    """
     used = {spec.producer for spec in EVENT_TYPES.values()}
-    assert used == set(PRODUCER_LABELS)
+    assert used <= set(PRODUCER_LABELS), "事件的产出者不在代号表里"
+
+    declared = {manifest.producer for manifest in discover_manifests().values()}
+    assert set(PRODUCER_LABELS) == used | declared, "代号表与实际用到的代号对不上"
 
 
 def test_namespace_matches_type_prefix() -> None:
@@ -2572,9 +2586,16 @@ def test_manifest_subscribes_and_commands_are_registered() -> None:
 
 
 def test_manifest_producers_are_known_producers() -> None:
-    """声明里的产出者必须是需求 §8.1 已登记的产出者代号（**产出者 ≠ 命名空间**）。"""
+    """声明里的产出者必须是**已登记的产出者代号**，或**这个系统自己的名字**。
+
+    （**产出者 ≠ 命名空间**。）
+
+    **为什么允许系统名**：一个**不发事件**的系统（`rotations`——它的产出是
+    计数文件，不是事件）没有事件产出者可填；需求 §8.2 的元数据 `producer`
+    本来就允许「系统名」——**代号取系统名**。
+    """
     for name, manifest in discover_manifests().items():
-        assert manifest.producer in PRODUCER_LABELS, name
+        assert manifest.producer in PRODUCER_LABELS or manifest.producer == name, name
 
 
 def test_manifest_canonical_text_is_stable_and_sensitive() -> None:
