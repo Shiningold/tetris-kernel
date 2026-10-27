@@ -14,7 +14,7 @@
 8. **CLI**：`tetris replay <文件>` 真跑并输出四项比对。
 
 **第 6、7 条的判据是本文件里的两条断言**，它们与实现无关：
-"中途开始派发过的命令条数 == 从头到第 N 帧的命令条数"与"命令目录仍 16 条"。
+"中途开始派发过的命令条数 == 从头到第 N 帧的命令条数"与"命令目录仍 17 条"。
 """
 
 from __future__ import annotations
@@ -359,13 +359,13 @@ def test_the_pause_freezes_the_frame_and_dispatches_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_command_catalog_still_has_sixteen_commands() -> None:
-    """**命令目录仍 16 条**（§6.2：M2 不新增命令）。
+def test_the_command_catalog_still_has_seventeen_commands() -> None:
+    """**命令目录仍 17 条**（M2 不新增命令 · M3 新增 `switchRuleSet` 一条）。
 
     **这条就是反向验证 C 的判据**：给步进新增一条命令，它必红。
     """
-    assert len(COMMANDS) == 16
-    assert len(COMMAND_TYPES) == 16
+    assert len(COMMANDS) == 17
+    assert len(COMMAND_TYPES) == 17
 
 
 # ---------------------------------------------------------------------------
