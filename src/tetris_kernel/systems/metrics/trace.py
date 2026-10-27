@@ -69,11 +69,21 @@ type Sink = Callable[[bytes], None]
 type TraceValue = int | str | bool | float | None | list["TraceValue"]
 
 
+#: 面板默认保留的事件条数（**环形**——留最新的，全量留着是内存负担）。
+#:
+#: **与 `MetricsSystem` 同族口径**（那边的 `DEFAULT_SAMPLE_LIMIT` = 256）：
+#: 面板是"**从现在起看**"的视图，不是**全量存档**——要全量就**显式**说
+#: （`limit=None`），不留"默认无限留存"这个口子（审查 M4）。
+DEFAULT_PANEL_LIMIT = 4096
+
+
 class EventPanel[V]:
     """事件面板：**只读**的事件流视图（FR-7.3），顺带能导出（FR-7.4）。
 
     - `bus`：事件总线（**只订不写内核状态** · M2-D1）；
-    - `limit`：视图最多留多少条（`None` = 不限）；**留最新的**（环形）；
+    - `limit`：视图最多留多少条（`None` = 不限）；**留最新的**（环形）。
+      **默认有界**（`DEFAULT_PANEL_LIMIT`）——"长跑驻留百万级信封"是内存
+      负担，不是特性（审查 M4）；
     - `pause_at`：**跑到第几帧就自动暂停**（`None` = 不自动暂停）。自动暂停
       的口径是「视图只留 `frame < pause_at` 的事件」。
 
@@ -85,7 +95,7 @@ class EventPanel[V]:
         self,
         bus: EventBus[V],
         *,
-        limit: int | None = None,
+        limit: int | None = DEFAULT_PANEL_LIMIT,
         pause_at: int | None = None,
     ) -> None:
         """建面板并**订阅总线**。
@@ -294,6 +304,7 @@ def _as_str(value: object, number: int, what: str) -> str:
 
 
 __all__ = [
+    "DEFAULT_PANEL_LIMIT",
     "TRACE_SUFFIX",
     "EventPanel",
     "Sink",

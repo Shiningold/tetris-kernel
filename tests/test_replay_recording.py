@@ -504,3 +504,68 @@ def test_the_recording_system_publishes_nothing_on_construction() -> None:
 
     assert received == [], f"构造时就发了事件：{received}"
     assert bus.last_seq == 0, "构造时占了总线序号"
+
+
+# ---------------------------------------------------------------------------
+# 参数不合契约就报错（审查 M2）
+# ---------------------------------------------------------------------------
+
+
+def _malformed_accepted(args: object) -> EventDraft:
+    """一条 `args` **形状不合契约**的被接受命令。
+
+    **负载字段名与顺序照抄契约**（`make_draft` 查的就是这两样），但**值**的
+    形状是坏的——契约的 `args` 是「字段对」的元组，这里给的不是。
+    """
+    return make_draft(
+        "command:accepted",
+        (("commandType", "moveLeft"), ("commandSeq", 0), ("args", args)),
+        1,
+        ((METADATA_SOURCE, "human"),),
+    )
+
+
+def test_a_malformed_args_payload_is_reported_not_silently_dropped() -> None:
+    """**不合契约的参数当场报错**，不静默丢参（审查 M2）。
+
+    **原来**：`_args_of` 遇到不合形状的 `args` 就返回 `()`——**参数被悄悄
+    扔掉**，录出来的命令少了一半，重放时状态对不上，**却查不出原因**。
+    """
+    bus = _bus()
+    system = RecordingSystem(bus)
+    errors: list[Envelope] = []
+    bus.subscribe("kernel:error", errors.append)
+
+    bus.publish(_malformed_accepted(("这不是字段对",)))
+
+    assert errors, "不合契约的参数被静默吞了——录像与原局会静默分叉"
+    assert system.commands == (), "参数不明的命令不该进录像"
+
+
+def test_a_malformed_args_item_is_reported_too() -> None:
+    """**字段对的项形状不对**（不是二元组）也是当场报错。"""
+    bus = _bus()
+    system = RecordingSystem(bus)
+    errors: list[Envelope] = []
+    bus.subscribe("kernel:error", errors.append)
+
+    bus.publish(_malformed_accepted((("name", 1, 2),)))
+
+    assert errors, "字段对的项形状不对却被静默吞了"
+    assert system.commands == ()
+
+
+def test_a_well_formed_args_payload_is_recorded_verbatim() -> None:
+    """**合契约的参数照原样录进录像**（M2 的反向判据）。
+
+    **这条守着"报错"别变成"一律拒绝"**：参数没问题时，一条都不能少录。
+    """
+    bus = _bus()
+    system = RecordingSystem(bus)
+    cells = ((0, 0, 1), (1, 0, 1))
+
+    bus.publish(_accepted("writeCells", args=(("cells", cells),)))
+
+    assert len(system.commands) == 1
+    assert system.commands[0].args == (("cells", cells),)
+    assert system.commands[0].type == "writeCells"

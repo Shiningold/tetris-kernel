@@ -27,11 +27,12 @@ import pytest
 from tetris_kernel.bus.bus import EventBus
 from tetris_kernel.bus.envelope import Envelope
 from tetris_kernel.contracts.commands import COMMAND_TYPES, COMMANDS
-from tetris_kernel.host.assembly import assemble
+from tetris_kernel.host.assembly import assemble, rule_set_of
 from tetris_kernel.host.cli import main
 from tetris_kernel.host.loop import HeadlessLoop
 from tetris_kernel.host.replay import REPLAY_LIMITS, KernelReplayDriver
 from tetris_kernel.kernel.commands import Command
+from tetris_kernel.rules.standard import STANDARD_RULESET
 from tetris_kernel.systems.replay import (
     FourItems,
     PlaybackSession,
@@ -452,6 +453,128 @@ def test_the_cli_replay_command_reports_a_broken_recording(
 
     assert code == 2
     assert "录像读不了" in capsys.readouterr().err
+
+
+def test_the_cli_replay_command_fails_when_the_recording_has_no_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """录像**没有局末四项** → **退出码非 0**（审查 H3）。
+
+    **"没比"不是"过了"**：没有基准就没有比对。退出码 0 会让脚本把一条
+    **没校验过**的录像放过去——所以这里必须非 0（**2** = 这次校验没做成）。
+    """
+    path = tmp_path / "no-baseline.jsonl"
+    path.write_text(
+        json.dumps({"version": "v1", "seed": 1, "rule": "standard", "outcome": None}) + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path)])
+
+    assert code != 0, "没有基准也退出 0——脚本会把「没比」当成「过了」"
+    assert code == 2, "「没比」要与「四项不等」（1）区分开"
+    assert "没有局末四项" in capsys.readouterr().err
+
+
+def test_the_cli_replay_command_fails_when_the_recording_has_no_baseline_in_json_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**JSON 形态也一样非 0**——`equal` 是 `null` 就是"没比"。"""
+    path = tmp_path / "no-baseline.jsonl"
+    path.write_text(
+        json.dumps({"version": "v1", "seed": 1, "rule": "standard", "outcome": None}) + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path), "--json"])
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["equal"] is None, "没有基准就没有可比的东西"
+
+
+def test_the_cli_replay_command_exits_one_when_the_four_items_differ(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**四项不等 → 退出码 1**（与"没比"的 2 区分开）。
+
+    **这条是 H3 的反向判据**：把"没比"也当成 1 或者 0，这条与上面那条就
+    分不开了——脚本需要能分辨"没比"与"比了没过"。
+    """
+    path = tmp_path / "mismatch.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "seed": 1,
+                "rule": "standard",
+                "outcome": {
+                    "fingerprint": "这不是这一局的指纹",
+                    "score": 0,
+                    "lines": 0,
+                    "piecesPlaced": 0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path)])
+
+    assert code == 1, "四项不等是 1，不是 2"
+    assert "四项比对：不等" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 规则集接线（审查 M1）
+# ---------------------------------------------------------------------------
+
+
+def test_the_rule_set_registry_knows_the_standard_rule_set() -> None:
+    """**标识 → 规则集**的接线表：标准规则集在表里，且就是那一份。"""
+    assert rule_set_of("standard") is STANDARD_RULESET
+    assert rule_set_of("没登记的规则集") is None
+
+
+def test_the_cli_replay_command_refuses_a_rule_set_it_does_not_know(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """录像写的是**没登记的规则集** → **明确拒绝**，不拿标准规则集硬跑。
+
+    **这条就是 M1 的判据**：原来只换 `rule_id`、`rule_set` 永远是标准规则集
+    ——重放出来的四项必然不等，而 CLI 只报"四项不等"，**看不出"起错规则集
+    了"**。变体规则的重放属 M4。
+    """
+    path = tmp_path / "variant.jsonl"
+    path.write_text(
+        json.dumps({"version": "v1", "seed": 1, "rule": "变体", "outcome": None}) + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path)])
+
+    assert code == 2, "规则集没登记要明确拒绝，不是拿标准规则集硬跑"
+    err = capsys.readouterr().err
+    assert "变体" in err, "报错要说得清是哪个规则集"
+    assert "M4" in err, "报错要说得清变体规则的重放待到哪个里程碑"
+
+
+def test_the_cli_replay_command_still_replays_the_standard_rule_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**标准规则集照常重放**（M1 的反向判据）。
+
+    **接线表不是把重放堵死**：标准规则集必须在表里，标准录像照常能放。
+    """
+    recording, _ = _record_a_game(seed=707, frames=12)
+    path = tmp_path / "standard.jsonl"
+    path.write_text(recording_to_jsonl(recording), encoding="utf-8")
+
+    code = main(["replay", str(path)])
+
+    assert code == 0
+    assert "四项比对：全等" in capsys.readouterr().out
 
 
 def test_the_recording_round_trip_keeps_the_outcome() -> None:

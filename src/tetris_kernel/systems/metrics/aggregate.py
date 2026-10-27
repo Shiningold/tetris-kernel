@@ -45,6 +45,8 @@
 
 from __future__ import annotations
 
+from typing import TypeGuard
+
 from ...bus.envelope import Envelope
 from ...kernel.drafts import Payload, payload_get
 from ...rules.tables import CLASS_KEYS
@@ -79,12 +81,19 @@ METRIC_NAMES: tuple[str, ...] = (
 ) + CLEAR_METRIC_NAMES
 
 
+def _is_int(value: object) -> TypeGuard[int]:
+    """是不是**整数**（**布尔不算**——`isinstance(True, int)` 为真）。
+
+    **同项目其它取整处都排了布尔**（`archive.py` · `format.py` · `trace.py`
+    各自的那一处），**这里原来漏了**（审查 L2）。
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _int(payload: Payload, name: str) -> int:
     """取负载里的整数字段；不是整数就当 0（**不糊弄，也不崩**）。"""
     value = payload_get(payload, name)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return 0
-    return value
+    return value if _is_int(value) else 0
 
 
 def _str(payload: Payload, name: str) -> str:
@@ -175,7 +184,10 @@ class Aggregate:
             if not isinstance(change, tuple) or len(change) != 3:
                 continue
             x, y, value = change
-            if isinstance(x, int) and isinstance(y, int) and isinstance(value, int):
+            # **布尔不算整数**（审查 L2）：`isinstance(True, int)` 为真——真值
+            # 会被当成实心格写进镜像，**而契约的格子取值是整数**（0 = 空）。
+            # 坐标也一样：`True == 1`，布尔坐标会**悄悄别名**到整数那一格。
+            if _is_int(x) and _is_int(y) and _is_int(value):
                 self._cells[(x, y)] = value
 
     # ------------------------------------------------------------------

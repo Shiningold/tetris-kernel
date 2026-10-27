@@ -24,7 +24,16 @@
   空间划分"，ADR-075 正是为了让 `replay:` 与 `game:` **在过滤时分开**；
 - **可暂停**（`--pause-at`）：跑到第 N 帧就**暂停视图**——之后**不再有新事件
   进入视图**，**内核照跑**（订阅者拦不住总线，也拦不住内核）；
-- **可导出**（`--export`）：把**完整轨迹**落成文件（JSON Lines）。
+- **可导出**（`--export`）：把**面板收到的那一段**落成文件（JSON Lines）。
+
+**"完整轨迹"的准确说法**（审查 M3）：ADR-081 定了「面板与导出器是同一个
+对象」——**面板停在哪，导出就到哪**。所以 `--export` 导出的是**面板收到的
+那一段**（不过滤、不受 `--limit` 影响），**`--pause-at` 会截断它**——
+两个一起给时 **stderr 上有一行响亮提示**。
+
+**面板的留存有界**（审查 M4）：面板是环形缓冲，默认只留**最新的 4096 条**
+（`DEFAULT_PANEL_LIMIT`）——长跑不会驻留百万级信封。**`--export` 时放开成
+不限**：那是用户自己点的"全量轨迹"，内存代价自己担。
 
 **可观测系统一律不装配**（`observability_enabled=False`）：面板要看的是**内核
 的事件流**——多几个订阅者只会多几条 `log:entry` / `metric:sampled` 混在里面。
@@ -36,10 +45,19 @@
 ## `replay` 的输出
 
 **四项比对**：录像里的局末四项 vs 重放出来的四项——**逐条相等**才算过
-（AC-1 · spec §7.3）。录像里没有局末四项时，只输出重放的四项（没有基准就
-没有比对）。
+（AC-1 · spec §7.3）。
 
-**四项不等时退出码是 1**——脚本能直接判成败。
+**退出码三条口径**：
+
+| 情形 | 退出码 | 为什么 |
+| --- | --- | --- |
+| 四项全等 | **0** | 过了 |
+| 四项不等 | **1** | 检查做了，没过 |
+| **录像里没有局末四项** | **2** | **没比**——"没比"不是"过了"（审查 H3） |
+
+**没有基准就没有比对**：录像里没有局末四项时，只输出重放的四项——**但那不
+算通过**，退出码是 2。脚本把 0 当成"过了"，一条**没校验过**的录像就放过去
+了。
 
 ## `sim` 的输出
 
@@ -69,10 +87,10 @@ from pathlib import Path
 
 from ..adapters.storage import FileSink
 from ..bus.envelope import Envelope
-from ..systems.metrics.trace import EventPanel
+from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
-from .assembly import assemble
+from .assembly import assemble, rule_set_of
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
 
@@ -220,7 +238,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=DEFAULT_INSPECT_LIMIT,
-        help=f"最多显示多少条（0 = 全部；默认 {DEFAULT_INSPECT_LIMIT}）",
+        help=(f"最多显示多少条（0 = 面板留住的全部；默认 {DEFAULT_INSPECT_LIMIT}）"),
     )
     inspect.add_argument(
         "--seed",
@@ -231,7 +249,10 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument(
         "--export",
         default=None,
-        help="把完整轨迹导出到这个文件（JSON Lines，一行一条）",
+        help=(
+            "把**面板收到的那一段**轨迹导出到这个文件"
+            "（JSON Lines，一行一条；`--pause-at` 会截断它）"
+        ),
     )
     inspect.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
@@ -280,12 +301,15 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     """`replay`：读录像 → 重放 → 输出四项比对。
 
     **重放要按录像头的种子与规则集起一个全新内核**（spec §7.2）——起错规则
-    集，重放出来的就不是同一局。
+    集，重放出来的就不是同一局。**规则集没登记就明确拒绝**（审查 M1）：不拿
+    标准规则集顶替。
 
     **可观测系统一律不装配**（`observability_enabled=False`）：重放要的是
     **内核逐帧一致**，多几个订阅者只会多几条事件。
 
-    **四项不等时退出码是 1**——脚本能直接判成败。
+    **四项不等时退出码是 1**；**录像里没有局末四项时退出码是 2**（没比不是
+    过了 · 审查 H3）；**规则集没登记时退出码是 2**（起错规则集 · 审查 M1）
+    ——脚本能直接判成败。
     """
     path = Path(args.file)
     try:
@@ -299,8 +323,21 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         print(f"录像读不了：{error}", file=sys.stderr)
         return 2
 
+    # **按录像头的规则集起内核**——起错规则集，重放出来的就不是同一局。
+    # **表里没有就明确拒绝**（审查 M1）：拿标准规则集硬跑，重放出来的四项
+    # 必然不等，而报错只说"四项不等"，看不出"起错规则集了"。
+    rule_set = rule_set_of(recording.rule)
+    if rule_set is None:
+        print(
+            f"录像的规则集 {recording.rule!r} 没有登记的规则集："
+            "变体规则的重放待 M4（M2 只认标准规则集）",
+            file=sys.stderr,
+        )
+        return 2
+
     assembly = assemble(
         seed=recording.seed,
+        rule_set=rule_set,
         rule_id=recording.rule,
         mode="replay",
         limits=REPLAY_LIMITS,
@@ -330,15 +367,23 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         print(f"重放分数：{items.score}")
         print(f"重放行数：{items.lines}")
         print(f"重放已放置方块数：{items.pieces_placed}")
-        if baseline is None:
-            print("录像里没有局末四项：无比对基准")
-        else:
+        if baseline is not None:
             print(f"录像棋盘指纹：{baseline.fingerprint}")
             print(f"录像分数：{baseline.score}")
             print(f"录像行数：{baseline.lines}")
             print(f"录像已放置方块数：{baseline.pieces_placed}")
             print(f"四项比对：{'全等' if equal else '不等'}")
-    return 0 if equal is not False else 1
+    if baseline is None:
+        # **没有基准就没有比对**——"没比"不是"过了"（审查 H3）。
+        #
+        # **退出码 2**：这次校验**没做成**（与"四项不等"的 1 区分开）——脚本
+        # 看到 0 就当"过了"，一条**没校验过**的录像就这么放过去了。
+        print(
+            "录像里没有局末四项：无比对基准可比（这次校验没做成，不算通过）",
+            file=sys.stderr,
+        )
+        return 2
+    return 0 if equal else 1
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
@@ -354,8 +399,10 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     **暂停的是视图，不是内核**：`--pause-at` 之后**不再有新事件进入视图**，
     内核照跑（订阅者拦不住总线，也拦不住内核）。
 
-    **导出的是完整轨迹**（不过滤、不受 `--limit` 影响）——离线分析要的是
-    全量，视图的截断只影响**显示**。
+    **导出的是"面板收到的那一段"**（不过滤、不受 `--limit` 影响）——ADR-081
+    定了「面板与导出器是同一个对象」，所以**面板停在哪，导出就到哪**。
+    `--pause-at` 与 `--export` 同时出现时**响亮提示**（审查 M3）：文档说
+    "完整"、行为给的是"截至暂停点"，那是文档与行为不一致。
     """
     frames = int(args.frames)
     if frames < 0:
@@ -369,11 +416,28 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     if pause_at is not None and int(pause_at) < 0:
         print("暂停帧号不能为负", file=sys.stderr)
         return 2
+    export_path = args.export
+    if export_path and pause_at is not None:
+        # **响亮提示**：文档说"完整轨迹"、行为给的是"截至暂停点"——**不响亮
+        # 就等于骗人**（审查 M3）。
+        print(
+            f"注意：--pause-at {pause_at} 让面板在那一帧停住，"
+            f"导出的是**截至该帧的那一段**，不是完整轨迹。",
+            file=sys.stderr,
+        )
 
     assembly = assemble(seed=int(args.seed), observability_enabled=False)
     # **面板要在事件开始流动之前订阅**——晚订阅的从 `bus.history()` 里取，
     # 面板**不自动补历史**（它是"从现在起看"的视图）。
-    panel = EventPanel(assembly.bus, pause_at=pause_at)
+    #
+    # **留存上限必须显式给**（审查 M4）：面板是环形缓冲——"长跑驻留百万级信封"
+    # 是内存负担，不是特性。**要导出就放开上限**（`limit=None`）：那是用户
+    # 自己点的"全量轨迹"，代价自己担；**不导出就用默认上限**。
+    panel = EventPanel(
+        assembly.bus,
+        limit=None if export_path else DEFAULT_PANEL_LIMIT,
+        pause_at=pause_at,
+    )
     loop = HeadlessLoop(assembly)
     loop.start()
     loop.run_frames(frames)
@@ -381,7 +445,6 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     namespaces = tuple(args.namespace) if args.namespace else ()
     events = panel.by_namespaces(namespaces) if namespaces else panel.events
 
-    export_path = args.export
     if export_path:
         try:
             FileSink(Path(export_path))(panel.export_bytes())

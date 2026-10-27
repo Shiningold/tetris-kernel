@@ -418,6 +418,60 @@ def test_the_emptied_cells_stop_counting_as_filled() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 布尔不算整数（审查 L2）
+# ---------------------------------------------------------------------------
+
+
+def test_a_boolean_cell_value_is_not_written_into_the_mirror() -> None:
+    """**布尔不算整数**（审查 L2）——真值不会被当成实心格。
+
+    契约的格子取值是**整数**（0 = 空）——出现 `True` 说明上游给了不合契约的
+    值，**不该进镜像**。
+    """
+    bus = _bus()
+    system = MetricsSystem(bus)
+
+    # **真值当格子值**：不合契约。
+    bus.publish(_board_changed(((0, 0, True),)))  # type: ignore[arg-type]
+    bus.publish(_tick(1))
+
+    values = _values(system.latest() or ())
+    assert values["filledCells"] == 0, "布尔被当成实心格写进镜像了"
+    assert values["holeCount"] == 0
+
+
+def test_a_boolean_coordinate_does_not_alias_onto_an_integer_cell() -> None:
+    """**布尔坐标也不算数**（审查 L2）——`True == 1`，会**悄悄别名**到那一格。
+
+    真值当 x → 镜像里落进的是 `(1, y)` 那一格——**坐标被改写了**。
+    """
+    bus = _bus()
+    system = MetricsSystem(bus)
+
+    bus.publish(_board_changed(((True, 0, 1),)))  # type: ignore[arg-type]
+    bus.publish(_tick(1))
+
+    values = _values(system.latest() or ())
+    assert values["filledCells"] == 0, "布尔坐标被当成了整数坐标"
+
+
+def test_an_integer_cell_value_is_still_mirrored() -> None:
+    """**合契约的整数照旧进镜像**（L2 的反向判据）。
+
+    **这条守着"排布尔"别变成"一律不收"**。
+    """
+    bus = _bus()
+    system = MetricsSystem(bus)
+
+    bus.publish(_board_changed(((0, 0, 1), (0, 2, 1))))
+    bus.publish(_tick(1))
+
+    values = _values(system.latest() or ())
+    assert values["filledCells"] == 2
+    assert values["holeCount"] == 1
+
+
+# ---------------------------------------------------------------------------
 # 普通订阅者（M2-D1）
 # ---------------------------------------------------------------------------
 

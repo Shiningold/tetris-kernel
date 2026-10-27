@@ -23,6 +23,12 @@ lint-imports 守着），**它知道有 sink，不知道路径**。
 **写入只有一处**，**不设环境变量**。`adapters/` 只管"怎么把字节写下去"，
 **没有"默认路径"这个概念**。
 
+**"写入只有一处"说的是一条落盘路径，不是一个文件**（ADR-085）：日志、指标、
+录像是**三份不同的产物**，各有各的出口——**一个产物一个文件**。三个产物往
+同一个文件写，**后写的覆盖先写的**（用覆盖语义写日志，文件里只剩最后一条）。
+日志与指标是**一条一条往外冒**的流 → **追加语义**；录像是**整份交出**的产物
+→ **覆盖语义**（两种语义是两个类，不是同一个类的两种模式）。
+
 **可观测总开关关掉的是"装配"，不是"订阅"**（`G2-3` 的前提）：开关关掉时
 那些工厂**一个都不许被调用**——"装配了再退订"会让 `G2-3` 假绿（系统还在
 跑，只是不发事件）。
@@ -40,13 +46,14 @@ lint-imports 守着），**它知道有 sink，不知道路径**。
 
 from __future__ import annotations
 
-import os
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
-from ..adapters.storage import FileSink
+from ..adapters.storage import AppendSink, FileSink
 from ..bus.bus import DEFAULT_HISTORY_LIMIT, EventBus
 from ..kernel.core import (
     DEFAULT_BOARD_HEIGHT,
@@ -61,9 +68,11 @@ from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
 from ..systems.log import LogSystem, LogTarget, SinkTarget
 from ..systems.metrics import MetricsSystem
-from ..systems.replay import RecordingSystem
+from ..systems.replay import OutcomeProvider, RecordingSystem
+from ..systems.replay.format import recording_filename
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 from .performance import DegradationController
+from .replay import four_items_of
 
 #: 落盘出口（**装配约定，不属于契约面** —— spec-M2 §3.3 · ADR-064 / ADR-074）。
 #:
@@ -72,6 +81,28 @@ from .performance import DegradationController
 #: 可调用类型（结构化类型），系统侧自己写 `Callable[[bytes], None]` 即可
 #: （`systems/` **不能** import `host/`，依赖方向使然）。
 type Sink = Callable[[bytes], None]
+
+
+@dataclass(frozen=True)
+class ObservableSinks:
+    """三个可观测产物**各自**的落盘出口（**一个产物一个文件** · ADR-085）。
+
+    - `log`：日志条目（**一条一条往外冒**）；
+    - `metrics`：指标采样（**一帧一条**）；
+    - `recording`：录像（**整份交出**）。
+
+    **为什么不是一个 sink**：三个产物往**同一个文件**写，**后写的覆盖先写的**
+    ——用覆盖语义写日志，文件里只剩最后一条（审查 H1）。**"写入只有一处"说的
+    是一条落盘路径，不是一个文件**（ADR-074）。
+
+    **三个字段各自可为 `None`**：`None` = **这一个产物不落盘**（不是"整个
+    都不落盘"——日志可以不落、录像不能不落）。
+    """
+
+    log: Sink | None = None
+    metrics: Sink | None = None
+    recording: Sink | None = None
+
 
 #: 项目侧的默认数据目录名（ADR-074）。
 DATA_DIR_NAME = ".tetris-data"
@@ -95,11 +126,20 @@ class DataDirectory:
 
 
 def _is_writable_dir(path: Path) -> bool:
-    """目录（或其最近的**已存在**祖先）是否可写。
+    """目录（或其最近的**已存在**祖先）是否**真能写**。
 
     **看祖先**：目标目录多半还不存在（要自建），那能不能建取决于**它上面
-    那个已存在的目录**能不能写。`os.access` 只问"这个目录能不能写"，不问
-    "能不能在里面建东西"。
+    那个已存在的目录**能不能写。
+
+    **真写一次，不问 `os.access`**（审查 L3）：Windows 上目录 **ACL** 存在时
+    `os.access` 的结果**不可靠**——可能认为可写，真写时抛 `PermissionError`；
+    `Path.exists()` 对权限不足的目录也可能返回 `False`。**真写一次**才是
+    ADR-074「不可写时回落 home」这条承诺的兑现。
+
+    **探针不留残骸**：在目录里建一个临时文件**立刻删掉**——建不出来就是
+    不可写。**它确实动过文件系统**（建 + 删一个临时文件）——这与
+    "解析路径不创建任何目录"不冲突（**不建目录**），但**动过**这件事写
+    在这里，不瞒。
     """
     probe = path
     while not probe.exists():
@@ -107,7 +147,25 @@ def _is_writable_dir(path: Path) -> bool:
         if parent == probe:
             return False
         probe = parent
-    return probe.is_dir() and os.access(probe, os.W_OK)
+    if not probe.is_dir():
+        return False
+    return _can_write_in(probe)
+
+
+def _can_write_in(directory: Path) -> bool:
+    """在目录里**真写一次**（建个临时文件再删掉）——能不能写，问文件系统。
+
+    **失败一律当不可写**：权限不足、磁盘满、只读挂载……**判不准就当不可
+    写**（ADR-074 的回落路径是安全的那一侧）。
+    """
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=".tetris-writable-probe-", delete=True
+        ):
+            pass
+    except OSError:
+        return False
+    return True
 
 
 def resolve_data_dir(
@@ -128,6 +186,8 @@ def resolve_data_dir(
       用户干活的那个目录）；`home`：用户主目录（省略时取 `Path.home()`）；
     - `writable`：可写性判定（**注入点**——"项目目录不可写"这件事在
       Windows 上很难可靠地造出来，测试靠注入判定函数，而不是靠改文件属性）。
+      **省略时走真写探针**（`_is_writable_dir`：建个临时文件再删掉）——不是
+      问 `os.access`（ACL 场景下不可靠 · 审查 L3）。
     """
     root = Path.cwd() if project_root is None else Path(project_root)
     user_home = Path.home() if home is None else Path(home)
@@ -160,6 +220,10 @@ def default_sink(
 
     - `filename`：**不带墙钟**（ADR-064——文件名带时间戳会让"同一局录两次"
       产生两份文件）。
+
+    **这是覆盖语义的那个**（`FileSink`）：适合**整份交出**的产物（录像）。
+    **日志与指标要追加语义**——用这个函数造它们的出口，文件里只会剩最后
+    一条。要三个产物**各有各的出口**，用 `default_sinks()`（ADR-085）。
     """
     directory = resolve_data_dir(project_root=project_root, home=home)
     if directory.fell_back:
@@ -167,37 +231,137 @@ def default_sink(
     return FileSink(directory.path / filename), directory
 
 
+def default_sinks(
+    *,
+    rule_id: str = "standard",
+    project_root: Path | None = None,
+    home: Path | None = None,
+) -> tuple[ObservableSinks, DataDirectory]:
+    """造**三个**落在默认数据目录里的落盘出口，并**回报最终落点**。
+
+    **一个产物一个文件**（ADR-085）：
+
+    | 产物 | 文件名 | 语义 | 为什么 |
+    | --- | --- | --- | --- |
+    | 日志 | `log-<规则集>.jsonl` | **追加** | 一条一条往外冒 |
+    | 指标 | `metrics-<规则集>.jsonl` | **追加** | 一帧一条 |
+    | 录像 | `recording-<规则集>.jsonl` | **覆盖** | 整份交出（原子替换） |
+
+    **文件名不带墙钟**（ADR-064）：带时间戳会让"同一局录两次"产生两份
+    不同的文件。
+
+    **日志与指标是追加的**：文件里接着上一次运行的内容往下写——它们是
+    **流**，不是一份交出的产物。要"每次从空开始"，自己造 sink（**宿主说了
+    算**）。
+
+    **规则集标识进文件名**：不同规则集的两局**各写各的**，不互相覆盖。
+    **录像的文件名与录像格式模块给的 `recording_filename()` 逐字一致**——
+    文件名是录像格式的一部分（spec §7.1），**不许这儿另起一个名字**。
+    """
+    safe_rule_id = _safe_rule_id(rule_id)
+    directory = resolve_data_dir(project_root=project_root, home=home)
+    if directory.fell_back:
+        print(f"落盘目录已回落到 home：{directory.path}（{directory.reason}）", file=sys.stderr)
+    return (
+        ObservableSinks(
+            log=AppendSink(directory.path / f"log-{safe_rule_id}.jsonl"),
+            metrics=AppendSink(directory.path / f"metrics-{safe_rule_id}.jsonl"),
+            recording=FileSink(directory.path / recording_filename(safe_rule_id)),
+        ),
+        directory,
+    )
+
+
+#: 规则集标识在文件名里允许出现的字符（**路径安全** · 与录像格式模块同款）。
+_RULE_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def _safe_rule_id(rule_id: str) -> str:
+    """规则集标识 → **文件名安全**的一段（路径分隔符、空格都不许进）。
+
+    **为什么当场报错而不是替换掉**：文件名要能反查回规则集——把 `a/b` 悄悄
+    改成 `a-b`，查录像时才知道自己拿错了。**错了就报错**。
+
+    **为什么放行这一组字符**：录像格式模块的 `recording_filename()` 用的是
+    同一组（`isalnum()` 加 `-_.`）——**两边必须一致**，否则录像文件的名字会
+    有两个真相。
+    """
+    if not rule_id or not set(rule_id) <= _RULE_ID_CHARS:
+        raise ValueError(f"规则集标识不能进文件名：{rule_id!r}")
+    return rule_id
+
+
+def _outcome_provider_of(kernel: Kernel) -> OutcomeProvider:
+    """造一个"给我局末四项"的可调用对象（**宿主注入** · ADR-085）。
+
+    **为什么只能由宿主注入**：系统层**不碰内核状态**（M2-D1），而**棋盘指纹
+    的算法只有内核那一份**（抄第二份就是第二个真相 · 架构 §7.1）。所以系统层
+    只拿到一个**可调用对象**——**拿不到内核本身**（最窄能力原则）。
+
+    **算法只有这一处**：四项由 `four_items_of()` 算——**重放驱动器也用它**
+    （同一个 `host/replay.py`），两处必须算出同一个值。
+    """
+    return lambda: four_items_of(kernel.snapshot())
+
+
 #: 可观测系统的装配入口（**批次 C 往这张表里填满了**）。
 #:
-#: 每个工厂的签名一致：`(bus, sink) -> 系统对象`。**开关关掉时这些工厂
-#: 一个都不许被调用**——不是"装配了再退订"（那是 `G2-3` 的假绿陷阱：
-#: 系统还在跑，只是不发事件）。
+#: 每个工厂的签名一致：`(bus, sinks, outcome_provider) -> 系统对象`。
+#: **开关关掉时这些工厂一个都不许被调用**——不是"装配了再退订"（那是
+#: `G2-3` 的假绿陷阱：系统还在跑，只是不发事件）。
 #:
-#: **为什么只有两个参数**：种子与规则集标识**不进工厂**——它们由内核从
-#: `kernel:ready` 事件里带出来，录制系统自己去取（内核是那两项的权威）。
-#: 顺带**装配层一个事件都不发**（宿主的一条不变量：造零件不许自己造事件）。
-type ObservableFactory = Callable[[EventBus[Snapshot], Sink | None], object]
+#: **为什么种子与规则集标识不进工厂**：它们由内核从 `kernel:ready` 事件里
+#: 带出来，录制系统自己去取（内核是那两项的权威）。顺带**装配层一个事件都
+#: 不发**（宿主的一条不变量：造零件不许自己造事件）。
+#:
+#: **为什么三个出口打包成一个对象**：三个产物**各有各的文件**（ADR-085），
+#: 打包起来才不会"忘了给某一个产物分一个"——只给一个 `sink` 的话，三个
+#: 系统会**共用它**，后写的覆盖先写的。
+#:
+#: **为什么局末四项的取法也进签名**：它**只能由宿主注入**——棋盘指纹的
+#: 算法只有内核那一份（抄第二份就是第二个真相），而系统层**不碰内核状态**
+#: （M2-D1）。工厂**拿得到 provider、拿不到 kernel**（最窄能力原则）。
+type ObservableFactory = Callable[[EventBus[Snapshot], ObservableSinks, OutcomeProvider], object]
 
 
-def _build_log_system(bus: EventBus[Snapshot], sink: Sink | None) -> LogSystem:
+def _build_log_system(
+    bus: EventBus[Snapshot], sinks: ObservableSinks, outcome_provider: OutcomeProvider
+) -> LogSystem:
     """日志系统（**普通订阅者** · 级别映射在系统内 · ADR-046）。
 
     **默认不挂控制台目标**：控制台是**人读**的输出，日志系统的输出目标
     **可插拔**——装配层默认只挂文件目标（经 sink），**要不要往控制台打由调用方
     自己加目标**。
+
+    **只用自己的那一个出口**（ADR-085）：日志写 `sinks.log`。
     """
-    targets: tuple[LogTarget, ...] = () if sink is None else (SinkTarget(sink),)
+    targets: tuple[LogTarget, ...] = () if sinks.log is None else (SinkTarget(sinks.log),)
     return LogSystem(bus, targets)
 
 
-def _build_metrics_system(bus: EventBus[Snapshot], sink: Sink | None) -> MetricsSystem:
-    """指标系统（**普通订阅者** · 每帧一条 `metric:sampled`）。"""
-    return MetricsSystem(bus, sink)
+def _build_metrics_system(
+    bus: EventBus[Snapshot], sinks: ObservableSinks, outcome_provider: OutcomeProvider
+) -> MetricsSystem:
+    """指标系统（**普通订阅者** · 每帧一条 `metric:sampled`）。
+
+    **只用自己的那一个出口**（ADR-085）：指标写 `sinks.metrics`。
+    """
+    return MetricsSystem(bus, sinks.metrics)
 
 
-def _build_recording_system(bus: EventBus[Snapshot], sink: Sink | None) -> RecordingSystem:
-    """录像录制系统（**只录被接受的命令** · M2-D3）。"""
-    return RecordingSystem(bus, sink)
+def _build_recording_system(
+    bus: EventBus[Snapshot], sinks: ObservableSinks, outcome_provider: OutcomeProvider
+) -> RecordingSystem:
+    """录像录制系统（**只录被接受的命令** · M2-D3）。
+
+    **局末四项由宿主注入**（`outcome_provider`）：系统层**不碰内核状态**
+    （M2-D1），**棋盘指纹的算法也只有内核那一份**——装配层不注入 provider，
+    录像头里就没有比对基准，`G2-1` 的四项全等**永远没有基准可比**（审查 H2）。
+
+    **只用自己的那一个出口**（ADR-085）：录像写 `sinks.recording`（**覆盖
+    语义**——整份交出）。
+    """
+    return RecordingSystem(bus, sinks.recording, outcome_provider=outcome_provider)
 
 
 #: 可观测系统的装配表（**批次 C 填上了三个系统**）。
@@ -212,6 +376,27 @@ OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 规则集接线：标识 → 规则集
+# ---------------------------------------------------------------------------
+
+#: 规则集标识 → 规则集（**宿主层的接线表** · 变体属 M4）。
+#:
+#: **为什么在宿主层**：`rules/` 是**冻结区**（M2-D5）——"哪个标识对应哪个
+#: 规则集"是**宿主的接线决定**，不是规则层自己的事。**变体规则集来了就往
+#: 这张表里加一行**（M4）。
+#:
+#: **为什么不能拿标准规则集顶替**：标识写着"变体"、内核却跑标准规则——
+#: **重放出来的四项必然不等**，而报错只说"四项不等"，看不出"起错规则集了"。
+#: **表里没有就是没有**（`rule_set_of()` 返回 `None`）。
+RULE_SETS: Mapping[str, RuleSet] = MappingProxyType({"standard": STANDARD_RULESET})
+
+
+def rule_set_of(rule_id: str) -> RuleSet | None:
+    """按标识取规则集（**没有就是没有**——不拿别的规则集顶替）。"""
+    return RULE_SETS.get(rule_id)
+
+
 @dataclass(frozen=True)
 class Assembly:
     """装配好的三件套（**内核 / 总线 / 时钟**）+ M2 的可观测接线。
@@ -222,8 +407,8 @@ class Assembly:
       一个接口，架构 §5.3）。**M0 尚无消费方**：帧循环跑帧不 sleep、不看时间，
       `step_ms` 对 M0 的节奏零影响——这个口是给 M1 的回放 / 倍速预留的，别把
       "预留"当成"已实现"；
-    - `sink`：**宿主注入的落盘出口**（`None` = 不落盘）；**路径由宿主定**
-      （ADR-064 / ADR-074）——部件自己不 `open()`；
+    - `sinks`：**宿主注入的三个落盘出口**（**一个产物一个文件** · ADR-085）；
+      **路径由宿主定**（ADR-064 / ADR-074）——部件自己不 `open()`；
     - `observable_systems`：装配出来的可观测系统（**开关关掉时为空**）；
     - `observability_enabled`：可观测总开关的取值（**关掉 = 一个都不装配**）；
     - `degradation_controller`：降级控制器（**没装配就是 `None`** · ADR-031）。
@@ -232,7 +417,7 @@ class Assembly:
     kernel: Kernel
     bus: EventBus[Snapshot]
     clock: Clock
-    sink: Sink | None = None
+    sinks: ObservableSinks = field(default_factory=ObservableSinks)
     observable_systems: tuple[object, ...] = ()
     observability_enabled: bool = True
     degradation_controller: DegradationController[Snapshot] | None = None
@@ -252,7 +437,7 @@ def assemble(
     limits: QuotaLimits = DEFAULT_LIMITS,
     clock: Clock | None = None,
     history_limit: int = DEFAULT_HISTORY_LIMIT,
-    sink: Sink | None = None,
+    sinks: ObservableSinks | None = None,
     observability_enabled: bool = True,
     degradation_enabled: bool = False,
 ) -> Assembly:
@@ -270,8 +455,9 @@ def assemble(
     - `clock`：时钟源；**省略时用 `VirtualClock(step_ms=step_ms)`**——无头批次
       不读墙钟；
     - `history_limit`：总线环形历史保留条数；
-    - `sink`：**宿主注入的落盘出口**（`None` = 不落盘）。**路径由宿主定**
-      （M2-D2）——部件自己不 `open()`、不用 `Path.home()`；
+    - `sinks`：**宿主注入的落盘出口**（`None` = 三个产物都不落盘）。**路径由
+      宿主定**（M2-D2）——部件自己不 `open()`、不用 `Path.home()`；**三个产物
+      各用各的出口**（ADR-085）——共用一个的话，后写的覆盖先写的；
     - `observability_enabled`：**可观测总开关**。关掉时那些工厂**一个都不被
       调用**——`G2-3`（关闭全部可观测系统后内核逐帧一致）的前提；
     - `degradation_enabled`：**是否装配降级控制器**（ADR-031）。**默认不装**——
@@ -295,10 +481,18 @@ def assemble(
         view_provider=kernel.snapshot,
         history_limit=history_limit,
     )
+    effective_sinks = ObservableSinks() if sinks is None else sinks
     observable_systems: tuple[object, ...] = ()
     if observability_enabled:
         # **开关关掉时这些工厂一个都不被调用**——不是"装配了再退订"。
-        observable_systems = tuple(factory(bus, sink) for factory in OBSERVABLE_SYSTEM_FACTORIES)
+        # **局末四项的取法由宿主注入**：棋盘指纹只有内核那一份算法（抄第二份
+        # 就是第二个真相），而系统层**不碰内核状态**（M2-D1）——它只拿到一个
+        # 可调用对象，拿不到内核。
+        outcome_provider = _outcome_provider_of(kernel)
+        observable_systems = tuple(
+            factory(bus, effective_sinks, outcome_provider)
+            for factory in OBSERVABLE_SYSTEM_FACTORIES
+        )
     degradation_controller: DegradationController[Snapshot] | None = None
     if degradation_enabled:
         # **降级控制器要一个日志系统**（第 ① 档关 debug 事件 · 第 ② 档抬阈值）
@@ -316,7 +510,7 @@ def assemble(
         kernel=kernel,
         bus=bus,
         clock=VirtualClock(step_ms=step_ms) if clock is None else clock,
-        sink=sink,
+        sinks=effective_sinks,
         observable_systems=observable_systems,
         observability_enabled=observability_enabled,
         degradation_controller=degradation_controller,
@@ -326,12 +520,16 @@ def assemble(
 __all__ = [
     "DATA_DIR_NAME",
     "HOME_DIR_NAME",
+    "RULE_SETS",
     "Assembly",
     "DataDirectory",
     "ObservableFactory",
+    "ObservableSinks",
     "OBSERVABLE_SYSTEM_FACTORIES",
     "Sink",
     "assemble",
     "default_sink",
+    "default_sinks",
     "resolve_data_dir",
+    "rule_set_of",
 ]

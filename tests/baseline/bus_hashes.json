@@ -1,7 +1,7 @@
 {
   "files": {
     "bus/__init__.py": "8884051be7e61340590b096ce4e14ab0",
-    "bus/bus.py": "7752bc4d0a43639def63843330da946f",
+    "bus/bus.py": "767d900cac6f8042ed213c8bf84a453e",
     "bus/envelope.py": "9f17ea73141da66af82b955c5293bd83",
     "bus/subscriber.py": "aad90f72b2cd19fe77954a7b4e376124"
   },

@@ -14,6 +14,11 @@
 于契约面**），`resolve_data_dir()` / `default_sink()` 是 ADR-074 的默认落盘
 路径策略（**项目优先 → 不可写时回落 home**，写入只有一处，不设环境变量）。
 
+**M2 审查修订补上"三个产物各用各的出口"**（ADR-085）：`ObservableSinks` 是
+三个出口的打包（日志 · 指标 · 录像），`default_sinks()` 一次解析目录、造出
+三个文件——**一个产物一个文件**。日志与指标是**追加语义**，录像是**覆盖
+语义**。
+
 **批次 D（S12）补上降级控制器**：`DegradationController` 按 ADR-031 的**三档
 固定顺序**与**滞回**调档——① 关闭调试事件 → ② 降低日志级别 → ③ 关闭事件历史
 缓冲。**默认不装配**（M2 是无头批次，喂帧开销的接线留给 M3 的实时宿主）。
@@ -23,13 +28,17 @@ from .assembly import (
     DATA_DIR_NAME,
     HOME_DIR_NAME,
     OBSERVABLE_SYSTEM_FACTORIES,
+    RULE_SETS,
     Assembly,
     DataDirectory,
     ObservableFactory,
+    ObservableSinks,
     Sink,
     assemble,
     default_sink,
+    default_sinks,
     resolve_data_dir,
+    rule_set_of,
 )
 from .clock import (
     DEFAULT_STEP_MS,
@@ -68,6 +77,7 @@ __all__ = [
     "OBSERVABLE_SYSTEM_FACTORIES",
     "RECOVER_FRAMES",
     "RECOVER_P99_MS",
+    "RULE_SETS",
     "THOUSAND_BASE_SEED",
     "THOUSAND_BUDGET_SECONDS",
     "TIERS",
@@ -82,11 +92,14 @@ __all__ = [
     "FrameCostWindow",
     "HeadlessLoop",
     "ObservableFactory",
+    "ObservableSinks",
     "RealClock",
     "RunReport",
     "Sink",
     "VirtualClock",
     "assemble",
     "default_sink",
+    "default_sinks",
     "resolve_data_dir",
+    "rule_set_of",
 ]

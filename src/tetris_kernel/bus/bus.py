@@ -154,7 +154,17 @@ class EventBus[V]:
         self._counts_by_type: dict[str, int] = {}
         self._counts_by_namespace: dict[str, int] = {}
         # **这一轮排空里已经报过错事件的订阅者**（防错误级联 · ADR-083）。
-        self._errored_subscribers: set[str] = set()
+        #
+        # **键是订阅者的身份，不是名字**（审查 L1）：两个**同名**订阅者（装两套
+        # 日志系统，名字都是"日志系统"）会互相抑制报错——第二套的异常被当成
+        # "错误级联里的再次抛错"只记 trace，**真正的异常被吞掉**。
+        # **同名不等于同一个订阅者**。
+        #
+        # **键的形状是 `(角色, 身份整数)`**：订阅者的身份是 `id(订阅句柄)`，
+        # 中间件的身份是它的**登记序号**——**同一个函数被登记两次就是两个中间
+        # 件**（拿可调用对象本身当身份会把它俩当成一个）。角色进键里，两个
+        # 身份空间**不会撞**。
+        self._errored_subscribers: set[tuple[str, int]] = set()
         self._seq = 0
         self._dispatching = False
 
@@ -317,11 +327,13 @@ class EventBus[V]:
         **一个中间件抛错不影响后面的中间件，也不影响订阅者**——与订阅者
         同款隔离。
         """
-        for name, middleware in self._middlewares:
+        for index, (name, middleware) in enumerate(self._middlewares):
             try:
                 middleware(envelope)
             except Exception as error:
-                self._report_failure("中间件", name, envelope, error, is_error_event)
+                # **身份是登记序号**，不是名字、也不是可调用对象本身——**同一个
+                # 函数被登记两次就是两个中间件**（审查 L1）。
+                self._report_failure("中间件", name, index, envelope, error, is_error_event)
 
     def _count(self, envelope: Envelope) -> None:
         """累加计数（**按类型 · 按命名空间**）。
@@ -342,12 +354,15 @@ class EventBus[V]:
         is_error_event: bool,
     ) -> None:
         """订阅者抛错 → 转 `kernel:error`；**其余订阅者不受影响**。"""
-        self._report_failure("订阅者", subscription.name, envelope, error, is_error_event)
+        self._report_failure(
+            "订阅者", subscription.name, id(subscription), envelope, error, is_error_event
+        )
 
     def _report_failure(
         self,
         role: str,
         name: str,
+        identity: int,
         envelope: Envelope,
         error: Exception,
         is_error_event: bool,
@@ -357,6 +372,10 @@ class EventBus[V]:
         `role` 只是报告里的称呼（订阅者 / 中间件）；负载里放的是**抛错者
         的名字**——契约里那个字段叫 `subscriber`，**中间件也在分发链上，
         同样要能指认是谁炸了**（不改契约面：M2-D4 只增不改）。
+
+        `identity` 是**抛错者的身份整数**（订阅句柄的 `id()` / 中间件的登记
+        序号）——级联防线按它去重，**不按名字**（审查 L1 · ADR-083 说的"同一
+        个订阅者"）。
         """
         summary = f"{type(error).__name__}: {error}"
         if is_error_event:
@@ -364,7 +383,8 @@ class EventBus[V]:
             # 总线陷入无限循环。
             self._trace(f"{role} {name} 处理错误事件时再次抛错：{summary}")
             return
-        if name in self._errored_subscribers:
+        key = (role, identity)
+        if key in self._errored_subscribers:
             # **同一个订阅者在这一轮排空里只报一次错**（ADR-083）。
             #
             # **为什么**：错误事件本身会被**别的订阅者**变成新事件（日志系统
@@ -373,18 +393,19 @@ class EventBus[V]:
             # 所以：**已经报过错事件的订阅者，再炸只记 trace**。
             self._trace(f"{role} {name} 在错误级联里再次抛错：{summary}")
             return
-        self._queue_error(name, envelope, summary)
+        self._queue_error(name, key, envelope, summary)
 
     def _queue_error(
         self,
         name: str,
+        key: tuple[str, int],
         envelope: Envelope,
         summary: str,
     ) -> None:
         """把 `kernel:error` 排进待发布队列（**不打断当前分发**）。"""
         # **记下这个订阅者**：这一轮排空里它再炸就只记 trace（ADR-083 的
-        # 错误级联防线）。
-        self._errored_subscribers.add(name)
+        # 错误级联防线）。**按身份记，不按名字**（审查 L1）。
+        self._errored_subscribers.add(key)
         producer = producer_of(ERROR_EVENT_TYPE) or "bus"
         metadata: Metadata = build_metadata((), producer, self._default_source)
         payload = (

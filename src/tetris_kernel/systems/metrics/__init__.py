@@ -25,6 +25,7 @@ from .system import (
     Sink,
 )
 from .trace import (
+    DEFAULT_PANEL_LIMIT,
     TRACE_SUFFIX,
     EventPanel,
     TraceValue,
@@ -35,6 +36,7 @@ from .trace import (
 __all__ = [
     "CLEAR_METRIC_NAMES",
     "CLOCK_TICK_EVENT",
+    "DEFAULT_PANEL_LIMIT",
     "DEFAULT_SAMPLE_LIMIT",
     "METRIC_NAMES",
     "METRIC_SAMPLED_EVENT",

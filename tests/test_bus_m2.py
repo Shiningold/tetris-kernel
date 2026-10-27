@@ -391,3 +391,69 @@ def test_a_failing_subscriber_does_not_stop_the_others_and_the_error_is_emitted(
     assert received == ["piece:locked", "kernel:error", "piece:spawned", "kernel:error"]
     assert len(errors) == 2, "每条原事件对应一条错误事件"
     assert all(_payload(envelope)["subscriber"] == "boom" for envelope in errors)
+
+
+# ---------------------------------------------------------------------------
+# 错误级联防线按身份去重（审查 L1）
+# ---------------------------------------------------------------------------
+
+
+def test_two_subscribers_with_the_same_name_each_report_their_own_failure() -> None:
+    """**同名不等于同一个订阅者**（审查 L1）。
+
+    两个**同名**订阅者都抛错 → **两条 `kernel:error`**（各报各的）。原来级联
+    防线按**名字**去重，第二个被当成"错误级联里的再次抛错"只记 trace——
+    **真正的异常被吞掉**。
+    """
+    bus = _bus()
+    errors: list[Envelope] = []
+
+    def boom(envelope: Envelope) -> None:
+        raise RuntimeError("订阅者炸了")
+
+    bus.subscribe("*", boom, name="日志系统")
+    bus.subscribe("*", boom, name="日志系统")
+    bus.subscribe("kernel:error", errors.append, name="err")
+
+    bus.publish(FakeDraft(eventType="piece:locked"))
+
+    assert len(errors) == 2, f"只报了 {len(errors)} 条——第二个订阅者的异常被吞了"
+    assert all(_payload(envelope)["subscriber"] == "日志系统" for envelope in errors)
+
+
+def test_two_middlewares_with_the_same_name_each_report_their_own_failure() -> None:
+    """**同名中间件也各报各的**（审查 L1）——中间件也在分发链上。"""
+    bus = _bus()
+    errors: list[Envelope] = []
+
+    def boom(envelope: Envelope) -> None:
+        raise RuntimeError("中间件炸了")
+
+    bus.use(boom, name="坏中间件")
+    bus.use(boom, name="坏中间件")
+    bus.subscribe("kernel:error", errors.append, name="err")
+
+    bus.publish(FakeDraft(eventType="piece:locked"))
+
+    assert len(errors) == 2, f"只报了 {len(errors)} 条——第二个中间件的异常被吞了"
+
+
+def test_the_same_subscriber_still_reports_only_once_in_a_round() -> None:
+    """**同一个订阅者在一轮排空里仍然只报一次错**（ADR-083 的正向断言）。
+
+    **这条是上一条的对偶**：级联防线不能被"按身份去重"改没了——**同一个**
+    订阅者反复抛错仍然只报一次，否则错误事件会无限级联（ADR-083）。
+    """
+    bus = _bus()
+    errors: list[Envelope] = []
+
+    def boom(envelope: Envelope) -> None:
+        raise RuntimeError("订阅者炸了")
+
+    bus.subscribe("*", boom, name="boom")
+    bus.subscribe("kernel:error", errors.append, name="err")
+
+    bus.publish(FakeDraft(eventType="piece:locked"))
+
+    assert len(errors) == 1, "同一个订阅者只报一次错"
+    assert bus.traces(), "二次抛错要记 trace"
