@@ -290,6 +290,53 @@ def test_the_inspect_command_can_pause_the_view(capsys) -> None:
     assert all(item["frame"] < 2 for item in payload["trace"])
 
 
+# ---------------------------------------------------------------------------
+# 导出的措辞与 --pause-at 的实际行为对齐（审查 M3）
+# ---------------------------------------------------------------------------
+
+
+def test_the_inspect_command_warns_when_pause_at_truncates_the_export(
+    tmp_path: Path, capsys
+) -> None:
+    """`--pause-at` 与 `--export` 同时给 → **stderr 上有一行响亮提示**（审查 M3）。
+
+    **文档说"完整"、行为给的是"截至暂停点"**——不响亮就等于骗人。
+    """
+    target = tmp_path / "trace.jsonl"
+    exit_code = main(["inspect", "--frames", "5", "--pause-at", "2", "--export", str(target)])
+
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "pause-at" in err, "没提示 --pause-at 截断了导出"
+    assert "不是完整轨迹" in err, "没提示导出的不是完整轨迹"
+
+
+def test_the_export_stops_at_the_pause_point(tmp_path: Path, capsys) -> None:
+    """**面板停在哪，导出就到哪**——`--pause-at` 会截断它（审查 M3）。
+
+    **ADR-081**：面板与导出器是同一个对象——**视图里有的就是能导出的**。
+    """
+    target = tmp_path / "trace.jsonl"
+    main(["inspect", "--frames", "5", "--pause-at", "2", "--export", str(target)])
+    capsys.readouterr()
+
+    events = trace_from_jsonl(target.read_text(encoding="utf-8"))
+    assert events, "导出是空的"
+    assert all(item.frame < 2 for item in events), "面板停住了，导出却还有暂停点之后的事件"
+
+
+def test_the_export_is_not_warned_about_without_pause_at(tmp_path: Path, capsys) -> None:
+    """**没有 `--pause-at` 就不该有那句提示**（反向判据）。
+
+    **提示是响亮，不是聒噪**——没有截断就没有提示。
+    """
+    target = tmp_path / "trace.jsonl"
+    exit_code = main(["inspect", "--frames", "3", "--export", str(target)])
+
+    assert exit_code == 0
+    assert "不是完整轨迹" not in capsys.readouterr().err
+
+
 def test_the_inspect_command_rejects_a_negative_frame_count(capsys) -> None:
     """帧数为负 → **退出码 2**（与 `sim` 同一条口径）。"""
     assert main(["inspect", "--frames", "-1"]) == 2

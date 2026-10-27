@@ -24,7 +24,12 @@
   空间划分"，ADR-075 正是为了让 `replay:` 与 `game:` **在过滤时分开**；
 - **可暂停**（`--pause-at`）：跑到第 N 帧就**暂停视图**——之后**不再有新事件
   进入视图**，**内核照跑**（订阅者拦不住总线，也拦不住内核）；
-- **可导出**（`--export`）：把**完整轨迹**落成文件（JSON Lines）。
+- **可导出**（`--export`）：把**面板收到的那一段**落成文件（JSON Lines）。
+
+**"完整轨迹"的准确说法**（审查 M3）：ADR-081 定了「面板与导出器是同一个
+对象」——**面板停在哪，导出就到哪**。所以 `--export` 导出的是**面板收到的
+那一段**（不过滤、不受 `--limit` 影响），**`--pause-at` 会截断它**——
+两个一起给时 **stderr 上有一行响亮提示**。
 
 **面板的留存有界**（审查 M4）：面板是环形缓冲，默认只留**最新的 4096 条**
 （`DEFAULT_PANEL_LIMIT`）——长跑不会驻留百万级信封。**`--export` 时放开成
@@ -244,7 +249,10 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument(
         "--export",
         default=None,
-        help="把完整轨迹导出到这个文件（JSON Lines，一行一条）",
+        help=(
+            "把**面板收到的那一段**轨迹导出到这个文件"
+            "（JSON Lines，一行一条；`--pause-at` 会截断它）"
+        ),
     )
     inspect.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
@@ -391,8 +399,10 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     **暂停的是视图，不是内核**：`--pause-at` 之后**不再有新事件进入视图**，
     内核照跑（订阅者拦不住总线，也拦不住内核）。
 
-    **导出的是完整轨迹**（不过滤、不受 `--limit` 影响）——离线分析要的是
-    全量，视图的截断只影响**显示**。
+    **导出的是"面板收到的那一段"**（不过滤、不受 `--limit` 影响）——ADR-081
+    定了「面板与导出器是同一个对象」，所以**面板停在哪，导出就到哪**。
+    `--pause-at` 与 `--export` 同时出现时**响亮提示**（审查 M3）：文档说
+    "完整"、行为给的是"截至暂停点"，那是文档与行为不一致。
     """
     frames = int(args.frames)
     if frames < 0:
@@ -407,6 +417,14 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         print("暂停帧号不能为负", file=sys.stderr)
         return 2
     export_path = args.export
+    if export_path and pause_at is not None:
+        # **响亮提示**：文档说"完整轨迹"、行为给的是"截至暂停点"——**不响亮
+        # 就等于骗人**（审查 M3）。
+        print(
+            f"注意：--pause-at {pause_at} 让面板在那一帧停住，"
+            f"导出的是**截至该帧的那一段**，不是完整轨迹。",
+            file=sys.stderr,
+        )
 
     assembly = assemble(seed=int(args.seed), observability_enabled=False)
     # **面板要在事件开始流动之前订阅**——晚订阅的从 `bus.history()` 里取，
