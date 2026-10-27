@@ -454,6 +454,77 @@ def test_the_cli_replay_command_reports_a_broken_recording(
     assert "录像读不了" in capsys.readouterr().err
 
 
+def test_the_cli_replay_command_fails_when_the_recording_has_no_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """录像**没有局末四项** → **退出码非 0**（审查 H3）。
+
+    **"没比"不是"过了"**：没有基准就没有比对。退出码 0 会让脚本把一条
+    **没校验过**的录像放过去——所以这里必须非 0（**2** = 这次校验没做成）。
+    """
+    path = tmp_path / "no-baseline.jsonl"
+    path.write_text(
+        json.dumps({"version": "v1", "seed": 1, "rule": "standard", "outcome": None}) + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path)])
+
+    assert code != 0, "没有基准也退出 0——脚本会把「没比」当成「过了」"
+    assert code == 2, "「没比」要与「四项不等」（1）区分开"
+    assert "没有局末四项" in capsys.readouterr().err
+
+
+def test_the_cli_replay_command_fails_when_the_recording_has_no_baseline_in_json_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**JSON 形态也一样非 0**——`equal` 是 `null` 就是"没比"。"""
+    path = tmp_path / "no-baseline.jsonl"
+    path.write_text(
+        json.dumps({"version": "v1", "seed": 1, "rule": "standard", "outcome": None}) + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path), "--json"])
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["equal"] is None, "没有基准就没有可比的东西"
+
+
+def test_the_cli_replay_command_exits_one_when_the_four_items_differ(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**四项不等 → 退出码 1**（与"没比"的 2 区分开）。
+
+    **这条是 H3 的反向判据**：把"没比"也当成 1 或者 0，这条与上面那条就
+    分不开了——脚本需要能分辨"没比"与"比了没过"。
+    """
+    path = tmp_path / "mismatch.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "seed": 1,
+                "rule": "standard",
+                "outcome": {
+                    "fingerprint": "这不是这一局的指纹",
+                    "score": 0,
+                    "lines": 0,
+                    "piecesPlaced": 0,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    code = main(["replay", str(path)])
+
+    assert code == 1, "四项不等是 1，不是 2"
+    assert "四项比对：不等" in capsys.readouterr().out
+
+
 def test_the_recording_round_trip_keeps_the_outcome() -> None:
     """录像 → JSON Lines → 录像，**局末四项也要带回来**。"""
     recording = _recording(

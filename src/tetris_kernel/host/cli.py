@@ -36,10 +36,19 @@
 ## `replay` 的输出
 
 **四项比对**：录像里的局末四项 vs 重放出来的四项——**逐条相等**才算过
-（AC-1 · spec §7.3）。录像里没有局末四项时，只输出重放的四项（没有基准就
-没有比对）。
+（AC-1 · spec §7.3）。
 
-**四项不等时退出码是 1**——脚本能直接判成败。
+**退出码三条口径**：
+
+| 情形 | 退出码 | 为什么 |
+| --- | --- | --- |
+| 四项全等 | **0** | 过了 |
+| 四项不等 | **1** | 检查做了，没过 |
+| **录像里没有局末四项** | **2** | **没比**——"没比"不是"过了"（审查 H3） |
+
+**没有基准就没有比对**：录像里没有局末四项时，只输出重放的四项——**但那不
+算通过**，退出码是 2。脚本把 0 当成"过了"，一条**没校验过**的录像就放过去
+了。
 
 ## `sim` 的输出
 
@@ -285,7 +294,8 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     **可观测系统一律不装配**（`observability_enabled=False`）：重放要的是
     **内核逐帧一致**，多几个订阅者只会多几条事件。
 
-    **四项不等时退出码是 1**——脚本能直接判成败。
+    **四项不等时退出码是 1**；**录像里没有局末四项时退出码是 2**（没比不是
+    过了 · 审查 H3）——脚本能直接判成败。
     """
     path = Path(args.file)
     try:
@@ -330,15 +340,23 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         print(f"重放分数：{items.score}")
         print(f"重放行数：{items.lines}")
         print(f"重放已放置方块数：{items.pieces_placed}")
-        if baseline is None:
-            print("录像里没有局末四项：无比对基准")
-        else:
+        if baseline is not None:
             print(f"录像棋盘指纹：{baseline.fingerprint}")
             print(f"录像分数：{baseline.score}")
             print(f"录像行数：{baseline.lines}")
             print(f"录像已放置方块数：{baseline.pieces_placed}")
             print(f"四项比对：{'全等' if equal else '不等'}")
-    return 0 if equal is not False else 1
+    if baseline is None:
+        # **没有基准就没有比对**——"没比"不是"过了"（审查 H3）。
+        #
+        # **退出码 2**：这次校验**没做成**（与"四项不等"的 1 区分开）——脚本
+        # 看到 0 就当"过了"，一条**没校验过**的录像就这么放过去了。
+        print(
+            "录像里没有局末四项：无比对基准可比（这次校验没做成，不算通过）",
+            file=sys.stderr,
+        )
+        return 2
+    return 0 if equal else 1
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
