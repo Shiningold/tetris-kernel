@@ -37,6 +37,25 @@ REPLAY_LIMITS = QuotaLimits(
 )
 
 
+def four_items_of(snapshot: Snapshot) -> FourItems:
+    """一份快照的**局末四项**（棋盘指纹 · 分数 · 行数 · 方块数）。
+
+    **为什么抽成函数**：四项里最要紧的是**棋盘指纹**——它只有内核那一份
+    算法（抄第二份就是第二个真相 · 架构 §7.1）。**重放驱动器**要它算重放
+    出来的四项，**装配层**要它把局末四项交给录像系统当比对基准——两处
+    必须算出同一个值，所以算法**只写这一份**。
+
+    **为什么住在宿主层**：系统层**不碰内核状态**（M2-D1）——它只拿到宿主
+    注入的一个"给我四项"的可调用对象（`OutcomeProvider`），**拿不到快照**。
+    """
+    return FourItems(
+        fingerprint=snapshot.board.structureFingerprint,
+        score=snapshot.score,
+        lines=snapshot.lines,
+        pieces_placed=snapshot.piecesPlaced,
+    )
+
+
 class KernelReplayDriver:
     """回放驱动器（**宿主实现**）：把录下的命令派发给一个**全新的内核实例**。
 
@@ -67,13 +86,7 @@ class KernelReplayDriver:
 
     def four_items(self) -> FourItems:
         """当前局面的四项（**棋盘指纹 · 分数 · 行数 · 方块数**）。"""
-        snapshot = self._kernel.snapshot()
-        return FourItems(
-            fingerprint=snapshot.board.structureFingerprint,
-            score=snapshot.score,
-            lines=snapshot.lines,
-            pieces_placed=snapshot.piecesPlaced,
-        )
+        return four_items_of(self._kernel.snapshot())
 
     def _publish_batch(self, drafts: tuple[EventDraft, ...]) -> None:
         """把一批草稿**逐条**转交给总线（宿主的活）。"""
@@ -84,4 +97,5 @@ class KernelReplayDriver:
 __all__ = [
     "REPLAY_LIMITS",
     "KernelReplayDriver",
+    "four_items_of",
 ]

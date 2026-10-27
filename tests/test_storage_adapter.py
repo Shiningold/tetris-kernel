@@ -10,6 +10,16 @@ M2 的落盘纪律有三条，**每一条都要有机器证据**：
 - **默认路径项目优先 → 不可写时回落 home**（ADR-074）→ 三条路径策略用例；
 - **写入只有一处**（ADR-074）→ `test_only_one_place_is_written_to`。
 
+## M2 审查 H1 补上第四条：**一个产物一个文件**（ADR-085）
+
+三个产物（日志 · 指标 · 录像）**各有各的出口**——共用一个的话，**后写的覆盖
+先写的**（用覆盖语义写日志，文件里只剩最后一条）。**"写入只有一处"说的是
+一条落盘路径，不是一个文件。**
+
+**两种写入语义不是一个类的两种模式**：`FileSink`（**覆盖** · 整份交出）·
+`AppendSink`（**追加** · 一条一条）——用错了就是**数据丢**，所以让类型把
+这件事说清楚。
+
 ## 为什么"项目不可写"靠注入而不是靠改文件属性
 
 Windows 上把目录设成只读**拦不住本进程的写入**（ACL 与只读位的语义不同），
@@ -31,9 +41,17 @@ from pathlib import Path
 
 import pytest
 
-from tetris_kernel.adapters import FileSink
-from tetris_kernel.host import assemble, default_sink, resolve_data_dir
+from tetris_kernel.adapters import AppendSink, FileSink
+from tetris_kernel.host import (
+    ObservableSinks,
+    assemble,
+    default_sink,
+    default_sinks,
+    resolve_data_dir,
+)
 from tetris_kernel.host import assembly as host_assembly
+from tetris_kernel.host.loop import HeadlessLoop
+from tetris_kernel.systems.replay.format import recording_filename
 
 #: 包根（供扫描 `systems/` 用）。
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "tetris_kernel"
@@ -245,6 +263,152 @@ def test_the_storage_adapter_does_not_fail_silently(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 存储适配器：两种写入语义（ADR-085）
+# ---------------------------------------------------------------------------
+
+
+def test_the_append_sink_keeps_everything_it_is_given(tmp_path: Path) -> None:
+    """**追加语义**：写两次，文件里两条都在（**不是只剩最后一条**）。
+
+    **这条就是 H1 的判据**：用覆盖语义写日志，文件里就只剩最后一条日志。
+    """
+    target = tmp_path / "log.jsonl"
+    sink = AppendSink(target)
+
+    sink(b"first\n")
+    sink(b"second\n")
+
+    assert target.read_bytes() == b"first\nsecond\n"
+
+
+def test_the_append_sink_creates_missing_directories(tmp_path: Path) -> None:
+    """目标目录不存在 → **自动创建**（含父目录，ADR-074）。"""
+    target = tmp_path / "deep" / "nested" / "log.jsonl"
+
+    AppendSink(target)(b"payload")
+
+    assert target.read_bytes() == b"payload"
+
+
+def test_the_append_sink_reports_how_many_bytes_it_wrote(tmp_path: Path) -> None:
+    """**已写字节数**可查（指标与测试要用）。"""
+    sink = AppendSink(tmp_path / "log.jsonl")
+
+    sink(b"12345")
+    sink(b"678")
+
+    assert sink.bytes_written == 8
+    assert sink.path == tmp_path / "log.jsonl"
+
+
+def test_the_append_sink_does_not_fail_silently(tmp_path: Path) -> None:
+    """写不下去 → **当场抛错**，不吞（与 `FileSink` 同款口径 · ADR-064）。"""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("我是个文件，不是目录", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        AppendSink(blocker / "log.jsonl")(b"payload")
+
+
+# ---------------------------------------------------------------------------
+# 一个产物一个文件（ADR-085 · 审查 H1）
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_sinks_give_each_product_its_own_file(tmp_path: Path) -> None:
+    """**日志 · 指标 · 录像各有各的文件**（ADR-085 · 审查 H1）。
+
+    **这条就是 H1 的判据**：三个产物共用一个出口的话，**后写的覆盖先写的**
+    ——日志文件里只剩最后一条。
+    """
+    sinks, directory = default_sinks(project_root=tmp_path, home=tmp_path / "home")
+
+    assert isinstance(sinks.log, AppendSink)
+    assert isinstance(sinks.metrics, AppendSink)
+    assert isinstance(sinks.recording, FileSink)
+
+    paths = {sinks.log.path, sinks.metrics.path, sinks.recording.path}
+    assert len(paths) == 3, f"三个产物落到了同一个文件：{paths}"
+    assert all(path.parent == directory.path for path in paths)
+
+
+def test_the_log_and_metrics_sinks_append_while_the_recording_sink_replaces(
+    tmp_path: Path,
+) -> None:
+    """**追加与覆盖各归各**——用错了就是数据丢。
+
+    **两种语义不是一个类的两种模式**（ADR-085）：日志与指标**一条一条往外
+    冒**（追加），录像是**整份交出**（覆盖）。
+    """
+    sinks, _directory = default_sinks(project_root=tmp_path, home=tmp_path / "home")
+    assert isinstance(sinks.log, AppendSink)
+    assert isinstance(sinks.metrics, AppendSink)
+    assert isinstance(sinks.recording, FileSink)
+
+    sinks.log(b"one\n")
+    sinks.log(b"two\n")
+    sinks.metrics(b"m1\n")
+    sinks.metrics(b"m2\n")
+    sinks.recording(b"first")
+    sinks.recording(b"second")
+
+    assert sinks.log.path.read_text(encoding="utf-8") == "one\ntwo\n"
+    assert sinks.metrics.path.read_text(encoding="utf-8") == "m1\nm2\n"
+    assert sinks.recording.path.read_bytes() == b"second"
+
+
+def test_the_recording_file_name_matches_the_recording_format(tmp_path: Path) -> None:
+    """**录像的文件名是录像格式的一部分**（spec §7.1）——不许这儿另起一个。
+
+    **同一个规则集 → 同一个录像文件名**（`recording_filename()` 是唯一真相）。
+    """
+    sinks, _directory = default_sinks(
+        rule_id="standard", project_root=tmp_path, home=tmp_path / "home"
+    )
+    assert isinstance(sinks.recording, FileSink)
+
+    assert sinks.recording.path.name == recording_filename("standard")
+    assert sinks.recording.path.name == "recording-standard.jsonl"
+
+
+def test_a_rule_id_that_could_escape_the_data_dir_is_refused(tmp_path: Path) -> None:
+    """**路径分隔符不许进文件名**——当场报错，不悄悄改写。
+
+    **文件名要能反查回规则集**：把 `a/b` 改成 `a-b`，查录像时才知道自己拿
+    错了——所以**错了就报错**。
+    """
+    with pytest.raises(ValueError, match="规则集标识"):
+        default_sinks(rule_id="../逃逸", project_root=tmp_path, home=tmp_path / "home")
+
+
+def test_the_three_products_really_land_in_three_files(tmp_path: Path) -> None:
+    """**端到端**：日志 · 指标 · 录像**各写各的**，日志文件里**不止一条**。
+
+    **这是 H1 的反向判据**：把三个出口换成同一个（覆盖语义），日志文件里就
+    只剩最后一条——这条必红。
+    """
+    sinks, _directory = default_sinks(project_root=tmp_path, home=tmp_path / "home")
+    assembly = assemble(seed=20261026, sinks=sinks)
+    loop = HeadlessLoop(assembly)
+    loop.start()
+    # **跑够一个周期点**（600 帧）——录像在周期点落一次盘。
+    loop.run_frames(600)
+
+    log_file = tmp_path / ".tetris-data" / "log-standard.jsonl"
+    metrics_file = tmp_path / ".tetris-data" / "metrics-standard.jsonl"
+    recording_file = tmp_path / ".tetris-data" / "recording-standard.jsonl"
+
+    assert log_file.exists(), "日志文件没落盘"
+    assert metrics_file.exists(), "指标文件没落盘"
+    assert recording_file.exists(), "录像文件没落盘"
+
+    log_lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert len(log_lines) > 1, f"日志文件里只剩 {len(log_lines)} 条——那是覆盖语义"
+    metric_lines = metrics_file.read_text(encoding="utf-8").splitlines()
+    assert len(metric_lines) >= 100, "指标采样没落盘"
+
+
+# ---------------------------------------------------------------------------
 # 宿主注入 sink 与可观测总开关
 # ---------------------------------------------------------------------------
 
@@ -255,17 +419,17 @@ def test_the_host_injects_the_sink_into_the_observable_systems(
     """**宿主注入 sink**（M2-D2）：系统拿到的是宿主给的那一个出口。"""
     seen: dict[str, object] = {}
 
-    def fake_factory(bus: object, sink: object) -> object:
-        seen["sink"] = sink
+    def fake_factory(bus: object, sinks: object, outcome_provider: object) -> object:
+        seen["sinks"] = sinks
         return object()
 
     monkeypatch.setattr(host_assembly, "OBSERVABLE_SYSTEM_FACTORIES", (fake_factory,))
     captured: list[bytes] = []
 
-    assembly = assemble(sink=captured.append)
+    assembly = assemble(sinks=ObservableSinks(log=captured.append))
 
-    assert seen["sink"] is not None
-    assert assembly.sink is not None
+    assert seen["sinks"] is not None
+    assert assembly.sinks.log is not None
     # 注入 ≠ 已写入：字节是系统写出来的，不是装配时写出来的。
     assert captured == []
 
@@ -298,8 +462,8 @@ def test_the_observability_switch_stops_assembly_not_just_subscription(
     """
     calls: list[object] = []
 
-    def fake_factory(bus: object, sink: object) -> object:
-        calls.append((bus, sink))
+    def fake_factory(bus: object, sinks: object, outcome_provider: object) -> object:
+        calls.append((bus, sinks))
         return object()
 
     monkeypatch.setattr(host_assembly, "OBSERVABLE_SYSTEM_FACTORIES", (fake_factory,))
