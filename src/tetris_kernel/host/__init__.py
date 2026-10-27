@@ -28,6 +28,7 @@ from .assembly import (
     DATA_DIR_NAME,
     HOME_DIR_NAME,
     OBSERVABLE_SYSTEM_FACTORIES,
+    RULE_SETS,
     Assembly,
     DataDirectory,
     ObservableFactory,
@@ -37,6 +38,7 @@ from .assembly import (
     default_sink,
     default_sinks,
     resolve_data_dir,
+    rule_set_of,
 )
 from .clock import (
     DEFAULT_STEP_MS,
@@ -75,6 +77,7 @@ __all__ = [
     "OBSERVABLE_SYSTEM_FACTORIES",
     "RECOVER_FRAMES",
     "RECOVER_P99_MS",
+    "RULE_SETS",
     "THOUSAND_BASE_SEED",
     "THOUSAND_BUDGET_SECONDS",
     "TIERS",
@@ -98,4 +101,5 @@ __all__ = [
     "default_sink",
     "default_sinks",
     "resolve_data_dir",
+    "rule_set_of",
 ]

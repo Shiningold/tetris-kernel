@@ -48,9 +48,10 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from ..adapters.storage import AppendSink, FileSink
 from ..bus.bus import DEFAULT_HISTORY_LIMIT, EventBus
@@ -346,6 +347,27 @@ OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 规则集接线：标识 → 规则集
+# ---------------------------------------------------------------------------
+
+#: 规则集标识 → 规则集（**宿主层的接线表** · 变体属 M4）。
+#:
+#: **为什么在宿主层**：`rules/` 是**冻结区**（M2-D5）——"哪个标识对应哪个
+#: 规则集"是**宿主的接线决定**，不是规则层自己的事。**变体规则集来了就往
+#: 这张表里加一行**（M4）。
+#:
+#: **为什么不能拿标准规则集顶替**：标识写着"变体"、内核却跑标准规则——
+#: **重放出来的四项必然不等**，而报错只说"四项不等"，看不出"起错规则集了"。
+#: **表里没有就是没有**（`rule_set_of()` 返回 `None`）。
+RULE_SETS: Mapping[str, RuleSet] = MappingProxyType({"standard": STANDARD_RULESET})
+
+
+def rule_set_of(rule_id: str) -> RuleSet | None:
+    """按标识取规则集（**没有就是没有**——不拿别的规则集顶替）。"""
+    return RULE_SETS.get(rule_id)
+
+
 @dataclass(frozen=True)
 class Assembly:
     """装配好的三件套（**内核 / 总线 / 时钟**）+ M2 的可观测接线。
@@ -469,6 +491,7 @@ def assemble(
 __all__ = [
     "DATA_DIR_NAME",
     "HOME_DIR_NAME",
+    "RULE_SETS",
     "Assembly",
     "DataDirectory",
     "ObservableFactory",
@@ -479,4 +502,5 @@ __all__ = [
     "default_sink",
     "default_sinks",
     "resolve_data_dir",
+    "rule_set_of",
 ]

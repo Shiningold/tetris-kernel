@@ -81,7 +81,7 @@ from ..bus.envelope import Envelope
 from ..systems.metrics.trace import EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
-from .assembly import assemble
+from .assembly import assemble, rule_set_of
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
 
@@ -289,13 +289,15 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     """`replay`：读录像 → 重放 → 输出四项比对。
 
     **重放要按录像头的种子与规则集起一个全新内核**（spec §7.2）——起错规则
-    集，重放出来的就不是同一局。
+    集，重放出来的就不是同一局。**规则集没登记就明确拒绝**（审查 M1）：不拿
+    标准规则集顶替。
 
     **可观测系统一律不装配**（`observability_enabled=False`）：重放要的是
     **内核逐帧一致**，多几个订阅者只会多几条事件。
 
     **四项不等时退出码是 1**；**录像里没有局末四项时退出码是 2**（没比不是
-    过了 · 审查 H3）——脚本能直接判成败。
+    过了 · 审查 H3）；**规则集没登记时退出码是 2**（起错规则集 · 审查 M1）
+    ——脚本能直接判成败。
     """
     path = Path(args.file)
     try:
@@ -309,8 +311,21 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         print(f"录像读不了：{error}", file=sys.stderr)
         return 2
 
+    # **按录像头的规则集起内核**——起错规则集，重放出来的就不是同一局。
+    # **表里没有就明确拒绝**（审查 M1）：拿标准规则集硬跑，重放出来的四项
+    # 必然不等，而报错只说"四项不等"，看不出"起错规则集了"。
+    rule_set = rule_set_of(recording.rule)
+    if rule_set is None:
+        print(
+            f"录像的规则集 {recording.rule!r} 没有登记的规则集："
+            "变体规则的重放待 M4（M2 只认标准规则集）",
+            file=sys.stderr,
+        )
+        return 2
+
     assembly = assemble(
         seed=recording.seed,
+        rule_set=rule_set,
         rule_id=recording.rule,
         mode="replay",
         limits=REPLAY_LIMITS,
