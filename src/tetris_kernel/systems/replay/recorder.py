@@ -33,6 +33,10 @@
 
 每条命令记：**帧号 · 命令类型 · 参数 · 来源**。
 
+**参数不合契约就当场报错**（审查 M2）：静默丢参是最坏的一种——录出来的命令
+少了一半，重放时状态对不上，**却查不出原因**。总线把抛出的错转成
+`kernel:error`，**其余订阅者不受影响**。
+
 **来源透传原值**（ADR-062）：回放时**不改写成 `replay`**——改写会让 FR-6.4
 的事件流回归基线永久失配。
 
@@ -262,22 +266,33 @@ def _int_of(payload: Payload, name: str) -> int:
 
 
 def _args_of(payload: Payload) -> Args:
-    """取负载里的 `args`（**收进契约的取值域**——禁浮点，参数参与重放不能漂）。"""
+    """取负载里的 `args`（**收进契约的取值域**——禁浮点，参数参与重放不能漂）。
+
+    **不合契约就当场报错，不静默丢参**（审查 M2）：原来遇到不合形状的 `args`
+    就返回 `()`——**参数被悄悄扔掉**，录出来的命令少了一半，重放时状态对不上
+    却查不出原因。**同一个概念（录像里的参数必须符合契约）现在只有一种
+    处理**：不合就报错（`_args_value` 对浮点、`format.py` 的 `_restore_args`
+    对缺参数，早就是当场报错）。
+
+    **"没有参数"不是"参数不合契约"**：契约里 `command:accepted` 的 `args`
+    字段**必在**（无参命令的值是**空元组**）——所以"字段不在"本身就是不合
+    契约。
+    """
     for key, value in payload:
         if key != "args":
             continue
         if not isinstance(value, tuple):
-            return ()
+            raise ValueError(f"命令参数的形状不合契约：{value!r}")
         restored: list[tuple[str, ArgsValue]] = []
         for entry in value:
             if not isinstance(entry, tuple) or len(entry) != 2:
-                return ()
+                raise ValueError(f"命令参数的项不合契约：{entry!r}")
             name, raw = entry
             if not isinstance(name, str):
-                return ()
+                raise ValueError(f"命令参数的项不合契约：{entry!r}")
             restored.append((name, _args_value(raw)))
         return tuple(restored)
-    return ()
+    raise ValueError("命令负载里没有 args 字段（契约要求它必在）")
 
 
 def _args_value(raw: JSONValue) -> ArgsValue:
