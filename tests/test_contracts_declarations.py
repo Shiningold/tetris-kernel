@@ -2524,6 +2524,9 @@ EXPECTED_SYSTEM_MANIFESTS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]
         "systems/replay/",
         True,
     ),
+    # M3 的两个示范系统（**只凭新增文件就接上了** —— 声明与工厂同源）
+    "achievements": ("1", (GLOBAL_SUBSCRIPTION,), (), "achievements", False),
+    "rotations": ("1", ("piece:rotated",), (), "rotations", True),
 }
 
 
