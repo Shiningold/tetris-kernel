@@ -37,13 +37,18 @@ Write-Host '[2/4] 构建 sdist + wheel' -ForegroundColor Cyan
 & $Uv build --out-dir $Dist
 if ($LASTEXITCODE -ne 0) { throw 'uv build 失败' }
 
-# ── 3. 两个 exe（PyInstaller）────────────────────────────────────────
+# ── 3. 三个 exe（PyInstaller）────────────────────────────────
 Write-Host '[3/4] 构建 exe' -ForegroundColor Cyan
-foreach ($Spec in @('tetris-cli', 'tetris-play')) {
+foreach ($Spec in @('tetris-cli', 'tetris-play', 'tetris-graphics')) {
     & $Python -m PyInstaller --clean --noconfirm --distpath $Dist --workpath $Work `
         (Join-Path $Repo "release\$Spec.spec")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 失败：$Spec" }
 }
+
+# **图形版自检**（**真跑** —— tkinter 的 Tcl/Tk 资源打包后还在不在，只能真跑）
+Write-Host '[3b/4] 图形版自检（开真窗口跑 30 帧）' -ForegroundColor Cyan
+& (Join-Path $Dist 'tetris-graphics.exe') --selftest
+if ($LASTEXITCODE -ne 0) { throw "图形版自检失败（退出码 $LASTEXITCODE）" }
 
 # ── 4. 产物清单 + 校验和 ─────────────────────────────────────────────
 Write-Host '[4/4] 产物清单' -ForegroundColor Cyan
