@@ -263,13 +263,28 @@ def test_the_global_subscription_is_still_allowed_for_variant_systems() -> None:
 
 
 def test_the_baseline_is_unchanged_by_the_expansion() -> None:
-    """**S2 是扩容不是刷新**——契约基线一个字节都没动（408 条零变化）。"""
+    """**S2 是扩容不是刷新**——契约基线一个字节都没动（408 条零变化）。
+
+    **这条判据在 S2 当时成立**：变体目录里**还没有带系统的变体**。
+    **S4 之后变体 B 落地了**（它带系统 → 它的声明进了基线 · 408 → 409）→
+    **这条用例改成守"扩容本身不刷基线"**：**基线里的系统条目**只与
+    **真的声明了的系统**一一对应——**扫描根扩容不产生任何新条目**。
+    """
+    import json
+    from pathlib import Path
+
     from tetris_kernel.host.discovery import declared_manifests as declared
 
-    # **仓里的变体目录此刻还没有带系统的变体**（变体 B 是 S4 的产物）→
-    # 汇总清单与扩容前**逐条相等**。
+    # **汇总清单里，变体目录贡献的声明**（扩容的作用就是让它可见）。
     names = set(declared())
-    assert names == {"log", "metrics", "replay", "achievements", "rotations"}
+    assert "growth" in names
+    # **基线里的系统条目 ≡ 声明了的系统**（**扩容不刷基线**）。
+    baseline = json.loads(
+        (Path(__file__).parent / "baseline" / "contracts_baseline.json").read_text(encoding="utf-8")
+    )
+    entries = baseline["entries"]
+    system_keys = {key for key in entries if str(key).startswith("system/")}
+    assert {key.split("/", 1)[1] for key in system_keys} == names
 
 
 def test_the_import_purity_guard_covers_the_variant_directory(

@@ -56,8 +56,14 @@ def test_builtin_variants_are_registered_with_matching_rule_ids() -> None:
         manifest = variant_of(spec.name)
         assert manifest is not None
         assert manifest.ruleId == spec.ruleId
-        assert manifest.systems == ()
         assert signature_mismatches(manifest.ruleSet) == ()
+    # **变体 A 不挂系统**（它只换规则集）。
+    assert variant_of("gravity-right").systems == ()  # type: ignore[union-attr]
+    # **变体 B 挂它的系统**（玩法差异来自系统 · 规则集是标准的）。
+    growth = variant_of("growth")
+    assert growth is not None
+    assert growth.ruleId == "standard"
+    assert growth.systems == ("growth",)
 
 
 def test_builtin_variant_rule_sets_use_distinct_axes() -> None:
@@ -91,10 +97,11 @@ def test_cli_variants_json_is_machine_readable() -> None:
         assert main(["variants", "--json"]) == 0
     payload = json.loads(buffer.getvalue())
     names = {item["name"] for item in payload["variants"]}
-    assert {"gravity-down", "gravity-right", "gravity-left"} <= names
+    assert {"gravity-down", "gravity-right", "gravity-left", "growth"} <= names
     for item in payload["variants"]:
         assert item["ruleId"]
-        assert item["systems"] == []
+        # **附带系统与登记表逐条一致**（变体 A 一个都没有 · 变体 B 挂着 growth）。
+        assert item["systems"] == list(variant_of(item["name"]).systems)  # type: ignore[union-attr]
 
 
 def test_cli_sim_runs_a_variant_game() -> None:

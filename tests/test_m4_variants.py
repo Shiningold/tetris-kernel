@@ -126,19 +126,23 @@ def test_the_rule_set_view_sees_later_registrations():
 
 
 def test_a_variant_may_reuse_an_already_registered_rule_set():
-    """变体 B 的情形：**玩法差异来自挂的系统**，规则集就是标准的。"""
-    manifest = _manifest(name="growth", ruleId="standard", systems=("growth-system",))
+    """变体 B 的情形：**玩法差异来自挂的系统**，规则集就是标准的。
+
+    **假变体名用 `demo-growth`**（**不与真变体 B 的 `growth` 撞名**）——
+    标识是键，**撞名当场报错**。
+    """
+    manifest = _manifest(name="demo-growth", ruleId="standard", systems=("growth-system",))
     register_variant(manifest)
-    assert variant_of("growth") is manifest
-    assert variant_systems("growth") == ("growth-system",)
+    assert variant_of("demo-growth") is manifest
+    assert variant_systems("demo-growth") == ("growth-system",)
     # **标准规则集还是那一个**——没有被换掉，也没有被重复登记。
     assert RULE_SETS["standard"] is STANDARD_RULESET
-    assert variant_rule_set("growth") is STANDARD_RULESET
+    assert variant_rule_set("demo-growth") is STANDARD_RULESET
 
 
 def test_the_variant_name_and_the_rule_set_id_are_separate():
     """变体标识与规则集标识**是两个字段**（混成一个，变体 B 就没法登记）。"""
-    manifest = _manifest(name="growth", ruleId="standard")
+    manifest = _manifest(name="demo-growth", ruleId="standard")
     assert manifest.name != manifest.ruleId
 
 
