@@ -35,6 +35,13 @@ type ConfigValue = int | float | str | bool | None
 #: 系统的配置（键 → 值 · **顺序固定**的不可变元组）。
 type SystemConfig = tuple[tuple[str, ConfigValue], ...]
 
+#: 落盘出口（**宿主注入的可调用对象** · ADR-064）。
+#:
+#: **为什么系统侧自己写一份别名**：`systems/` **不能** import `host/`
+#: （依赖方向），拿不到 `host.assembly.Sink`——它是**同一个可调用类型**
+#: （结构化类型），这里自己写一份即可（**别名不是契约，不进基线**）。
+type Sink = Callable[[bytes], None]
+
 
 class CommandChannel:
     """系统派命令的通道 —— **可撤销**（M3-D1 的核心）。
@@ -77,17 +84,21 @@ class CommandChannel:
 class InstallContext:
     """装系统时递给工厂的**上下文**。
 
-    字段：**名字** · **总线** · **命令通道** · **配置**。
+    字段：**名字** · **总线** · **命令通道** · **配置** · **落盘出口**。
 
     **上下文里没有内核**：系统层**只订阅事件 + 派发命令**（M3-D3），它连内核
     对象都不该看见——**最窄能力原则**。要派命令就派命令（走通道），要读状态就
     读事件负载。
+
+    **落盘出口（`sink`）是 `None` = 不落盘**：系统**知道有 sink，不知道路径**
+    （ADR-064）——**它自己不许 `open()`**（M3-D5）。
     """
 
     name: str
     bus: EventBus[Snapshot]
     commands: CommandChannel
     config: SystemConfig
+    sink: Sink | None = None
 
 
 #: 系统的工厂：拿一份安装上下文，造出系统实例。
@@ -110,6 +121,7 @@ __all__ = [
     "CommandChannel",
     "ConfigValue",
     "InstallContext",
+    "Sink",
     "SystemConfig",
     "SystemEntry",
     "SystemFactory",

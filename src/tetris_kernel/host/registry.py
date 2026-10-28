@@ -52,7 +52,7 @@ M3 的系统生命周期**只有两个动作**：**装上** 与 **摘下**（spe
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import cast
@@ -67,10 +67,18 @@ from ..systems.context import (
     CommandChannel,
     ConfigValue,
     InstallContext,
+    Sink,
     SystemConfig,
     SystemEntry,
     SystemFactory,
 )
+
+#: **按系统名给落盘出口**的工厂（宿主侧造）。
+#:
+#: **为什么是「按名字问」而不是「一张表」**：宿主**不认识具体系统**（M3-D2 的
+#: 纪律反过来用在这里）——它只知道"有个系统叫这个名字，给它一个出口"。
+#: **返回 `None` = 这个系统不落盘**。
+type SystemSinkFactory = Callable[[str], Sink | None]
 
 #: 装卸事件（契约已登记 · 产出者 `host`）。
 SYSTEM_INSTALLED_EVENT = "kernel:system:installed"
@@ -116,12 +124,15 @@ class SystemRegistry:
         bus: EventBus[Snapshot],
         kernel: Kernel,
         catalog: Mapping[str, SystemEntry],
+        system_sink: SystemSinkFactory | None = None,
     ) -> None:
         self._bus = bus
         self._kernel = kernel
         self._catalog: Mapping[str, SystemEntry] = MappingProxyType(dict(catalog))
         self._installed: dict[str, InstalledSystem] = {}
         self._problems: list[str] = []
+        #: **按系统名给落盘出口**的工厂（`None` = 装上的系统都不落盘）。
+        self._system_sink = system_sink
 
     # ------------------------------------------------------------------
     # 只读视图
@@ -179,6 +190,15 @@ class SystemRegistry:
             bus=self._bus,
             commands=channel,
             config=_config_of(config),
+            # **落盘出口按名字问宿主**（`None` = 这个系统不落盘）——
+            # 系统**知道有 sink，不知道路径**（ADR-064）。
+            # **只有声明 `needsSink=True` 的系统才拿到出口**：不需要落盘的
+            # 系统（成就是事件）**不接出口**——出口给多了就是白给。
+            sink=(
+                None
+                if self._system_sink is None or not entry.manifest.needsSink
+                else self._system_sink(name)
+            ),
         )
         instance = entry.factory(context)
         subscriptions = self._subscribe(entry.manifest, instance)
@@ -289,6 +309,7 @@ __all__ = [
     "ConfigValue",
     "InstallContext",
     "InstalledSystem",
+    "Sink",
     "SystemAlreadyInstalledError",
     "SystemConfig",
     "SystemEntry",
@@ -296,5 +317,6 @@ __all__ = [
     "SystemNotInstalledError",
     "SystemRegistry",
     "SystemRegistryError",
+    "SystemSinkFactory",
     "UnknownSystemError",
 ]

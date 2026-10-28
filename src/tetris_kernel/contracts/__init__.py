@@ -19,6 +19,7 @@ from .commands import (
     COMMAND_TYPE_LITERAL,
     COMMAND_TYPES,
     COMMANDS,
+    CROSS_CUT_REJECT_REASONS,
     LIFECYCLE_REJECT_REASONS,
     REJECT_REASON_CATEGORIES,
     REJECT_REASON_CATEGORY_LABELS,
@@ -26,6 +27,7 @@ from .commands import (
     CommandArg,
     CommandSpec,
     is_lifecycle_gated,
+    missing_cross_cut_reasons,
 )
 from .events import (
     CONTRACT_VERSION,
@@ -115,6 +117,7 @@ __all__ = [
     "CONTRACT_VERSION",
     "COORDINATE_CONVENTIONS",
     "COORD_CELLS",
+    "CROSS_CUT_REJECT_REASONS",
     "ENVELOPE_FIELDS",
     "EVENT_TYPES",
     "GLOBAL_SUBSCRIPTION",
@@ -163,6 +166,7 @@ __all__ = [
     "check_manifest_types",
     "is_lifecycle_gated",
     "manifest_canonical_text",
+    "missing_cross_cut_reasons",
     "namespace_of",
     "register_system_manifest",
     "unregister_system_manifest",

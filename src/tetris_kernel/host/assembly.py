@@ -61,13 +61,14 @@ from ..kernel.core import (
     DEFAULT_BOARD_WIDTH,
     DEFAULT_HIDDEN_ROWS,
     Kernel,
+    RuleSetResolver,
 )
 from ..kernel.quota import DEFAULT_LIMITS, QuotaLimits
 from ..kernel.snapshot import Snapshot
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
-from ..systems.context import InstallContext, SystemEntry, SystemFactory
+from ..systems.context import InstallContext, Sink, SystemEntry, SystemFactory
 from ..systems.log import LogSystem, LogTarget, SinkTarget
 from ..systems.log.manifest import SYSTEM_MANIFEST as LOG_MANIFEST
 from ..systems.metrics import MetricsSystem
@@ -77,16 +78,8 @@ from ..systems.replay.format import recording_filename
 from ..systems.replay.manifest import SYSTEM_MANIFEST as REPLAY_MANIFEST
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 from .performance import DegradationController
-from .registry import SystemRegistry
+from .registry import SystemRegistry, SystemSinkFactory
 from .replay import four_items_of
-
-#: 落盘出口（**装配约定，不属于契约面** —— spec-M2 §3.3 · ADR-064 / ADR-074）。
-#:
-#: **为什么只是 `Callable[[bytes], None]`**：sink 是"把字节交出去"的出口，
-#: 落到哪儿由**宿主**决定。系统层**不需要 import 这个别名**——它是同一个
-#: 可调用类型（结构化类型），系统侧自己写 `Callable[[bytes], None]` 即可
-#: （`systems/` **不能** import `host/`，依赖方向使然）。
-type Sink = Callable[[bytes], None]
 
 
 @dataclass(frozen=True)
@@ -278,6 +271,36 @@ def default_sinks(
     )
 
 
+#: 系统落盘文件名的前缀（**一个系统一个文件** · ADR-085 的同款纪律）。
+SYSTEM_SINK_PREFIX = "system-"
+
+#: 系统落盘文件名的后缀（**JSON 行**——一行一条，机器可读、可 diff）。
+SYSTEM_SINK_SUFFIX = ".jsonl"
+
+
+def system_sink_factory(directory: Path) -> SystemSinkFactory:
+    """造一个**按系统名给落盘出口**的工厂（**宿主侧** · ADR-064 / ADR-085）。
+
+    **每个系统一个文件**（`system-<名字>.jsonl`）：与三个可观测产物**各有各的
+    文件**同款纪律——共用一个文件的话，后写的覆盖先写的。
+
+    **追加语义**（`AppendSink`）：系统的产出是**一条一条往外冒**的（旋转
+    计数一行一条）——不是"整份交出"。
+
+    **为什么宿主造这个工厂**：系统**知道有 sink，不知道路径**（M3-D5）——
+    路径是宿主的事，而且**只有宿主知道数据目录落在哪儿**（ADR-074 的回落
+    策略）。
+
+    **为什么按名字问，不给一张表**：宿主**不认识具体系统**——它只知道
+    "有个系统叫这个名字，给它一个出口"。
+    """
+
+    def path_of(name: str) -> Path:
+        return directory / f"{SYSTEM_SINK_PREFIX}{name}{SYSTEM_SINK_SUFFIX}"
+
+    return lambda name: AppendSink(path_of(name))
+
+
 #: 规则集标识在文件名里允许出现的字符（**路径安全** · 与录像格式模块同款）。
 _RULE_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
@@ -464,6 +487,16 @@ def rule_set_of(rule_id: str) -> RuleSet | None:
     return RULE_SETS.get(rule_id)
 
 
+def rule_set_resolver_of(rule_sets: Mapping[str, RuleSet]) -> RuleSetResolver:
+    """造一个**按标识取规则集**的解析器（ADR-061 · M3）。
+
+    **内核不许知道具体规则集**（NFR-5 的纯净度）——它只问"这个标识有没有
+    登记的规则集"，**问的是表，不是表里的东西**。取不到就是 `None`
+    （= 没登记 → `unknown_rule_set`，**明确拒绝，不顶替**）。
+    """
+    return rule_sets.get
+
+
 @dataclass(frozen=True)
 class Assembly:
     """装配好的三件套（**内核 / 总线 / 时钟**）+ M2 的可观测接线。
@@ -512,6 +545,8 @@ def assemble(
     degradation_enabled: bool = False,
     systems: Sequence[str] = (),
     system_catalog: Mapping[str, SystemEntry] | None = None,
+    rule_sets: Mapping[str, RuleSet] | None = None,
+    system_sink: SystemSinkFactory | None = None,
 ) -> Assembly:
     """把内核、总线、规则集与时钟拼成一件成品。
 
@@ -540,6 +575,14 @@ def assemble(
     - `system_catalog`：**额外的系统目录条目**（名字 → 声明 + 工厂）。省略时
       只有**内建系统**（日志 · 指标 · 录像）；**新系统由自动发现递进来**
       （`host/discovery.py`）。
+    - `rule_sets`：**规则集登记表**（标识 → 规则集 · ADR-061）。省略时用宿主层
+      的默认登记表（`RULE_SETS` · 只有标准规则集）。**这是运行期换规则集的
+      唯一来源**——内核只拿到一个"按标识取规则集"的解析器，**不知道表里有
+      什么**（NFR-5 的纯净度）。
+    - `system_sink`：**按系统名给落盘出口**的工厂（`None` = 装上的系统都不
+      落盘）。**只对声明 `needsSink=True` 的系统生效**（注册表门控）——
+      成就这类"产出是事件"的系统**不接出口**。**自动发现的系统也走这条路**
+      （M3-D2：新系统不装进内核，只经宿主接线拿到出口）。
 
     > **内建可观测系统要走注册表路径（好让它能被运行时摘下）**，就把
     > `observability_enabled` 关掉——**否则同一个系统会被装两遍**（可观测装配
@@ -557,6 +600,8 @@ def assemble(
         step_ms=step_ms,
         mode=mode,
         limits=limits,
+        # **换规则集的解析器**（ADR-061）：内核自己不知道有哪些规则集。
+        rule_set_resolver=rule_set_resolver_of(RULE_SETS if rule_sets is None else rule_sets),
     )
     bus: EventBus[Snapshot] = EventBus[Snapshot](
         # 视图 = 快照，**同一个 dataclass**（ADR-056）。
@@ -597,7 +642,12 @@ def assemble(
         )
         if system_catalog is not None:
             catalog.update(system_catalog)
-        registry = SystemRegistry(bus=bus, kernel=kernel, catalog=catalog)
+        registry = SystemRegistry(
+            bus=bus,
+            kernel=kernel,
+            catalog=catalog,
+            system_sink=system_sink,
+        )
         for name in systems:
             registry.install(name)
     return Assembly(
@@ -621,10 +671,14 @@ __all__ = [
     "ObservableFactory",
     "ObservableSinks",
     "OBSERVABLE_SYSTEM_FACTORIES",
+    "SYSTEM_SINK_PREFIX",
+    "SYSTEM_SINK_SUFFIX",
     "Sink",
+    "SystemSinkFactory",
     "assemble",
     "default_sink",
     "default_sinks",
     "resolve_data_dir",
     "rule_set_of",
+    "system_sink_factory",
 ]

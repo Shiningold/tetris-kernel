@@ -38,6 +38,14 @@
 - **配额是跨切的**（架构 §6.4）：命令数 / 轮次数配额超限时，被丢弃的**任何**
   命令都以 `quota_exceeded` 被拒——所以 17 条命令都带这个原因。`writeCells`
   的单帧写入格子数上限复用同一个原因值。
+  > **M3-C2 的订正**：这句话**一直是对的（内核的行为确实如此）**，但**声明
+  > 里有 5 条命令漏了它**（`start` / `pause` / `resume` / `reset` —— **M0
+  > 时代就漏了**，因为当时没人查这条跨切规则；`switchRuleSet` 是 M3 新增，
+  > 沿用了同一处遗漏）。M3 审查报告 M1 把它翻出来：**内核对它们全都发了
+  > `quota_exceeded`，而契约没说**——消费方按 `reject_reasons` 枚举拒绝面会
+  > **漏掉这一种**。**M3-C2 补齐这 5 条声明**，让契约与内核的实际行为对齐。
+  > **教训**：跨切规则写在 docstring 里**不等于**它落进了每一条声明——
+  > **「所有命令都带」这句话当时没有任何一处机器守着**。
 - **参数不合规格统一用 `invalid_argument`**：类型不对、参数多余都算，17 条命令
   都可能因它被拒。
 
@@ -275,7 +283,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "start",
             "开始一局新游戏。已开局时拒绝（状态不合法）。",
             lifecycle_gated=False,
-            reject_reasons=("invalid_argument", "illegal_transition"),
+            reject_reasons=("quota_exceeded", "invalid_argument", "illegal_transition"),
         ),
     ),
     (
@@ -284,7 +292,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "pause",
             "暂停内核（游戏内暂停）。内核级暂停期间帧号照走，但推进许可被门禁收回。",
             lifecycle_gated=False,
-            reject_reasons=("invalid_argument", "illegal_transition"),
+            reject_reasons=("quota_exceeded", "invalid_argument", "illegal_transition"),
         ),
     ),
     (
@@ -293,7 +301,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "resume",
             "恢复运行。`resume` 生效的那一帧不推进，这是设计不是缺陷（架构 §6.7）。",
             lifecycle_gated=False,
-            reject_reasons=("invalid_argument", "illegal_transition"),
+            reject_reasons=("quota_exceeded", "invalid_argument", "illegal_transition"),
         ),
     ),
     (
@@ -302,7 +310,7 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "reset",
             "重置：结束当前局并开新局，帧号 / 帧内序号 / 版本号一并归零（架构 §6.1）。",
             lifecycle_gated=False,
-            reject_reasons=("invalid_argument", "illegal_transition"),
+            reject_reasons=("quota_exceeded", "invalid_argument", "illegal_transition"),
         ),
     ),
     # ---------------- 移动与下落（4 条） ----------------
@@ -462,7 +470,12 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
             "切换被接受后局面重置，并发 `kernel:rule-set-changed` 与 `game:reset`。",
             args=(CommandArg("rule", "str", False, "目标规则集标识；必须已在宿主侧登记"),),
             lifecycle_gated=False,
-            reject_reasons=("invalid_argument", "illegal_transition", "unknown_rule_set"),
+            reject_reasons=(
+                "quota_exceeded",
+                "invalid_argument",
+                "illegal_transition",
+                "unknown_rule_set",
+            ),
         ),
     ),
 )
@@ -510,3 +523,59 @@ def is_lifecycle_gated(command_type: str) -> bool:
     if spec is None:
         raise ValueError(f"未知命令类型：{command_type!r}（可用：{', '.join(COMMAND_TYPES)}）")
     return spec.lifecycle_gated
+
+
+#: **跨切的拒绝原因**：不管哪条命令，**都可能被它拒**（架构 §6.4 / §6.5）。
+#:
+#: - `quota_exceeded`：命令数 / 轮次数配额超限时，被丢弃的**任何**命令；
+#: - `invalid_argument`：参数不合规格（类型不对 / 参数多余）。
+#:
+#: **为什么这张表存在**：这两条跨切规则**写在 docstring 里不等于它们落进了
+#: 每一条声明**——M3 审查报告 M1 就是这么翻出来的（`start` / `pause` /
+#: `resume` / `reset` 四条**从 M0 起就没声明** `quota_exceeded`，而内核
+#: 对它们全都发了）。**声明与内核行为分家**时，消费方按 `reject_reasons`
+#: 枚举拒绝面就会漏。
+#:
+#: **它守什么**：每条命令的 `reject_reasons` **必须**带上这里列的全部原因。
+#: **它不守什么**：命令**特有**的原因（门禁三值 / `no_active_piece` /
+#: `hold_already_used` / `level_out_of_range` / `out_of_bounds` /
+#: `not_authorized` / `write_condition_failed` / `illegal_transition` /
+#: `unknown_rule_set`）——那些由各自的声明说。
+CROSS_CUT_REJECT_REASONS: tuple[str, ...] = ("quota_exceeded", "invalid_argument")
+
+
+def missing_cross_cut_reasons() -> tuple[str, ...]:
+    """哪些命令**漏声明**了跨切的拒绝原因（**空 = 全都带了**）。
+
+    **这是一条机器可验的不变式**——M3-C2 之前它只活在 docstring 里，
+    没有任何一处守着，所以 5 条命令漏了四年。
+
+    **用法**：构造命令目录时当场调（漏了当场炸），以及测试里当门。
+    """
+    missing: list[str] = []
+    for name, spec in COMMANDS.items():
+        absent = [
+            reason for reason in CROSS_CUT_REJECT_REASONS if reason not in spec.reject_reasons
+        ]
+        if absent:
+            missing.append(f"{name} 缺 {', '.join(absent)}")
+    return tuple(missing)
+
+
+def _assert_cross_cut_reasons_declared() -> None:
+    """**跨切的拒绝原因必须每条命令都声明**——当场炸，不留到消费方踩空。
+
+    **为什么放在导入期**：M3 之前这条规则只写在 docstring 里，**没有任何一处
+    机器守着**——于是 `start` / `pause` / `resume` / `reset` 四条**从 M0 起
+    就没声明** `quota_exceeded`，而内核对它们全都发了（审查报告 M1）。
+    **声明与内核行为分家**时，消费方按 `reject_reasons` 枚举拒绝面就会漏。
+
+    **当场炸的处置**：`ValueError` 带出漏了哪几条、缺了哪些原因——**报错要能
+    直接看懂的**（与 `SystemManifest.__post_init__` 同一款纪律）。
+    """
+    missing = missing_cross_cut_reasons()
+    if missing:
+        raise ValueError(f"命令声明漏了跨切的拒绝原因：{'；'.join(missing)}")
+
+
+_assert_cross_cut_reasons_declared()

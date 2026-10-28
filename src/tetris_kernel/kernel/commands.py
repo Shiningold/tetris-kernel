@@ -95,10 +95,24 @@ class Command:
 #: 契约里的 `int` 类型表达式（`contracts/commands.py` 的 `CommandArg.type`）。
 _INT = "int"
 
+#: 契约里的 `str` 类型表达式（`contracts/commands.py` 的 `CommandArg.type`）。
+#:
+#: **M3 增补**：`switchRuleSet` 的参数是规则集标识（字符串）——契约面在 S1
+#: 就登记了它，但内核的参数校验原本只认 `int` / `INT_TUPLE` / `CELLS`，
+#: 于是那条命令的每一个参数都会被判 `invalid_argument`（**命令在契约里，
+#: 却永远发不出去**）。这是 **M3 唯一一次冻结区破例**的一半（另一半是
+#: `kernel/core.py` 的换规则集入口）。
+_STR = "str"
+
 
 def _is_int(value: object) -> bool:
     """是不是整数。**布尔不算整数**——`True` 进了录像会变成 `1`，回放就漂了。"""
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_str(value: object) -> bool:
+    """是不是字符串。"""
+    return isinstance(value, str)
 
 
 def _is_int_tuple(value: object) -> bool:
@@ -125,11 +139,14 @@ def _is_cells(value: object) -> bool:
 def _matches_type(value: object, type_expr: str) -> bool:
     """一个参数值是否符合契约声明的类型表达式。
 
-    **只认契约用到的三种类型表达式**（`int` / `INT_TUPLE` / `CELLS`）：契约
-    新增类型表达式时这里会落到"不匹配"——参数被拒，而不是悄悄按错的类型校验。
+    **只认契约用到的四种类型表达式**（`int` / `str` / `INT_TUPLE` / `CELLS`）：
+    契约新增类型表达式时这里会落到"不匹配"——参数被拒，而不是悄悄按错的
+    类型校验。
     """
     if type_expr == _INT:
         return _is_int(value)
+    if type_expr == _STR:
+        return _is_str(value)
     if type_expr == INT_TUPLE:
         return _is_int_tuple(value)
     if type_expr == CELLS:

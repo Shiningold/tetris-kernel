@@ -36,11 +36,11 @@ SYSTEM_MANIFEST = SystemManifest(
 def create_system(context: InstallContext) -> RotationsSystem[Snapshot]:
     """造一个旋转统计系统（**只拿总线**：不碰内核状态 · M3-D3）。
 
-    **出口（sink）此刻拿不到**——安装上下文里没有 sink 字段，
-    宿主接线（`tetris sim` 的落盘开关）落地之前它**只计数不落盘**。
-    **它自己不许 `open()`**——路径是宿主的事（M3-D5）。
+    **出口（sink）从安装上下文取**——`context.sink` 是 `None` 时它**只计数
+    不落盘**（宿主没给出口就是这个意思）。**它自己不许 `open()`**——路径是
+    宿主的事（M3-D5）。
     """
-    return RotationsSystem(context.bus)
+    return RotationsSystem(context.bus, context.sink)
 
 
 __all__ = ["SYSTEM_MANIFEST", "create_system"]

@@ -10,7 +10,9 @@
 4. **一个文件都不碰**：临时目录里不多一个文件；
 5. **普通订阅者**：`view_provider` 一次都没被调用；
 6. **声明**：订阅集 = `("piece:rotated",)` · `needsSink=True` · 产出者代号；
-7. **零内核改动**：冻结区基线 → 绿。
+7. **冻结区基线同步**：内核文件与基线逐字节全等（**注意**：这守的是「改动
+   与基线同步」，不是「M3 没改内核」——M3 的换规则集入口**确实改过**内核，
+   基线已随之刷新 · M3 审查报告 L2）。
 
 **单测不起内核**：整份文件只用一条**不带视图**的总线喂假事件流。
 """
@@ -25,7 +27,7 @@ import sys
 from pathlib import Path
 
 from tetris_kernel.bus.bus import EventBus
-from tetris_kernel.contracts.events import EVENT_TYPES
+from tetris_kernel.contracts.events import EVENT_TYPES, PRODUCER_LABELS
 from tetris_kernel.contracts.systems import check_manifest_types
 from tetris_kernel.kernel.drafts import EventDraft, make_draft
 from tetris_kernel.kernel.snapshot import Snapshot
@@ -224,6 +226,7 @@ def test_the_declaration_self_proves() -> None:
         SYSTEM_MANIFEST,
         known_events=EVENT_TYPES.keys(),
         known_commands=(),
+        known_producers=PRODUCER_LABELS.keys(),
     )
     assert not problems, f"声明不自证：{problems}"
 
@@ -242,12 +245,25 @@ def test_the_factory_builds_a_system_without_the_kernel() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 零内核改动
+# 冻结区基线同步
 # ---------------------------------------------------------------------------
 
 
-def test_the_frozen_zone_is_untouched() -> None:
-    """**零内核改动**（`G3-1`）：冻结区逐文件哈希全等。
+def test_the_frozen_zone_matches_the_baseline() -> None:
+    """**冻结区与基线逐文件哈希全等**（`G3-1`）。
+
+    **这条断言到底断言什么**（M3 审查报告 L2 指出的命名误导）：它断言的是
+    **「当前工作区的内核文件与 `kernel_hashes.json` 基线逐字节一致」**——
+    **不是**「M3 没改过内核」。
+
+    **M3 确实改过内核**（`kernel/core.py` · `kernel/commands.py`）——那是
+    **M3 唯一一次冻结区破例**（ADR-061 的运行期换规则集入口），**基线已随之
+    显式刷新**（S8 · `c81d0cc`）。**基线绿 = 改动与基线同步了**，不等于
+    「M3 没改内核」。
+
+    **为什么这条断言仍然有意义**：**它守的是「改动与基线同步」**——内核文件
+    在**基线刷新之后**再被改动（哪怕只是一个字节），这条立刻红。**M4 的
+    `G4-1`** 靠它保证「变体落地时内核差异为空」。
 
     跑的是**工具本身**（子进程调 `python tools/check_frozen_baseline.py`）。
     """

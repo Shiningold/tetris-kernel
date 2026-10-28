@@ -284,6 +284,36 @@ def test_command_count_quota_drops_the_rest_and_resets_next_frame() -> None:
     assert _types(next_frame).count("command:accepted") == 3, "下一帧的命令不该被丢"
 
 
+def test_dropped_batch_of_different_types_reports_every_type() -> None:
+    """被丢弃的一批命令**类型不同**时 → **每种类型各出一条** `command:rejected`。
+
+    合并键是 (phase, 命令类型, 拒绝原因)：换一个类型就冲刷一次旧组。
+    修 H1 之前，内核只把冲刷出来的旧组**丢在地上**，于是这批命令里
+    **只有最后一种类型**能发出拒绝事件，其余**静默消失**——
+    被丢弃的命令等于没来过，可观测性失真。
+
+    这里丢弃 3 条**类型不同**的命令（额度为 0 → 全部超限）：
+    修后 3 条 `command:rejected` 全部发出，每条的 `commandType` 各不相同。
+    """
+    kernel = _kernel(QuotaLimits(max_commands=0, max_rounds=100))
+    kernel.submit(Command("switchRuleSet", args=(("rule", "standard"),), source="test"))
+    kernel.submit(Command("moveLeft", source="test"))
+    kernel.submit(Command("moveRight", source="test"))
+
+    published = _publish_all(kernel)
+
+    rejected = [d for d in published if d.eventType == "command:rejected"]
+    assert len(rejected) == 3, f"3 条被丢弃的命令应有 3 条拒绝事件：{_types(published)}"
+    assert {dict(d.payload)["commandType"] for d in rejected} == {
+        "switchRuleSet",
+        "moveLeft",
+        "moveRight",
+    }, "每种命令类型都要有自己的拒绝事件"
+    assert all(dict(d.payload)["reason"] == "quota_exceeded" for d in rejected)
+    # 成对：每条拒绝都要配一条 received（计数一致）。
+    assert _types(published).count("command:received") == 3, "拒绝明细是成对的，缺了 received"
+
+
 def test_quota_actual_does_not_count_the_tick() -> None:
     """`actual` 是本帧真实的**非 tick 命令数**——tick 不计入（架构 §6.4）。
 
