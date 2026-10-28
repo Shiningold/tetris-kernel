@@ -67,6 +67,13 @@ WRITE_CELLS_COMMAND: str = "writeCells"
 #: 晶体在棋盘上的取值（**普通方块是 `1`** → 两者分得清）。
 CRYSTAL_VALUE = 8
 
+#: 这个系统派命令时的**来源标记**（**就是它的名字**）。
+#:
+#: **与产出者代号同名字**（`SYSTEM_MANIFEST.producer` = `growth`）——**来源标记
+#: 的语义是"谁发的"**（仓库里的既有写法：`host` / `human` / `ai` / `replay`），
+#: **不是命名空间**。
+SOURCE_NAME = "growth"
+
 #: 压力曲线：**每 4 次锁定多长一格**。
 GROWTH_STEP_LOCKS = 4
 
@@ -340,7 +347,11 @@ class GrowthSystem:
         batch = tuple(usable[:MAX_CELLS_PER_BATCH])
         for cell in batch:
             self._attempts[cell[:2]] = self._attempts.get(cell[:2], 0) + 1
-        self._submit.submit_cells(batch, source="variant:growth")
+        # **来源标记 = 发出方的名字**（`growth`）——**与仓库里的既有写法一致**
+        # （`host` / `human` / `ai` / `replay` / `tutorial` 都是"谁发的"，
+        # **不是命名空间**）。**别写成 `variant:growth`**：那个字面量长得像
+        # **事件类型** → **事件登记扫描器会把它当成未登记的事件名**（警告）。
+        self._submit.submit_cells(batch, source=SOURCE_NAME)
 
 
 __all__ = [
@@ -354,5 +365,6 @@ __all__ = [
     "GrowthSystem",
     "PIECE_LOCKED_EVENT",
     "PIECE_SPAWNED_EVENT",
+    "SOURCE_NAME",
     "WRITE_CELLS_COMMAND",
 ]
