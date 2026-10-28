@@ -229,9 +229,15 @@ def test_m4_ai_the_search_budget_is_fixed() -> None:
 
 
 def test_m4_ai_the_search_depth_and_candidate_budget_are_constants() -> None:
-    """**深度与候选数是写死的常量**——不是"按剩余时间决定搜多少"。"""
+    """**深度与候选数是写死的常量**——不是"按剩余时间决定搜多少"。
+
+    **M5-S3 订正（ADR-097）**：候选数原来写 40，而实现**枚举 64**
+    （4 朝向 ×（10 宽 + 两侧各 3 列）= 4 × 16）——**40 既不是枚举数、
+    也不参与任何剪枝**（M4 审查报告 L1 早已指出）。**这里改的是"声明"，
+    不是"决策期望值"**——决策逐条不变由 `tests/test_m5_ai_equivalence.py` 守着。
+    """
     assert SEARCH_DEPTH == 1, "M4 的 AI 只看当前这一块（不前瞻）"
-    assert MAX_CANDIDATES == 40, "候选数是固定预算（4 朝向 × 10 列）"
+    assert MAX_CANDIDATES == 64, "候选数是固定预算（4 朝向 × 16 列 = 64 · ADR-097）"
 
 
 def test_m4_ai_the_search_is_a_pure_function_of_the_position() -> None:
