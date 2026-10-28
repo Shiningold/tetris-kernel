@@ -11,6 +11,7 @@
 - 规则接口签名与中性交换结构：`tetris_kernel.contracts.rules`
 - 命名结构注册表：`tetris_kernel.contracts.structures`
 - 共用类型取值域与类型文法：`tetris_kernel.contracts.types`
+- 系统声明面：`tetris_kernel.contracts.systems`
 """
 
 from .commands import (
@@ -65,6 +66,15 @@ from .snapshot import (
     KernelStateEntry,
 )
 from .structures import NAMED_STRUCTS
+from .systems import (
+    GLOBAL_SUBSCRIPTION,
+    SYSTEM_MANIFESTS,
+    SystemManifest,
+    check_manifest_types,
+    manifest_canonical_text,
+    register_system_manifest,
+    unregister_system_manifest,
+)
 from .types import (
     ARGS,
     ARGS_VALUE,
@@ -107,6 +117,7 @@ __all__ = [
     "COORD_CELLS",
     "ENVELOPE_FIELDS",
     "EVENT_TYPES",
+    "GLOBAL_SUBSCRIPTION",
     "INT_TUPLE",
     "JSON_VALUE",
     "KERNEL_STATE_TO_SNAPSHOT",
@@ -131,6 +142,7 @@ __all__ = [
     "SCALAR_MAP",
     "SNAPSHOT_FIELDS",
     "SNAPSHOT_FIELD_NAMES",
+    "SYSTEM_MANIFESTS",
     "VECTOR2",
     "ClearGroup",
     "CommandArg",
@@ -147,6 +159,11 @@ __all__ = [
     "RuleSignature",
     "ScoreDelta",
     "ScoreState",
+    "SystemManifest",
+    "check_manifest_types",
     "is_lifecycle_gated",
+    "manifest_canonical_text",
     "namespace_of",
+    "register_system_manifest",
+    "unregister_system_manifest",
 ]

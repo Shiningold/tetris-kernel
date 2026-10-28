@@ -119,6 +119,20 @@
 **两份清单要一起刷**：只刷基线不刷期望清单，跨文件自证立刻变红——这是故意的
 （两份都得有人点头），刷新时把 `--update-expected` 一起带上即可。
 
+## M3 新增的两类键
+
+- **`reject/<原因>`**：**每个拒绝原因一条键**。这一类键之前**没有**——拒绝原因
+  枚举只被逐命令的 `rejectReasons` 聚合键间接覆盖，于是「往枚举里加一个值」
+  不产生任何新键：**「v1 定死 · 只增不改」在基线上没有牙齿**（加了还是全绿）。
+  有了它：改名 = 旧键消失（红）· 删值 = 键消失（红）· **新增值 = 新键（放行）**。
+- **`system/<名字>`**：**每个已登记系统一条键**，值 = 声明的规范化串。改了订阅集
+  或命令集 = **对外承诺变了**，要有牙（spec-M3 §6.4 · FR-9.1 / FR-9.2）。
+
+  **声明的来源是各系统包里的 `SYSTEM_MANIFEST`**（静态扫描）——**不是运行时的
+  已登记清单**：基线要的是**确定的**声明集，不能取决于谁装了什么系统。
+  **自证在这一层做**：声明里写的事件 / 命令类型必须已登记，写错名字当场拒绝
+  进基线（而不是挂一个永远收不到事件的订阅）。
+
 ## 用法
 
 ```
@@ -166,9 +180,13 @@ from tetris_kernel.contracts import (  # noqa: E402
     EVENT_TYPES,
     METADATA_KEYS,
     NAMED_STRUCTS,
+    REJECT_REASONS,
     RULE_SIGNATURES,
     SNAPSHOT_FIELDS,
+    check_manifest_types,
+    manifest_canonical_text,
 )
+from tetris_kernel.systems.manifests import discover_manifests  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -303,6 +321,34 @@ def collect_entries() -> list[Entry]:
     # -- 快照字段 → 类型（契约清单第 3 项） --
     for field_name, field in SNAPSHOT_FIELDS.items():
         add_type(f"snapshot/{field_name}", field.type)
+
+    # -- 拒绝原因枚举 → 每个原因一条键（需求 §8.2 · 只增不改） --
+    #
+    # **这一类键是 M3 加的**：拒绝原因枚举原本**只被逐命令的 `rejectReasons`
+    # 聚合键间接覆盖**——那意味着「往枚举里加一个值」不产生任何新键，
+    # **「v1 定死 · 只增不改」这条承诺在基线上没有牙齿**（加一个原因，基线全绿）。
+    # 每个原因一条键之后：**改名 = 旧键消失（红）· 删值 = 键消失（红）**，
+    # **新增值 = 新键（放行·正常成长）**。
+    for reason in REJECT_REASONS:
+        add(f"reject/{reason}", reason)
+
+    # -- 系统声明 → 每个已登记系统一条键（spec-M3 §6.4 · FR-9.1 / FR-9.2） --
+    #
+    # **声明的规范化串进基线**：改了订阅集 / 命令集 = **对外承诺变了**，要有牙。
+    # **声明的来源是各系统包里的 `SYSTEM_MANIFEST`**（静态扫描）——**不是运行时
+    # 的已登记清单**：基线要的是**确定的**声明集，不能取决于谁装了什么系统。
+    #
+    # **自证在这一层做**：声明里写的事件 / 命令类型必须已登记，写错名字当场
+    # 拒绝进基线（而不是挂一个永远收不到事件的订阅）。
+    for system_name, manifest in discover_manifests().items():
+        problems = check_manifest_types(
+            manifest,
+            known_events=EVENT_TYPES.keys(),
+            known_commands=COMMANDS.keys(),
+        )
+        if problems:
+            raise ValueError(f"系统 {system_name} 的声明不自证：{'；'.join(problems)}")
+        add(f"system/{system_name}", manifest_canonical_text(manifest))
 
     # -- 规则接口签名 → 参数 + 返回类型 + 参数顺序（契约清单第 9 项） --
     for signature_name, signature in RULE_SIGNATURES.items():

@@ -1,4 +1,4 @@
-"""命令契约声明（契约 v1 · 16 条命令 + 12 值拒绝原因枚举）。
+"""命令契约声明（契约 v1 · 17 条命令 + 13 值拒绝原因枚举）。
 
 公共叶子——**不 import 任何 `tetris_kernel.*` 模块，也不依赖第三方**；只用标准库
 （架构 §2.3 / §4.1）。本模块只做「声明」，不做「行为」。
@@ -7,7 +7,7 @@
 
 - `COMMANDS`：命令名 → 命令规格（参数声明 + 是否受门禁 + 可拒绝原因）。
   **封闭且可枚举**（FR-2.1）——这张表就是 v1 的全集，不留「以后可能加」的占位。
-- `REJECT_REASONS`：12 个拒绝原因，**只增不改**（需求 §8.2）。
+- `REJECT_REASONS`：13 个拒绝原因，**只增不改**（需求 §8.2）。
 - `REJECT_REASON_CATEGORIES`：拒绝原因的分类（需求 §8.2 的「类」列）。
 - `COMMAND_TYPE_FIELDS`：事件侧承载**命令名**的负载字段——命令集在事件侧的落点。
 
@@ -36,17 +36,33 @@
   **门禁归属由 `CommandSpec.lifecycle_gated` 这一个必填字段决定**，三个门禁
   原因由它派生——手写它们会被 `_cmd` 拒绝。
 - **配额是跨切的**（架构 §6.4）：命令数 / 轮次数配额超限时，被丢弃的**任何**
-  命令都以 `quota_exceeded` 被拒——所以 16 条命令都带这个原因。`writeCells`
+  命令都以 `quota_exceeded` 被拒——所以 17 条命令都带这个原因。`writeCells`
   的单帧写入格子数上限复用同一个原因值。
-- **参数不合规格统一用 `invalid_argument`**：类型不对、参数多余都算，16 条命令
+- **参数不合规格统一用 `invalid_argument`**：类型不对、参数多余都算，17 条命令
   都可能因它被拒。
 
 两个例外要记牢：
 
 - **`setLevel` 不受生命周期门禁约束**：它不改棋盘内容也不改活动方块位置，
   需求 §8.2 给它的可拒绝情形只有「越界」。
+- **`switchRuleSet` 同样不受生命周期门禁约束**，但它**有自己的门禁**：局中
+  （`running`）切换由**内核**判 `illegal_transition`。它换的是规则集，**不是**
+  棋盘内容或活动方块位置——通用门禁「phase ≠ running 一律拒」对它恰好是反的
+  （换规则集要在待开始 / 已结束态被接受）。**门禁归属仍由契约的
+  `lifecycle_gated` 字段决定**，不手写名单（架构 §7.1）。
 - **`start` / `pause` / `resume` / `reset` 是生命周期命令本身**，它们的状态问题
   走 `illegal_transition`（状态类），不是门禁三值。
+
+## `unknown_rule_set` 归在**状态**类
+
+M3 新增的拒绝原因（12 → 13）：请求的规则集**未在宿主侧登记**。
+
+**它不是「参数」类**：参数不合规格统一是 `invalid_argument`，而这一条的值
+（规则集标识）**类型完全正确**——错的是「这个名字没有对应的规则集」，也就是
+**当前状态里没有这个东西**，归状态类。
+
+**明确拒绝，不拿标准规则集顶替**：M2 的回放宿主已是这个口径（录像头写着没登记
+的规则集 → 拒绝），M3 沿用——顶替会让「四项不等」这个报错失去指向性。
 
 ## `no_active_piece` 是**防御性保留**
 
@@ -91,7 +107,7 @@ class CommandArg:
     字段：参数名 · 类型表达式 · 是否可空 · 中文说明。**参数名即契约**，
     改名 = major 变更。
 
-    `nullable` 在契约 v1 的 16 条命令上**全是 False**——`injectGarbage` 的
+    `nullable` 在契约 v1 的 17 条命令上**全是 False**——`injectGarbage` 的
     `holes` 用空元组表示「无空洞」，不是 `None`。字段留着是因为它属于契约
     面的固有维度：将来新增参数时「能不能不传」必须显式写出来，不能靠约定。
     """
@@ -120,7 +136,7 @@ class CommandSpec:
     `reject_reasons` 是**该命令可能被拒绝的全部原因**，不只是需求 §8.2
     那一列写着的——跨切的配额与参数原因也算在内（见模块 docstring）。
 
-    **实现发出的原因必须落在这张表里**（架构 §6.8）：表外的值即便在 12 值
+    **实现发出的原因必须落在这张表里**（架构 §6.8）：表外的值即便在 13 值
     枚举之内也是越界——消费方按"命令 × 原因"配对，没声明的配对不到。
 
     **`no_active_piece` 是防御性保留**：正常执行路径走不到它（架构 §6.8 的
@@ -157,6 +173,7 @@ REJECT_REASONS: tuple[str, ...] = (
     "illegal_transition",
     "no_active_piece",
     "hold_already_used",
+    "unknown_rule_set",
     # 受控写入
     "not_authorized",
     "write_condition_failed",
@@ -168,7 +185,12 @@ REJECT_REASON_CATEGORIES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "lifecycle": (PHASE_NOT_STARTED, PHASE_PAUSED, PHASE_GAME_OVER),
         "quota": ("quota_exceeded",),
         "parameter": ("invalid_argument", "level_out_of_range", "out_of_bounds"),
-        "state": ("illegal_transition", "no_active_piece", "hold_already_used"),
+        "state": (
+            "illegal_transition",
+            "no_active_piece",
+            "hold_already_used",
+            "unknown_rule_set",
+        ),
         "controlled_write": ("not_authorized", "write_condition_failed"),
     }
 )
@@ -242,7 +264,7 @@ def _cmd(
 
 
 # ---------------------------------------------------------------------------
-# 命令目录（16 条，需求 §8.2）
+# 命令目录（17 条，需求 §8.2）
 # ---------------------------------------------------------------------------
 
 _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
@@ -426,6 +448,21 @@ _COMMAND_SPECS: tuple[tuple[str, CommandSpec], ...] = (
                 "not_authorized",
                 "write_condition_failed",
             ),
+        ),
+    ),
+    # ---------------- 运行期（1 条） ----------------
+    (
+        "switchRuleSet",
+        _cmd(
+            "switchRuleSet",
+            "切换到指定的已登记规则集。**不受生命周期门禁约束**——换规则集恰恰要"
+            "在非 running 态被接受（待开始 / 已结束），局中（running）切换由内核"
+            "自判 `illegal_transition`（拒绝比半局规则不一致便宜得多）。"
+            "规则集未登记 → `unknown_rule_set`（**明确拒绝，不拿标准规则集顶替**）。"
+            "切换被接受后局面重置，并发 `kernel:rule-set-changed` 与 `game:reset`。",
+            args=(CommandArg("rule", "str", False, "目标规则集标识；必须已在宿主侧登记"),),
+            lifecycle_gated=False,
+            reject_reasons=("invalid_argument", "illegal_transition", "unknown_rule_set"),
         ),
     ),
 )

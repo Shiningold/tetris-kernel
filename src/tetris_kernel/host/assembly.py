@@ -48,13 +48,14 @@ from __future__ import annotations
 
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
 from ..adapters.storage import AppendSink, FileSink
 from ..bus.bus import DEFAULT_HISTORY_LIMIT, EventBus
+from ..contracts.systems import SystemManifest
 from ..kernel.core import (
     DEFAULT_BOARD_HEIGHT,
     DEFAULT_BOARD_WIDTH,
@@ -66,12 +67,17 @@ from ..kernel.snapshot import Snapshot
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
+from ..systems.context import InstallContext, SystemEntry, SystemFactory
 from ..systems.log import LogSystem, LogTarget, SinkTarget
+from ..systems.log.manifest import SYSTEM_MANIFEST as LOG_MANIFEST
 from ..systems.metrics import MetricsSystem
+from ..systems.metrics.manifest import SYSTEM_MANIFEST as METRICS_MANIFEST
 from ..systems.replay import OutcomeProvider, RecordingSystem
 from ..systems.replay.format import recording_filename
+from ..systems.replay.manifest import SYSTEM_MANIFEST as REPLAY_MANIFEST
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 from .performance import DegradationController
+from .registry import SystemRegistry
 from .replay import four_items_of
 
 #: 落盘出口（**装配约定，不属于契约面** —— spec-M2 §3.3 · ADR-064 / ADR-074）。
@@ -364,15 +370,76 @@ def _build_recording_system(
     return RecordingSystem(bus, sinks.recording, outcome_provider=outcome_provider)
 
 
+#: 内建可观测系统的**名字 → 工厂**（M2 的三个系统）。
+#:
+#: **为什么它们的名字写在这儿**：它们的**落盘出口由宿主注入**（ADR-085），工厂
+#: 本来就住在宿主层；**声明住在各自的系统包里**（`systems/<名字>/manifest.py`），
+#: 名字与声明**从包里取**（`BUILT_IN_MANIFESTS`），这里只说「哪个工厂服务哪个
+#: 名字」——**一个系统一个名字，没有第二份名单**。
+#:
+#: **这张表是内建清单，不是系统目录**：**新系统不许加进这里**——新系统自带声明
+#: 与工厂，由自动发现收（`host/discovery.py` · M3-D2 / `G3-1`）。**名单一旦成为
+#: 必经之路，每个新系统都要改一个既有文件，那条判据就永久失去牙齿。**
+BUILT_IN_OBSERVABLE_FACTORIES: Mapping[str, ObservableFactory] = MappingProxyType(
+    {
+        "log": _build_log_system,
+        "metrics": _build_metrics_system,
+        "replay": _build_recording_system,
+    }
+)
+
+#: 内建系统的**声明**（**从各自的系统包里取** —— 名字与声明同源）。
+BUILT_IN_MANIFESTS: Mapping[str, SystemManifest] = MappingProxyType(
+    {
+        "log": LOG_MANIFEST,
+        "metrics": METRICS_MANIFEST,
+        "replay": REPLAY_MANIFEST,
+    }
+)
+
+
+def built_in_system_entries(
+    sinks: ObservableSinks,
+    outcome_provider: OutcomeProvider,
+) -> Mapping[str, SystemEntry]:
+    """内建系统的**目录条目**（名字 → 声明 + 工厂）。
+
+    **工厂的签名在这里适配**：M2 的工厂是 `(bus, sinks, outcome_provider)`，
+    注册表给的是 `(context)`——**适配发生在宿主这一侧**，系统包里的工厂不用改
+    签名（内建系统的工厂本来就在宿主层）。
+    """
+    entries: dict[str, SystemEntry] = {}
+    for name, factory in BUILT_IN_OBSERVABLE_FACTORIES.items():
+        manifest = BUILT_IN_MANIFESTS.get(name)
+        if manifest is None:
+            raise KeyError(f"内建系统 {name} 没有声明")
+        entries[name] = SystemEntry(
+            manifest=manifest,
+            factory=_adapt_factory(factory, sinks, outcome_provider),
+        )
+    return MappingProxyType(entries)
+
+
+def _adapt_factory(
+    factory: ObservableFactory,
+    sinks: ObservableSinks,
+    outcome_provider: OutcomeProvider,
+) -> SystemFactory:
+    """把 M2 的工厂签名适配成注册表的 `(context)` 签名。"""
+
+    def create(context: InstallContext) -> object:
+        return factory(context.bus, sinks, outcome_provider)
+
+    return create
+
+
 #: 可观测系统的装配表（**批次 C 填上了三个系统**）。
 #:
 #: **顺序不影响结果**：三个系统都只**订阅**总线，谁先装谁后装看到的都是
 #: 同一串事件——**装配层不发事件**（见上面的签名说明），没有"谁先谁后能看见
 #: 谁的启动事件"这回事。
-OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = (
-    _build_log_system,
-    _build_metrics_system,
-    _build_recording_system,
+OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = tuple(
+    BUILT_IN_OBSERVABLE_FACTORIES.values()
 )
 
 
@@ -411,7 +478,9 @@ class Assembly:
       **路径由宿主定**（ADR-064 / ADR-074）——部件自己不 `open()`；
     - `observable_systems`：装配出来的可观测系统（**开关关掉时为空**）；
     - `observability_enabled`：可观测总开关的取值（**关掉 = 一个都不装配**）；
-    - `degradation_controller`：降级控制器（**没装配就是 `None`** · ADR-031）。
+    - `degradation_controller`：降级控制器（**没装配就是 `None`** · ADR-031）；
+    - `registry`：**系统注册表**（M3 · 没装任何系统时为 `None`）——**宿主层的
+      系统表**：装 / 卸 / 重装，**摘得干净**（连命令通道一起撤）。
     """
 
     kernel: Kernel
@@ -421,6 +490,7 @@ class Assembly:
     observable_systems: tuple[object, ...] = ()
     observability_enabled: bool = True
     degradation_controller: DegradationController[Snapshot] | None = None
+    registry: SystemRegistry | None = None
 
 
 def assemble(
@@ -440,6 +510,8 @@ def assemble(
     sinks: ObservableSinks | None = None,
     observability_enabled: bool = True,
     degradation_enabled: bool = False,
+    systems: Sequence[str] = (),
+    system_catalog: Mapping[str, SystemEntry] | None = None,
 ) -> Assembly:
     """把内核、总线、规则集与时钟拼成一件成品。
 
@@ -462,7 +534,17 @@ def assemble(
       调用**——`G2-3`（关闭全部可观测系统后内核逐帧一致）的前提；
     - `degradation_enabled`：**是否装配降级控制器**（ADR-031）。**默认不装**——
       M2 是**无头批次**，没有实时宿主去测每帧耗时；**喂帧开销的接线留给 M3
-      的实时宿主**（那才是"用户手关"的地方）。
+      的实时宿主**（那才是"用户手关"的地方）；
+    - `systems`：**要装哪些系统**（M3 · 系统注册表）。**默认一个都不装**——
+      装哪些系统是**宿主的决定**（FR-9.1）；**空 = 行为与 M2 一致**；
+    - `system_catalog`：**额外的系统目录条目**（名字 → 声明 + 工厂）。省略时
+      只有**内建系统**（日志 · 指标 · 录像）；**新系统由自动发现递进来**
+      （`host/discovery.py`）。
+
+    > **内建可观测系统要走注册表路径（好让它能被运行时摘下）**，就把
+    > `observability_enabled` 关掉——**否则同一个系统会被装两遍**（可观测装配
+    > 装一个，注册表再装一个），日志就写两遍了。**两条路各管一段**：可观测
+    > 总开关管「这一局要不要观测」，注册表管「运行中能不能摘」。
     """
     kernel = Kernel(
         seed=seed,
@@ -506,6 +588,18 @@ def assemble(
             bus=bus,
             log_system=log_system,
         )
+    registry: SystemRegistry | None = None
+    if systems:
+        # **系统注册表**（M3）：**装哪些系统由宿主参数决定**（FR-9.1）。
+        # 目录 = 内建系统 + 递进来的额外条目（**新系统走自动发现**）。
+        catalog: dict[str, SystemEntry] = dict(
+            built_in_system_entries(effective_sinks, _outcome_provider_of(kernel))
+        )
+        if system_catalog is not None:
+            catalog.update(system_catalog)
+        registry = SystemRegistry(bus=bus, kernel=kernel, catalog=catalog)
+        for name in systems:
+            registry.install(name)
     return Assembly(
         kernel=kernel,
         bus=bus,
@@ -514,6 +608,7 @@ def assemble(
         observable_systems=observable_systems,
         observability_enabled=observability_enabled,
         degradation_controller=degradation_controller,
+        registry=registry,
     )
 
 

@@ -69,6 +69,8 @@ BUS_BASELINE = REPO_ROOT / "tests" / "baseline" / "bus_hashes.json"
 #: 所以要把 `tools/` 挂到 `sys.path` 上（与 `tests/test_rng.py` 同一手法）。
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 _measure_frame_cost = importlib.import_module("measure_frame_cost")
+#: 契约基线工具（**函数级调用**用：自证拒绝那条要在进程内构造非法声明）。
+_contract_baseline = importlib.import_module("contract_baseline")
 
 
 def _run_tool_bytes(relative_path: str, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -828,3 +830,64 @@ def test_the_bus_baseline_and_the_frozen_baseline_never_overlap() -> None:
         "bus/ 混进了冻结区基线——冻结区严格对齐 G4-1"
     )
     assert all(key.startswith(("kernel/", "rules/")) for key in frozen_files), sorted(frozen_files)
+
+
+# ---------------------------------------------------------------------------
+# M3：两类新键（拒绝原因逐值 · 系统声明）
+#
+# 这两类键是 M3 加进契约基线的——它们各自堵一个洞：
+# - `reject/<原因>`：拒绝原因枚举原本**只被逐命令的聚合键间接覆盖**，往枚举里
+#   加一个值不产生任何新键 → 「v1 定死 · 只增不改」在基线上**没有牙齿**；
+# - `system/<名字>`：系统的对外承诺（订阅集 / 命令集）改了要有牙。
+# ---------------------------------------------------------------------------
+
+
+def test_the_baseline_covers_every_reject_reason() -> None:
+    """每个拒绝原因在基线里**各有一条键**（枚举「只增不改」终于有牙齿）。"""
+    from tetris_kernel.contracts import REJECT_REASONS
+
+    entries = _read_json(CONTRACT_BASELINE)["entries"]
+    missing = [reason for reason in REJECT_REASONS if f"reject/{reason}" not in entries]
+    assert not missing, f"拒绝原因没有进基线：{missing}"
+
+
+def test_the_baseline_covers_every_declared_system() -> None:
+    """每个**已声明**的系统在基线里各有一条键（FR-9.2 的承诺要进基线）。"""
+    from tetris_kernel.systems.manifests import discover_manifests
+
+    entries = _read_json(CONTRACT_BASELINE)["entries"]
+    missing = [name for name in discover_manifests() if f"system/{name}" not in entries]
+    assert not missing, f"系统声明没有进基线：{missing}"
+
+
+def test_a_system_declaration_that_does_not_self_prove_is_refused(monkeypatch) -> None:
+    """声明引用**未登记**的事件 / 命令类型 → **拒绝进基线**（当场红，不放行）。
+
+    不放行的理由：挂一个永远收不到事件的订阅，而系统看上去「装上了」——
+    错在**装系统的时候**才暴露，就晚了。
+    """
+    from tetris_kernel.contracts import SystemManifest
+
+    bad = SystemManifest(
+        name="probe",
+        version="1",
+        subscribes=("no:such-event",),
+        commands=(),
+        producer="log",
+        needsSink=False,
+    )
+    monkeypatch.setattr(_contract_baseline, "discover_manifests", lambda: {"probe": bad})
+
+    with pytest.raises(ValueError):
+        _contract_baseline.collect_entries()
+
+
+def test_changing_a_system_declaration_is_a_major_change(tmp_path: Path) -> None:
+    """改一个系统声明 → 基线**红**（对外承诺变了要有牙）。"""
+    document = _read_json(CONTRACT_BASELINE)
+    document["entries"]["system/log"] = "0" * 32
+    broken = _write_json(tmp_path / "contracts_baseline.json", document)
+
+    result = _run_tool("tools/contract_baseline.py", "--baseline", str(broken))
+
+    assert result.returncode != 0, "改了系统声明的哈希，基线却放行了"
