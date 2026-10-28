@@ -1,4 +1,4 @@
-"""AI 的落点搜索（系统层 · M4-S9 · spec-M4 §7.8 · 架构 §7.5）。
+"""AI 的落点搜索（系统层 · M4-S9 · spec-M4 §7.8 · 架构 §7.5 · **M5-S2 等价提速**）。
 
 ## 它是什么
 
@@ -31,10 +31,38 @@
 里，而**变体层不许被系统层 import**（横向依赖 · 架构 §2.3）→ **AI 的几何按
 标准玩法算**。M4 的 AI 与变体 A 的组合**不在本阶段范围内**（spec-M4 §7.8 只要求
 AI 与人类同通道 · 固定预算 · 能把关）。
+
+## M5-S2：等价提速（**结果逐条不变**）
+
+M4 的实现是「**每个候选各算一遍**」：逐行试下落（≈ 20 次 `_fits`）· 每个候选
+**复制整块棋盘**再全扫两遍打分。**实测决策 P50 ≈ 1.55 ms**（M4-S12）→ **全开档
+逻辑帧 P99 越过了 NFR-2 的 1.6 ms 预算**。
+
+M5 把这套算法**改写成等价的剖面式实现**（spec-M5 §7.1 的五招）：
+
+| # | 招 | 原来 | 改成 |
+| --- | --- | --- | --- |
+| 1 | **剖面一次算好** | 每个候选各算一遍 | 一局算一次（每行填充数 · 每列有格行 / 顶行 / 洞数） |
+| 2 | **解析式下落** | 逐行试 `_fits` | 每列二分查「下面第一个有格的行」→ **O(cells)** |
+| 3 | **路径前缀和** | 每候选逐列扫 | 预计算「每列放不放得下」→ 区间判断 **O(1)** |
+| 4 | **增量打分** | 每个候选**复制整块棋盘**再全扫 | 只算这块方块**影响的列**与它相邻的对 |
+| 5 | **按朝向预计算 + 推迟构造** | 每个候选都造结果对象 | 形状按朝向预计算；**只在赢家身上造** |
+
+**等价的四条纪律**（**每一条都有测试守着** · `tests/test_m5_ai_equivalence.py`）：
+
+1. **越界的格子不进网格**（形状里**有负偏移的格子** —— J / L / S / Z / T 的某些朝向）；
+2. **下落只看出生行以下**（起始位置是否重叠**不检查** —— 与内核的落子口径一致）；
+3. **同分先枚举到的赢**（枚举顺序不变 → 平局口径不变）；
+4. **每一对相邻列只修正一次**（相邻两列都被影响时，算两遍就偏了）。
+
+**提速不是"重写算法"**：候选集、深度、枚举顺序、权重、打分口径**一字未改**
+——**同一个 AI · 同一个局面 · 同一个决策**。改算法会改掉 AI 的选择，
+**那不是提速，是换了一个 AI**（录像分叉 · 期望值重抄）——M5 明确不做。
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 
 from ...rules.tables import KICK_GROUP_BY_PIECE, KICK_TABLE, SHAPE_TABLE
@@ -100,6 +128,107 @@ class Placement:
     cells: tuple[tuple[int, int], ...]
 
 
+class _RotationPlan:
+    """**按朝向预计算**的形状信息（**这块方块这个朝向的静态形状**）。
+
+    - `columns`：这一列占**哪些行偏移**（`cx` → `cy` 列表）；
+    - `row_counts`：这一行占**几格**（`cy` → 格数）——**消行数只按行算**。
+    """
+
+    __slots__ = ("cells", "columns", "row_counts")
+
+    def __init__(self, cells: tuple[tuple[int, int], ...]) -> None:
+        self.cells = cells
+        by_column: dict[int, list[int]] = {}
+        by_row: dict[int, int] = {}
+        for cell_x, cell_y in cells:
+            by_column.setdefault(cell_x, []).append(cell_y)
+            by_row[cell_y] = by_row.get(cell_y, 0) + 1
+        self.columns = tuple((cx, tuple(sorted(ys))) for cx, ys in sorted(by_column.items()))
+        self.row_counts = tuple(sorted(by_row.items()))
+
+
+class _Profile:
+    """一局的**剖面**：**只算一次**（**招 1**）。
+
+    装着三类东西：
+
+    | 装什么 | 给谁用 |
+    | --- | --- |
+    | 每行填充数 · 每列有格行 / 顶行 / 洞数 · 基准分项 | 增量打分（招 4） |
+    | 每列「出生行上放不放得下」的前缀和 | 路径判断（招 3） |
+    | 四个朝向的形状信息 | 按朝向预计算（招 5） |
+    """
+
+    __slots__ = (
+        "width",
+        "height",
+        "row_fill",
+        "col_rows",
+        "col_top",
+        "col_holes",
+        "col_ok_prefix",
+        "base_full_rows",
+        "base_heights",
+        "base_aggregate",
+        "base_bumpiness",
+        "base_holes_total",
+        "base_max_height",
+        "base_argmax",
+        "scratch_heights",
+        "scratch_columns",
+        "plans",
+    )
+
+    def __init__(
+        self,
+        board: Board,
+        shapes: tuple[tuple[tuple[int, int], ...], ...],
+        y: int,
+    ) -> None:
+        width = len(board[0])
+        height = len(board)
+        self.width = width
+        self.height = height
+        # 每行**已有几格**（消行数只要这一项）。
+        self.row_fill = [width - row.count(0) for row in board]
+        # 每列**哪些行有格**（解析式下落要二分它）。
+        col_rows: list[list[int]] = []
+        col_top: list[int] = []
+        col_holes: list[int] = []
+        for column in zip(*board, strict=False):
+            filled = [row for row, value in enumerate(column) if value != 0]
+            col_rows.append(filled)
+            if filled:
+                top = filled[0]
+                holes = (height - 1 - top) - (len(filled) - 1)
+            else:
+                top = height
+                holes = 0
+            col_top.append(top)
+            col_holes.append(holes)
+        self.col_rows = col_rows
+        self.col_top = col_top
+        self.col_holes = col_holes
+        # 基准分项（**增量打分从这里加减**）。
+        heights = [height - top for top in col_top]
+        self.base_heights = heights
+        self.base_full_rows = sum(1 for count in self.row_fill if count == width)
+        self.base_aggregate = sum(heights)
+        self.base_bumpiness = sum(
+            abs(heights[index] - heights[index + 1]) for index in range(len(heights) - 1)
+        )
+        self.base_holes_total = sum(col_holes)
+        self.base_max_height = max(heights)
+        self.base_argmax = heights.index(self.base_max_height)
+        # 每列「出生行上放不放得下」→ 前缀和（**招 3**）。
+        self.col_ok_prefix = _build_ok_prefix(board, shapes[0], y, width, height)
+        # 复用的暂存（**每个候选用完就清**）。
+        self.scratch_heights = [0] * width
+        self.scratch_columns: list[int] = []
+        self.plans = tuple(_RotationPlan(cells) for cells in shapes)
+
+
 def plan_placement(
     board: Board,
     piece_type: str,
@@ -116,6 +245,9 @@ def plan_placement(
 
     **枚举顺序固定**（朝向在外 · 列在内）——**同分时先枚举到的赢**，
     所以结果与机器无关。
+
+    **M5-S2**：这里**只造赢家那一个** `Placement` 与命令序列——
+    候选循环里只留分数与几个坐标（**招 5**）。
     """
     if rotation != 0:
         # AI 只在方块刚出生（朝向必为 0）时决策；别的朝向下**不决策**
@@ -129,23 +261,42 @@ def plan_placement(
     if width <= 0 or height <= 0:
         return None
 
-    best: Placement | None = None
+    profile = _Profile(board, shapes, y)
+    best_score: int | None = None
+    best_rotation = 0
+    best_pre_x = 0
+    best_post_x = 0
+    best_landing_y = 0
     for target_rotation in (0, 1, 2, 3):
+        plan = profile.plans[target_rotation]
         for pre_x in _candidate_columns(width):
-            candidate = _candidate(
-                board,
-                shapes,
-                piece_type,
-                x,
-                y,
-                pre_x,
-                target_rotation,
-            )
-            if candidate is None:
+            # ① **平移过去**：起手那一列放得下吗？**中间每一列也得放得下**
+            #    （人被墙挡在半路的场景是真实存在的）。
+            if not _path_is_clear(profile, x, pre_x):
                 continue
-            if best is None or candidate.score > best.score:
-                best = candidate
-    return best
+            # ② **旋转**（在起手列上转）：踢墙候选**按顺序**试，第一个落得下的就用它。
+            if target_rotation == 0:
+                post_x, post_y = pre_x, y
+            else:
+                kicked = _rotate_to(board, shapes, piece_type, pre_x, y, target_rotation)
+                if kicked is None:
+                    continue
+                post_x, post_y = kicked
+            # ③ **落到地面**（硬降落点）· ④ **打分**。
+            landing_y = _drop_to(profile, plan, post_x, post_y)
+            score = _score(profile, plan, post_x, landing_y)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_rotation = target_rotation
+                best_pre_x = pre_x
+                best_post_x = post_x
+                best_landing_y = landing_y
+    if best_score is None:
+        return None
+    # ⑤ **命令序列**：先平移 → 再旋转 → 最后硬降（**只在赢家身上造**）。
+    cells = tuple((best_post_x + cx, best_landing_y + cy) for cx, cy in shapes[best_rotation])
+    commands = _commands_for(x, best_pre_x, best_rotation)
+    return Placement(commands=commands, score=best_score, cells=cells)
 
 
 def _shapes_of(piece_type: str) -> tuple[tuple[tuple[int, int], ...], ...] | None:
@@ -172,57 +323,50 @@ def _candidate_columns(width: int) -> range:
     return range(-3, width + 3)
 
 
-def _candidate(
-    board: Board,
-    shapes: tuple[tuple[tuple[int, int], ...], ...],
-    piece_type: str,
-    x: int,
-    y: int,
-    pre_x: int,
-    target_rotation: int,
-) -> Placement | None:
-    """算一个候选（**落不下就是 `None`**）。"""
-    width = len(board[0])
-    height = len(board)
-    # ① **平移过去**：起手那一列放得下吗？**中间每一列也得放得下**
-    #    （人被墙挡在半路的场景是真实存在的）。
-    if not _path_is_clear(board, shapes[0], x, y, pre_x):
-        return None
-    # ② **旋转**（在起手列上转）：踢墙候选**按顺序**试，第一个落得下的就用它。
-    if target_rotation == 0:
-        post_x, post_y = pre_x, y
-    else:
-        kicked = _rotate_to(board, shapes, piece_type, pre_x, y, target_rotation)
-        if kicked is None:
-            return None
-        post_x, post_y = kicked
-    # ③ **落到地面**（硬降落点）。
-    landing_y = _drop_to(board, shapes[target_rotation], post_x, post_y)
-    cells = tuple((post_x + cx, landing_y + cy) for cx, cy in shapes[target_rotation])
-    # ④ **打分**。
-    score = _evaluate(board, cells, width, height)
-    # ⑤ **命令序列**：先平移 → 再旋转 → 最后硬降。
-    commands = _commands_for(x, pre_x, target_rotation)
-    return Placement(commands=commands, score=score, cells=cells)
-
-
-def _path_is_clear(
+def _build_ok_prefix(
     board: Board,
     shape: tuple[tuple[int, int], ...],
-    x: int,
     y: int,
-    pre_x: int,
-) -> bool:
-    """从 `x` 平移到 `pre_x` 的**每一格都得放得下**。
+    width: int,
+    height: int,
+) -> list[int]:
+    """每列「出生行上放不放得下」→ **前缀和**（**招 3**）。
+
+    **为什么能这么判**：平移路径上的每一列都必须是**同一个形状**在**同一行**
+    上的落点判定——**与列无关的部分（形状本身、行）完全一样**，
+    所以**一次算好每列的可行性**，路径就变成**区间和为 0** 的问题。
+    """
+    prefix = [0] * (width + 1)
+    for column in range(width):
+        ok = True
+        for cell_x, cell_y in shape:
+            absolute_x = column + cell_x
+            absolute_y = y + cell_y
+            if absolute_x < 0 or absolute_x >= width or absolute_y >= height:
+                ok = False
+                break
+            if absolute_y >= 0 and board[absolute_y][absolute_x] != 0:
+                ok = False
+                break
+        prefix[column + 1] = prefix[column] + (0 if ok else 1)
+    return prefix
+
+
+def _path_is_clear(profile: _Profile, x: int, pre_x: int) -> bool:
+    """从 `x` 平移到 `pre_x` 的**每一格都得放得下**（**前缀和 · O(1)**）。
 
     **为什么要逐格查**：只查终点的话，"挪到一半被墙挡住"会被漏掉——
     那条命令序列会让内核只挪一半，**落点与算出来的不一样**。
+
+    **越界就是放不下**：路径的端点若在棋盘之外，这一列必定放不下
+    （口径与 `_fits` 的左右越界判定一致）。
     """
-    step = 1 if pre_x >= x else -1
-    for current in range(x, pre_x + step, step):
-        if not _fits(board, shape, current, y):
-            return False
-    return True
+    low = x if x < pre_x else pre_x
+    high = x if x > pre_x else pre_x
+    if low < 0 or high >= profile.width:
+        return False
+    prefix = profile.col_ok_prefix
+    return prefix[high + 1] == prefix[low]
 
 
 def _rotate_to(
@@ -247,17 +391,34 @@ def _rotate_to(
     return None
 
 
-def _drop_to(
-    board: Board,
-    shape: tuple[tuple[int, int], ...],
-    x: int,
-    y: int,
-) -> int:
-    """从 `(x, y)` 往下落到**落不下去为止**（返回落点的纵坐标）。"""
-    landing = y
-    while _fits(board, shape, x, landing + 1):
-        landing += 1
-    return landing
+def _drop_to(profile: _Profile, plan: _RotationPlan, x: int, y: int) -> int:
+    """从 `(x, y)` 往下落到**落不下去为止**（返回落点的纵坐标）。
+
+    **解析式（招 2）**：不再逐行试 `_fits`，而是**每列二分**找
+    「下面第一个有格的行」，落点 = 各列允许的最高落点的**最小值**。
+
+    **为什么等价**：一块方块能往下走多远，只受**它自己占的那几列**限制；
+    每一列的阻塞点是**那一列第一个有格的行**——**逐列取最紧的那个**，
+    就是逐行试出来的同一个落点。
+    """
+    height = profile.height
+    width = profile.width
+    limit = height
+    for cell_x, cell_y in plan.cells:
+        column = x + cell_x
+        if column < 0 or column >= width:
+            # 这一列在棋盘外 → **放不下**（口径与 `_fits` 的左右越界一致）：
+            # 逐行试的话，第一步就放不下，落点停在原地。
+            return y
+        filled = profile.col_rows[column]
+        index = bisect_left(filled, y + 1 + cell_y)
+        blocked = filled[index] if index < len(filled) else height
+        candidate_limit = blocked - 1 - cell_y
+        if candidate_limit < limit:
+            limit = candidate_limit
+    if limit > height - 1:
+        limit = height - 1
+    return limit if limit > y else y
 
 
 def _fits(
@@ -301,13 +462,8 @@ def _commands_for(x: int, pre_x: int, target_rotation: int) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def _evaluate(
-    board: Board,
-    cells: tuple[tuple[int, int], ...],
-    width: int,
-    height: int,
-) -> int:
-    """给一个落点打分（**越大越好**）。
+def _score(profile: _Profile, plan: _RotationPlan, post_x: int, landing_y: int) -> int:
+    """给一个落点打分（**越大越好**）——**增量算**（**招 4**）。
 
     **五项**（权重都是整数）：
 
@@ -318,30 +474,102 @@ def _evaluate(
     | 高度和 | 各列高度之和 | 越低越好（留出空间） |
     | 起伏度 | 相邻两列高度差之和 | 平的盘面比参差的盘面好堆 |
     | 落点高度 | 落上去之后**最高**的列高 | 别把自己架在半空 |
+
+    **为什么不复制棋盘**：一块方块只影响**它占的那几列**——
+    其余列的洞数、高度、起伏**原封不动**。所以**从基准分加减**即可。
     """
-    grid = [list(row) for row in board]
-    for cell_x, cell_y in cells:
-        if 0 <= cell_y < height and 0 <= cell_x < width:
-            grid[cell_y][cell_x] = 1
-    lines = sum(1 for row in grid if all(value != 0 for value in row))
-    heights: list[int] = []
-    holes = 0
-    for column in range(width):
-        top = height
-        for row in range(height):
-            if grid[row][column] != 0:
-                top = row
-                break
-        heights.append(height - top)
-        if top < height:
-            holes += sum(1 for row in range(top + 1, height) if grid[row][column] == 0)
-    aggregate_height = sum(heights)
-    bumpiness = sum(abs(heights[index] - heights[index + 1]) for index in range(len(heights) - 1))
-    landing_height = max(heights) if heights else 0
+    width = profile.width
+    height = profile.height
+    row_fill = profile.row_fill
+
+    # ① **消行数**：只看这块方块占到的行（每行占几格**按朝向预计算**）。
+    lines = profile.base_full_rows
+    for cell_y, count in plan.row_counts:
+        row = landing_y + cell_y
+        if 0 <= row < height and row_fill[row] + count == width:
+            lines += 1
+
+    # ② **受影响的列**：洞数与高度逐列修正。
+    base_heights = profile.base_heights
+    updated = profile.scratch_heights
+    touched = profile.scratch_columns
+    del touched[:]
+    holes_total = profile.base_holes_total
+    aggregate = profile.base_aggregate
+    for cell_x, ys in plan.columns:
+        column = post_x + cell_x
+        if column < 0 or column >= width:
+            # **越界的格子不进网格**（纪律 ①）。
+            continue
+        top = profile.col_top[column]
+        old_holes = profile.col_holes[column]
+        lowest = height
+        below_count = 0
+        for cell_y in ys:
+            row = landing_y + cell_y
+            if row < 0 or row >= height:
+                # **棋盘之上的格子不进网格**（纪律 ①）。
+                continue
+            if row < lowest:
+                lowest = row
+            if row > top:
+                below_count += 1
+        if lowest == height:
+            # 这一列**一个格子都没进网格** → 原样不动。
+            continue
+        if lowest < top:
+            new_top = lowest
+            middle_count = 0
+            for cell_y in ys:
+                row = landing_y + cell_y
+                if new_top < row < top:
+                    middle_count += 1
+            new_holes = (top - new_top - 1) - middle_count + old_holes - below_count
+        else:
+            new_top = top
+            new_holes = old_holes - below_count
+        holes_total += new_holes - old_holes
+        updated[column] = height - new_top
+        aggregate += updated[column] - base_heights[column]
+        touched.append(column)
+
+    # ③ **起伏度**：**每一对相邻列只算一次**（纪律 ④）——**归它的右列**。
+    bumpiness = profile.base_bumpiness
+    for column in touched:
+        # 这一对归 `column`（它是右列）。
+        if column > 0:
+            left_height = updated[column - 1] or base_heights[column - 1]
+            right_height = updated[column] or base_heights[column]
+            bumpiness += abs(left_height - right_height) - abs(
+                base_heights[column - 1] - base_heights[column]
+            )
+        # 右边那一对：**只有右邻没被影响时才归我**（否则归右邻）。
+        right = column + 1
+        if right < width and updated[right] == 0:
+            left_height = updated[column] or base_heights[column]
+            bumpiness += abs(left_height - base_heights[right]) - abs(
+                base_heights[column] - base_heights[right]
+            )
+
+    # ④ **落点高度**（最高的一列）。
+    if not touched:
+        landing_height = profile.base_max_height
+    elif profile.base_argmax in touched:
+        landing_height = max(updated[column] or base_heights[column] for column in range(width))
+    else:
+        landing_height = profile.base_max_height
+        for column in touched:
+            if updated[column] > landing_height:
+                landing_height = updated[column]
+
+    # 暂存清零（**下一个候选接着用**）。
+    for column in touched:
+        updated[column] = 0
+
     return (
         WEIGHT_LINES * lines
-        + WEIGHT_HOLES * holes
-        + WEIGHT_AGGREGATE_HEIGHT * aggregate_height
+        + WEIGHT_HOLES * holes_total
+        + WEIGHT_AGGREGATE_HEIGHT * aggregate
         + WEIGHT_BUMPINESS * bumpiness
         + WEIGHT_LANDING_HEIGHT * landing_height
     )

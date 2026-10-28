@@ -326,6 +326,37 @@ ANCHORS: tuple[
         -8000,
         ((0, 16), (1, 16), (1, 17), (2, 17)),
     ),
+    (
+        "落点在棋盘之上 · I 块（竖放 · 出生行 -1）",
+        (
+            "..........",
+            ".....##...",
+            "....#..#..",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..##...#..",
+            "#.##..##..",
+            "####..###.",
+        ),
+        "I",
+        0,
+        -1,
+        ("moveRight", "moveRight", "moveRight", "moveRight", "rotateCW", "hardDrop"),
+        -55480,
+        ((7, -2), (7, -1), (7, 0), (7, 1)),
+    ),
 )
 
 
@@ -513,3 +544,164 @@ def test_reference_source_is_frozen() -> None:
     assert digest == REFERENCE_SOURCE_SHA256, (
         f"参照实现源码变了：指纹 {digest} ≠ 钉住的 {REFERENCE_SOURCE_SHA256}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 等价纪律专项（**spec-M5 §7.1 的四条**）
+# ---------------------------------------------------------------------------
+#
+# 每条纪律都配一组**专门造出来的局面**——通用随机局面未必覆盖得到
+# （比如"同分先枚举到的赢"要对称盘面才触发）。
+# 断言方式统一是**与参照实现逐条相同**：参照实现就是 M4 的口径，
+# **它的行为就是纪律的定义**。
+
+#: 产品实现的源码路径（**纪律与确定性守卫要读它**）。
+SEARCH_SOURCE = (
+    Path(__file__).resolve().parents[1] / "src" / "tetris_kernel" / "systems" / "ai" / "search.py"
+)
+
+
+def _assert_same_as_reference(
+    board: tuple[tuple[int, ...], ...],
+    piece_type: str,
+    spawn_x: int,
+    spawn_y: int,
+) -> None:
+    """产品实现与参照实现**逐条相同**（命令序列 · 分数 · 落点格子）。"""
+    product = _outcome(product_plan(board, piece_type, spawn_x, spawn_y, 0))
+    reference = _outcome(reference_plan(board, piece_type, spawn_x, spawn_y, 0))
+    assert product == reference, (
+        f"决策不一致：方块={piece_type} 出生=({spawn_x}, {spawn_y}) 产品={product} 参照={reference}"
+    )
+
+
+def test_discipline_oob_cells_do_not_enter_grid() -> None:
+    """纪律 ①：**越界的格子不进网格**（棋盘之上的格子不算数）。
+
+    **造局**（见锚点「落点在棋盘之上」）：出生行 -1 + 底部堆叠 →
+    方块**转成竖放**后卡住 → 落点有两格在**棋盘之上**（行号 -2 / -1）。
+    那些格子**不进网格**——所以打分时它们**不算数**。
+    """
+    rows = (
+        "..........",
+        ".....##...",
+        "....#..#..",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..........",
+        "..##...#..",
+        "#.##..##..",
+        "####..###.",
+    )
+    board = _rows_to_board(rows)
+    _assert_same_as_reference(board, "I", 0, -1)
+    placement = product_plan(board, "I", 0, -1, 0)
+    assert placement is not None
+    assert any(cell_y < 0 for _, cell_y in placement.cells), (
+        "这个局面没能造出「棋盘之上的格子」——纪律 ① 的场景失效"
+    )
+
+
+def test_discipline_drop_only_below_spawn_row() -> None:
+    """纪律 ②：**下落只看出生行以下**（起始位置是否重叠**不检查**）。
+
+    **造局**：空盘 → 方块从出生行往下掉到盘底 →
+    它**整块都在棋盘之内**（出生行之上的部分被无视，不阻挡下落）。
+    """
+    empty = tuple(tuple(0 for _ in range(BOARD_WIDTH)) for _ in range(BOARD_HEIGHT))
+    for piece_type in PIECE_TYPES:
+        _assert_same_as_reference(empty, piece_type, 3, 0)
+        placement = product_plan(empty, piece_type, 3, 0, 0)
+        assert placement is not None, f"{piece_type} 在空盘上居然没有落点"
+        assert max(cell_y for _, cell_y in placement.cells) == BOARD_HEIGHT - 1, (
+            f"{piece_type} 没有落到盘底——下落口径变了"
+        )
+
+
+def test_discipline_tie_goes_to_first_enumerated() -> None:
+    """纪律 ③：**同分先枚举到的赢**（枚举顺序不变 → 平局口径不变）。
+
+    **造局**：空盘 → 每个落点分数都相同 → 必须取**枚举到的第一个**
+    （最左边那列）→ 命令序列是**一路左移到头**。
+    """
+    empty = tuple(tuple(0 for _ in range(BOARD_WIDTH)) for _ in range(BOARD_HEIGHT))
+    placement = product_plan(empty, "T", 4, 0, 0)
+    assert placement is not None
+    assert placement.commands == ("moveLeft", "moveLeft", "moveLeft", "moveLeft", "hardDrop")
+    _assert_same_as_reference(empty, "T", 4, 0)
+
+
+def test_discipline_adjacent_pairs_counted_once() -> None:
+    """纪律 ④：**每一对相邻列只修正一次**（相邻两列都被影响时不算两遍）。
+
+    **造局**：阶梯盘面 → 一块横放的 I 块**横跨四列**，
+    它左右两侧的相邻对**都会被影响** → 算两遍就偏一个起伏度权重。
+    """
+    rows = ["." * BOARD_WIDTH for _ in range(BOARD_HEIGHT - 3)]
+    rows += ["###.......", "##........", "#........."]
+    board = _rows_to_board(tuple(rows))
+    _assert_same_as_reference(board, "I", 3, 0)
+    placement = product_plan(board, "I", 3, 0, 0)
+    assert placement is not None
+    columns = {cell_x for cell_x, _ in placement.cells}
+    assert len(columns) >= 3, "这个局面没能造出「横跨多列的落点」——纪律 ④ 的场景失效"
+
+
+# ---------------------------------------------------------------------------
+# 确定性守卫（**G5-3**）
+# ---------------------------------------------------------------------------
+
+
+def _function_node(file_path: Path, name: str) -> ast.FunctionDef:
+    """在源码里找到函数定义（**找不到就是没找到**）。"""
+    tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"源码里找不到函数 `{name}`：{file_path}")
+
+
+def test_determin_no_time_in_decision_path() -> None:
+    """决策路径里**没有 `time`**（M4-D3 · 按耗时自适应就是从这里进来的）。"""
+    tree = ast.parse(SEARCH_SOURCE.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name != "time", "决策路径不许 import time"
+        if isinstance(node, ast.ImportFrom):
+            assert (node.module or "") != "time", "决策路径不许 from time import ..."
+        if isinstance(node, ast.Name):
+            assert node.id != "time", "决策路径不许出现 time"
+        if isinstance(node, ast.Attribute):
+            assert node.attr not in ("time", "perf_counter", "monotonic"), (
+                f"决策路径不许取时间：{node.attr}"
+            )
+
+
+def test_determin_budget_constants_are_fixed() -> None:
+    """**候选数与深度是固定常量**（不按耗时自适应 · 不分摊到多帧）。"""
+    for name in ("MAX_CANDIDATES", "SEARCH_DEPTH"):
+        expression = _assignment_expression(SEARCH_SOURCE, name)
+        assert isinstance(expression, ast.Constant), f"`{name}` 必须是字面量常量"
+        assert isinstance(expression.value, int)
+    # 候选列范围也是**写死的**（`range(常量, width + 常量)`）。
+    function = _function_node(SEARCH_SOURCE, "_candidate_columns")
+    returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+    assert returns, "`_candidate_columns` 里没有返回值"
+    call = returns[0].value
+    assert isinstance(call, ast.Call), "`_candidate_columns` 必须返回 range(...)"
+    assert isinstance(call.func, ast.Name) and call.func.id == "range"
+    for argument in call.args:
+        names = {node.id for node in ast.walk(argument) if isinstance(node, ast.Name)}
+        assert names <= {"width"}, f"候选列范围不许依赖会变的量：{names}"
