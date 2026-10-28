@@ -200,8 +200,14 @@ class MenuSession:
         self._root.quit()
 
     def choose(self) -> MenuChoice:
-        """**跑菜单直到玩家点了「开始」**（**返回选择**）。"""
-        self._root.mainloop()
+        """**跑菜单直到玩家点了「开始」**（**返回选择**）。
+
+        **已经选过就直接返回**（**不启事件循环**）——`quit()` 在 `mainloop()`
+        **之前**调用是**无效的**（tkinter 的规矩），所以**先看有没有选择**，
+        再决定要不要进事件循环。
+        """
+        if self._choice is None:
+            self._root.mainloop()
         self._root.destroy()
         if self._choice is None:
             raise RuntimeError("菜单没有拿到选择（窗口被关掉了？）")

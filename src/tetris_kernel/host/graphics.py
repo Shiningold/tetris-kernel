@@ -103,9 +103,12 @@ class GraphicsSession:
             render=False,
             input_wrapper=self._wrap_input,
         )
+        loop = HeadlessLoop(play.assembly)
+        # **开局**（**派 `start` 命令并跑一轮命令循环** —— 与终端版同一条路）。
+        loop.start()
         self._play = PlaySession(
             assembly=play.assembly,
-            loop=HeadlessLoop(play.assembly),
+            loop=loop,
             renderer=None,
             input_adapter=play.input_adapter,
             sleeper=self._sleeper,
@@ -180,6 +183,14 @@ class GraphicsSession:
         # **局结束后窗口不立刻关**（**玩家要看结算**）——等关窗或按 q。
         self._root.bind("<KeyPress>", self._on_key_press)
         self._root.mainloop()
+
+    def advance(self, frames: int) -> None:
+        """**推进若干帧**（**脚本化用** —— 桌面级冒烟靠它，不靠肉眼）。
+
+        **它跑的是同一套东西**（`PlaySession` · **真实时钟** · **事件泵**）——
+        **只是帧数有限**。
+        """
+        self._play.run(frames=frames)
 
     def close(self) -> None:
         """**收尾**（**关窗口**）。"""
