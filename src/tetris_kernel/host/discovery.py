@@ -137,9 +137,13 @@ def system_catalog(
             continue
         if item.manifest.name in entries:
             raise ValueError(f"系统名重复：{item.manifest.name}（系统目录与变体目录各有一个）")
+        variant_factory = item.factory
         entries[item.manifest.name] = SystemEntry(
             manifest=item.manifest,
-            factory=item.factory,
+            # **变体层的工厂签名是"泛的"**（变体层不许 import 系统层 —— 横向
+            # 依赖 · 架构 §2.3）→ **宿主层在这里包一层适配**，把真实的安装上下文
+            # 递进去。**适配只做一次**，变体侧不必知道上下文的类型。
+            factory=lambda context, factory=variant_factory: factory(context),
         )
     return MappingProxyType(entries)
 

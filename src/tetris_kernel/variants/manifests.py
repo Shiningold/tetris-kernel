@@ -33,12 +33,23 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType, ModuleType
 
 from ..contracts.systems import SystemManifest
-from ..systems.context import SystemFactory
+
+#: 变体工厂的形状（**取一份安装上下文，造出系统实例**）。
+#:
+#: **为什么不是 `systems.context.SystemFactory`**：那个别名绑着 `InstallContext`
+#: ——而 `InstallContext` 住在**系统层**，系统层 import 总线与内核 →
+#: **变体层 import 系统层 = 横向依赖 = `lint-imports` 当场红**（架构 §2.3：
+#: `variants/` 与 `systems/` **同级**）。
+#:
+#: **所以变体层只说"这是个工厂"**，具体上下文由**宿主层**在装配时递进来
+#:（宿主层 import 两边都合法）。**运行时没有任何损失**：宿主层把调用包一层
+#: 适配（`host/discovery.py` 的 `system_catalog`）。
+type VariantFactory = Callable[..., object]
 
 #: 声明模块的模块名（**约定**：变体包下的 `manifest.py`）。
 MANIFEST_MODULE = "manifest"
@@ -64,7 +75,7 @@ class VariantModule:
 
     package: str
     manifest: SystemManifest | None
-    factory: SystemFactory | None
+    factory: VariantFactory | None
     module: ModuleType
 
 

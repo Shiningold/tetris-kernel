@@ -103,15 +103,27 @@ source_modules = [
 forbidden_modules = ["rich", "tkinter", "numpy", "pydantic", "pytest", "hypothesis"]
 
 [[tool.importlinter.contracts]]
-name = "变体不跨层引用内核 / 总线 / 适配器 / 宿主"
+name = "变体不跨层引用适配器 / 宿主"
 type = "forbidden"
 source_modules = ["tetris_kernel.variants"]
 forbidden_modules = [
-    "tetris_kernel.kernel",
-    "tetris_kernel.bus",
     "tetris_kernel.adapters",
     "tetris_kernel.host",
 ]
+
+[[tool.importlinter.contracts]]
+name = "纯规则集型变体不引用内核 / 总线"
+type = "forbidden"
+source_modules = ["tetris_kernel.variants.gravity"]
+forbidden_modules = [
+    "tetris_kernel.kernel",
+    "tetris_kernel.bus",
+]
+
+# **为什么拆成两条**：变体有两种——**规则集型**（只换规则集 · 变体 A）与
+# **系统型**（挂系统 · 变体 B）。系统型变体**本身就是系统**：它订阅事件、派发
+# 命令，**必然要用总线与内核的公开接口** → 那条禁令对它不成立。
+# **规则集型变体没有任何这个需要** → 那条禁令对它是实的（它只该读规则层与契约层）。
 
 [[tool.importlinter.contracts]]
 name = "系统之间互不直调，只经事件与命令协作"
