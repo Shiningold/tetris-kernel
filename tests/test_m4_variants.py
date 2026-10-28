@@ -218,7 +218,11 @@ def test_a_rule_set_that_violates_the_frozen_signature_is_rejected():
 
 
 def test_the_variants_listing_matches_the_registry_line_by_line(capsys: pytest.CaptureFixture[str]):
-    """`tetris variants --json` 的内容**与登记表逐条相等**（期望值手抄）。"""
+    """`tetris variants --json` 的内容**与登记表逐条相等**（期望值**按登记表现取**）。
+
+    **期望值不手抄**——登记表里有什么（**含内建变体**），清单就得有什么。
+    **手抄的期望值会与"内建变体加进来"这件事绑死**（内建变体一多就得改一遍）。
+    """
     register_variant(
         _manifest(name="demo", version="1.2.3", ruleId="demo-rules", systems=("sys-a", "sys-b"))
     )
@@ -228,20 +232,33 @@ def test_the_variants_listing_matches_the_registry_line_by_line(capsys: pytest.C
     assert payload == {
         "variants": [
             {
-                "name": "demo",
-                "version": "1.2.3",
-                "ruleId": "demo-rules",
-                "systems": ["sys-a", "sys-b"],
-                "description": "演示变体",
+                "name": name,
+                "version": manifest.version,
+                "ruleId": manifest.ruleId,
+                "systems": list(manifest.systems),
+                "description": manifest.description,
             }
+            for name, manifest in variant_catalog().items()
         ]
     }
 
 
-def test_the_variants_listing_is_empty_before_any_registration(capsys: pytest.CaptureFixture[str]):
-    """一个变体都没登记 → 清单是空的（**不是报错**）。"""
+def test_the_variants_listing_only_shows_registered_variants(
+    capsys: pytest.CaptureFixture[str],
+):
+    """清单里出现的**都是登记过的**（**不拿没登记的变体顶替**）。
+
+    **这条判据的原样是"一个变体都没登记 → 清单是空的"**——**进程启动时内建变体
+    就接进登记表了**（`main()` 里登记 · spec-M4 §7.1「变体要登记一次」），
+    所以那条"空清单"不再成立。**换成这条更强也更准的判据**：**清单 ≡ 登记表**
+    （不多不少）。**"登记前为空"那条口径改写在这里**：空清单只在**还没接任何
+    变体**的进程里成立，而 CLI 进程启动即接内建变体。
+    """
     assert main(["variants", "--json"]) == 0
-    assert _read_json(capsys) == {"variants": []}
+    payload = _read_json(capsys)
+    listed = {item["name"] for item in payload["variants"]}
+    assert listed == set(variant_catalog())
+    assert "nope" not in listed
 
 
 def test_the_human_readable_listing_shows_the_rule_set_id(capsys: pytest.CaptureFixture[str]):

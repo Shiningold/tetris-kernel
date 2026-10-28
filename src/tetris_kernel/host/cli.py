@@ -164,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     所以"返回退出码"说的是**本函数自己判定的那几条路径**（如帧数为负）。
     """
     _force_utf8_output()
+    # **内建变体在进程启动时就接进登记表**（幂等）——**变体要登记一次**
+    # （spec-M4 §7.1）· **登记之后清单与登记表恒等**。
+    register_builtin_variants()
     parser = _build_parser()
     args = parser.parse_args(argv)
     match args.command:
@@ -655,10 +658,6 @@ def _cmd_variants(args: argparse.Namespace) -> int:
     不算**——清单要能被测试直接断言）。
     """
     catalog = variant_catalog()
-    if not catalog:
-        # **清单是"登记"出来的**——**内建变体登记一下就有内容**（幂等）。
-        register_builtin_variants()
-        catalog = variant_catalog()
     if bool(args.json):
         payload: dict[str, object] = {
             "variants": [

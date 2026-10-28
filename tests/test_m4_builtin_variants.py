@@ -27,7 +27,7 @@ from tetris_kernel.host.builtin_variants import (
     register_builtin_variants,
 )
 from tetris_kernel.host.cli import main
-from tetris_kernel.host.variants import variant_of
+from tetris_kernel.host.variants import variant_catalog, variant_of
 from tetris_kernel.rules.interface import signature_mismatches
 
 _VARIANTS_DIR = Path(__file__).resolve().parents[1] / "src" / "tetris_kernel" / "variants"
@@ -39,11 +39,14 @@ _VARIANTS_DIR = Path(__file__).resolve().parents[1] / "src" / "tetris_kernel" / 
 
 
 def test_register_builtin_variants_is_idempotent() -> None:
-    """**登记可以反复调**——已登记的跳过，不报错。"""
-    first = register_builtin_variants()
-    second = register_builtin_variants()
-    assert set(first) == {"gravity-down", "gravity-right", "gravity-left"}
-    assert second == ()
+    """**登记可以反复调**——已登记的跳过，不报错。
+
+    **不假设"第一次调用会登记三个"**——**命令行进程启动时已经登记过了**
+    （`main()` 里登记）→ **幂等的判据是"重复调用无副作用"，不是"首次调用登记了什么"**。
+    """
+    register_builtin_variants()
+    assert register_builtin_variants() == ()
+    assert {"gravity-down", "gravity-right", "gravity-left"} <= set(variant_catalog())
 
 
 def test_builtin_variants_are_registered_with_matching_rule_ids() -> None:
