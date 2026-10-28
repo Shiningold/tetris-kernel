@@ -60,8 +60,10 @@
 
 **仓库侧待办**（**都不阻塞开发**）：
 
-- [ ] **GitHub Topics 未设**——仓库已公开但还没有标签（`tetris` · `game-engine` · `event-driven` · `event-sourcing` · `architecture` · `deterministic-simulation` · `python` · `plugins` · `tdd` · `ai`），**要用户在网页 Settings → Topics 填**，或给一个带 `repo` scope 的 PAT。
-- [ ] **历史批次分支未推**——M0–M5 的约 30 条 `feature/*` 批次分支**只在本地**；要不要一并推上去（**推上去能保留批次边界的历史，推不上只留合并记录**）。
+- [x] **GitHub Topics 已设**（2026-10-28）——`tetris` · `game-engine` · `event-driven` · `event-sourcing` ·
+  `architecture` · `deterministic-simulation` · `python` · `plugins` · `tdd` · `ai`（**走 API 写的，不用手填**）。
+- [x] **历史批次分支不推**（2026-10-28 **用户拍板**）——M0–M5 的约 30 条 `feature/*` 批次分支**只留本地**：
+  **批次边界已经由 `master` 上的合并记录与 tag 保住**，远端不必再存一遍分支。
 - [ ] **后续版本号怎么抬**——0.1.0 已发布，**下一个版本是 0.2.0 还是 0.1.1** 取决于 M6 是什么性质（**加功能 → 0.2.0 · 只修口径 → 0.1.1**）。
 
 **下一轮（M6）尚未立项**——**方向要用户拍板**。候选方向（按 M5 的账推）：**AI 尾部优化**（见上 ①）· **变体 B 自身的开销**（全开档剩下的越界主要在它身上）· **NFR-2 口径重订**（见上 ②）。
