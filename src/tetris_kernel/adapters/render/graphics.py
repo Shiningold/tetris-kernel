@@ -36,7 +36,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from ...contracts.rules import RuleContext
 from ...rules.interface import RuleSet
@@ -442,6 +442,10 @@ class CanvasLike(Protocol):
     **为什么用协议而不是 `Any`**：协议**把这层能碰的东西钉死**——画笔只许
     建矩形 / 建文字 / 改属性 / 删元素，**碰不到别的**（也就不会顺手把窗口的
     状态改了）。**tkinter 的 `Canvas` 天然满足它**（方法签名一致）。
+
+    **`**kwargs` 逐个写出来**：tkinter 的这些方法在类型桩里是**一串重载**
+    （每个关键字各有各的类型），**协议里写 `**kwargs: Any` 反而匹配不上**——
+    **只声明画笔真用到的关键字**，匹配才稳。
     """
 
     def create_rectangle(
@@ -451,12 +455,24 @@ class CanvasLike(Protocol):
         x1: float,
         y1: float,
         /,
-        **kwargs: object,
+        *,
+        fill: str = "",
+        outline: str = "",
+        tags: str | tuple[str, ...] = (),
     ) -> int: ...
 
-    def create_text(self, x: float, y: float, /, **kwargs: object) -> int: ...
+    def create_text(
+        self,
+        x: float,
+        y: float,
+        /,
+        *,
+        text: float | str = "",
+        fill: str = "",
+        anchor: Literal["nw", "n", "ne", "w", "center", "e", "sw", "s", "se"] = "center",
+    ) -> int: ...
 
-    def itemconfig(self, item: int, /, **kwargs: object) -> None: ...
+    def itemconfig(self, item: int, /, **kwargs: Any) -> object: ...
 
     def delete(self, *tags: str) -> None: ...
 
