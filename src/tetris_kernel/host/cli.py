@@ -194,7 +194,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """建解析器（四个子命令）。"""
     parser = argparse.ArgumentParser(
         prog="tetris",
-        description="俄罗斯方块内核 · 命令行（M2 · 可观测：录像与回放 · 日志与指标 · 只读事件流）",
+        description="俄罗斯方块内核 · 命令行（M4 · 变体与实时游玩 · 录像与回放 · 日志与指标）",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

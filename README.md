@@ -4,7 +4,7 @@
 
 不是"做一个俄罗斯方块"，而是"做一个能让俄罗斯方块被反复重构的底座"——任何一次玩法创新（重力翻转、落地后生长、塌方物理），都应当只表现为**新增一个订阅者**，而不需要修改内核。
 
-> **项目状态：M1（可玩）已完成，M2（可观测）已完成。** M1 交付了标准玩法——形状表 · SRS 踢墙表（含 180° 扩展）· T-Spin 五档 · 完整计分表（基础分 + 连击 + B2B + 升级）· 锁定延迟 30 帧 / 重置上限 15 次 · 顶出判定，全部逐条验过，**无头可玩到底**。M2 交付了可观测的另一半——录像与回放（**200 局四项全等** + **1000 局回放指纹零差异**）· 结构化日志 · 按帧采样的指标 · 事件轨迹导出与只读事件流视图 · 局面序列化与恢复 · 降级三档，**五道门 `G2-1`…`G2-5` 全绿**，规格与计划见 [`docs/spec-M2.md`](docs/spec-M2.md) / [`docs/plan-M2.md`](docs/plan-M2.md)。**仍然没有画面**：渲染器与输入适配器属 M4，变体落地也属 M4（M3 只做扩展机制）。仓库里的代码目前是**可观测的内核**，不是游戏。
+> **项目状态：M1–M5 全部收官。** M1 交付标准玩法（形状表 · SRS 踢墙表含 180° 扩展 · T-Spin 五档 · 完整计分表 · 锁定延迟 30 帧 / 重置上限 15 次 · 顶出判定），**无头可玩到底**；M2 交付可观测的另一半（录像与回放 · 结构化日志 · 按帧采样的指标 · 事件轨迹导出 · 局面序列化与恢复 · 降级三档），**五道门 `G2-1`…`G2-5` 全绿**；M3 交付扩展机制（系统契约 · 注册表与热插拔 · 自动发现）；M4 交付**玩法与画面**——**两个变体**（重力可旋转 · 落地后生长）· **终端渲染器** · **键盘输入适配器** · **实时宿主**（`tetris play` 真能玩）· **AI 系统** · **录像升 v2**；M5 交付**等价提速**——**同一个 AI、同一个局面、同一个决策，但决策成本降一个量级**（实测 6.2×）。**内核与规则集一个字节都没动过**（M4 起冻结区零改动）。规格与计划见 [`docs/spec-M5.md`](docs/spec-M5.md) / [`docs/plan-M5.md`](docs/plan-M5.md)，**当前状态见 [`PROGRESS.md`](PROGRESS.md)**。
 
 ## 解决什么问题
 
@@ -31,7 +31,7 @@ cd tetris-kernel
 pip install .
 ```
 
-不想装、只想玩的，等 M4 之后的 GitHub Release：分窗口版（双击即玩）与控制台版（跑 `sim` / `replay` / `inspect`）两个免安装 exe。
+不想装、只想玩的，等 GitHub Release：分窗口版（双击即玩）与控制台版（跑 `sim` / `replay` / `inspect`）两个免安装 exe——**打包与发布落点还没定**（见 [`PROGRESS.md`](PROGRESS.md) 的「待办」段）。
 
 ## 使用
 
@@ -40,7 +40,9 @@ tetris sim          # 无头批量模拟，输出统计
 tetris sim --until game-over   # 跑到顶出就停帧，输出结算八项（M1 · 标准玩法）
 tetris inspect      # 只读事件流视图：跑 n 帧 → 按命名空间过滤事件流（M2）
 tetris replay <录像文件>  # 读录像 → 重放 → 输出四项比对（M2）
-tetris play         # 交互式游玩（占位；输入适配器与渲染器属 M4）
+tetris systems      # 系统清单与依赖图（M3）
+tetris variants     # 变体清单（M4）
+tetris play         # 交互式游玩（M4 · 真实时钟 + 终端画面 + 键盘输入）
 ```
 
 也可以用模块入口：
@@ -49,7 +51,7 @@ tetris play         # 交互式游玩（占位；输入适配器与渲染器属 
 python -m tetris_kernel
 ```
 
-> `tetris` **不带子命令会直接报错退出**——子命令必填。**`sim` / `inspect` / `replay` 三个都能跑**（`play` 仍占位）；`sim --until game-over` 会用确定性策略打完整局到顶出，并输出结算八项（分数 / 行数 / 方块数 / 连击 / B2B / 等级 / 最终棋盘指纹 / 事件数）。
+> `tetris` **不带子命令会直接报错退出**——子命令必填。**`sim` / `inspect` / `replay` / `systems` / `variants` 都能跑**；**`play` 现在真能玩**（M4 起有终端画面与键盘输入）；`sim --until game-over` 会用确定性策略打完整局到顶出，并输出结算八项（分数 / 行数 / 方块数 / 连击 / B2B / 等级 / 最终棋盘指纹 / 事件数）。
 
 > **录像文件从哪来**：**命令行不落盘**——日志 / 指标 / 录像三个产物的落盘出口**由宿主注入**（ADR-064 / ADR-085），默认落点是项目下的 `.tetris-data/`（不可写时回落 `~/.tetris/`）。录像由 Python API 产出：
 >
@@ -63,7 +65,7 @@ python -m tetris_kernel
 > loop.run_frames(20000, until_game_over=True) # 跑到顶出 → 录像落盘
 > ```
 >
-> 跑完后 `directory.path` 里就有 `recording-standard.jsonl`——`tetris replay <那个文件>` 直接读它（**四项全等时退出码 0**，不等 1，**没有比对基准 2**）。**落盘接线的另一半留给 M3 的实时宿主。**
+> 跑完后 `directory.path` 里就有 `recording-standard.jsonl`——`tetris replay <那个文件>` 直接读它（**四项全等时退出码 0**，不等 1，**没有比对基准 2**）。**落盘接线已完成**（M3 的实时宿主 + M4 的变体局录像 v2）。
 
 ## 架构
 
@@ -110,3 +112,7 @@ uv pip install --group dev
 | [`docs/plan-M1.md`](docs/plan-M1.md) | M1 怎么一步步做（阶段 / 验证 / 提交序列） |
 | [`docs/spec-M2.md`](docs/spec-M2.md) | M2 的规格（目标 / 边界 / 验收 / 可观测口径） |
 | [`docs/plan-M2.md`](docs/plan-M2.md) | M2 怎么一步步做（阶段 / 验证 / 提交序列） |
+| [`docs/spec-M3.md`](docs/spec-M3.md) · [`docs/plan-M3.md`](docs/plan-M3.md) | M3 的规格与计划（扩展机制 / 注册表 / 自动发现） |
+| [`docs/spec-M4.md`](docs/spec-M4.md) · [`docs/plan-M4.md`](docs/plan-M4.md) | M4 的规格与计划（变体 / 渲染与输入 / AI / 录像 v2 / 实时宿主） |
+| [`docs/spec-M5.md`](docs/spec-M5.md) · [`docs/plan-M5.md`](docs/plan-M5.md) | M5 的规格与计划（等价提速 / 门判据 / 反向验证） |
+| [`PROGRESS.md`](PROGRESS.md) | **当前状态快照**（在攻 / 待办 / 卡点） |
