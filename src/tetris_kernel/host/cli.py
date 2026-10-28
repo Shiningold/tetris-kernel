@@ -91,7 +91,7 @@ from ..bus.envelope import Envelope
 from ..rules.interface import RuleSet
 from ..rules.standard import STANDARD_RULESET
 from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
-from ..systems.replay.format import recording_from_jsonl
+from ..systems.replay.format import LEGACY_RECORDING_VERSION, recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
 from .assembly import ObservableSinks, assemble, assemble_play, default_sinks, rule_set_of
 from .builtin_variants import register_builtin_variants
@@ -99,7 +99,7 @@ from .clock import DEFAULT_STEP_MS, RealClock
 from .discovery import declared_manifests, dependency_graph, system_catalog
 from .loop import HeadlessLoop, RunReport
 from .play import PlayReport, PlaySession
-from .replay import REPLAY_LIMITS, KernelReplayDriver
+from .replay import REPLAY_LIMITS, KernelReplayDriver, recorded_five_items
 from .variants import variant_catalog, variant_of
 
 #: `sim` 的默认帧数（**不带 `--until` 时**）。
@@ -367,6 +367,9 @@ def _sinks_for(args: argparse.Namespace) -> ObservableSinks:
 
     **路径沿用既有策略**（项目优先 → 不可写时回落 home · ADR-074）——
     **不另起一套**。
+
+    **文件名带规则集与变体**（M4-S10）：变体 B 的规则集就是 `standard` →
+    不带变体它与标准局的录像同名，而录像是**覆盖语义** → 后写的盖掉先写的。
     """
     wanted = (
         bool(args.persist_log),
@@ -375,7 +378,14 @@ def _sinks_for(args: argparse.Namespace) -> ObservableSinks:
     )
     if not any(wanted):
         return ObservableSinks()
-    sinks, _directory = default_sinks()
+    variant_name = getattr(args, "variant", None)
+    rule_id = "standard"
+    if variant_name:
+        register_builtin_variants()
+        manifest = variant_of(variant_name)
+        if manifest is not None:
+            rule_id = manifest.ruleId
+    sinks, _directory = default_sinks(rule_id=rule_id, variant_id=variant_name)
     return ObservableSinks(
         log=sinks.log if wanted[0] else None,
         metrics=sinks.metrics if wanted[1] else None,
@@ -440,6 +450,7 @@ def _cmd_sim(args: argparse.Namespace) -> int:
 
     variant = _variant_rule_set_of(args)
     variant_systems = _variant_systems_of(args)
+    variant_name = getattr(args, "variant", None)
     if variant is None:
         assembly = assemble(seed=seed, sinks=_sinks_for(args))
     else:
@@ -454,6 +465,8 @@ def _cmd_sim(args: argparse.Namespace) -> int:
             # **系统目录**：自动发现的汇总（`systems/` + `variants/`）——
             # **变体 B 的系统住在 `variants/growth/`** → **自动发现扫得到**。
             system_catalog=system_catalog() if variant_systems else None,
+            # **录像头要记变体标识**（M4-S10）——**变体标识 ≠ 规则集标识**。
+            variant_id=variant_name,
         )
     loop = HeadlessLoop(assembly)
     loop.start()
@@ -470,18 +483,22 @@ def _cmd_sim(args: argparse.Namespace) -> int:
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    """`replay`：读录像 → 重放 → 输出四项比对。
+    """`replay`：读录像 → 重放 → 输出**五项**比对。
 
     **重放要按录像头的种子与规则集起一个全新内核**（spec §7.2）——起错规则
     集，重放出来的就不是同一局。**规则集没登记就明确拒绝**（审查 M1）：不拿
     标准规则集顶替。
 
+    **变体局按录像头的变体标识装配**（M4-S10 · spec-M4 §7.9）：**变体标识 ≠
+    规则集标识**——变体 B 的规则集就是标准的，玩法差异来自它挂的系统 →
+    **只按规则集起内核，变体的系统装不回去 → 扩展槽是空的 → 第五项必然不等**。
+
     **可观测系统一律不装配**（`observability_enabled=False`）：重放要的是
     **内核逐帧一致**，多几个订阅者只会多几条事件。
 
-    **四项不等时退出码是 1**；**录像里没有局末四项时退出码是 2**（没比不是
-    过了 · 审查 H3）；**规则集没登记时退出码是 2**（起错规则集 · 审查 M1）
-    ——脚本能直接判成败。
+    **五项不等时退出码是 1**；**录像里没有局末基准时退出码是 2**（没比不是
+    过了 · 审查 H3）；**规则集 / 变体没登记时退出码是 2**（起错规则集 ·
+    审查 M1）——脚本能直接判成败。
     """
     path = Path(args.file)
     try:
@@ -495,63 +512,100 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         print(f"录像读不了：{error}", file=sys.stderr)
         return 2
 
-    # **按录像头的规则集起内核**——起错规则集，重放出来的就不是同一局。
-    # **表里没有就明确拒绝**（审查 M1）：拿标准规则集硬跑，重放出来的四项
-    # 必然不等，而报错只说"四项不等"，看不出"起错规则集了"。
-    rule_set = rule_set_of(recording.rule)
-    if rule_set is None:
-        print(
-            f"录像的规则集 {recording.rule!r} 没有登记的规则集："
-            "变体规则的重放待 M4（M2 只认标准规则集）",
-            file=sys.stderr,
-        )
-        return 2
+    # **按录像头的变体标识 / 规则集起内核**——起错，重放出来的就不是同一局。
+    variant_name = recording.variant
+    systems: tuple[str, ...] = ()
+    if variant_name is not None:
+        register_builtin_variants()
+        variant = variant_of(variant_name)
+        if variant is None:
+            print(
+                f"录像的变体 {variant_name!r} 没有登记的变体："
+                "变体局的录像装不回去那一局（不拿标准玩法顶替）",
+                file=sys.stderr,
+            )
+            return 2
+        rule_set = variant.ruleSet
+        rule_id = variant.ruleId
+        systems = variant.systems
+    else:
+        rule_set = rule_set_of(recording.rule)
+        if rule_set is None:
+            print(
+                f"录像的规则集 {recording.rule!r} 没有登记的规则集："
+                "变体规则的重放待 M4（M2 只认标准规则集）",
+                file=sys.stderr,
+            )
+            return 2
+        rule_id = recording.rule
 
     assembly = assemble(
         seed=recording.seed,
         rule_set=rule_set,
-        rule_id=recording.rule,
+        rule_id=rule_id,
         mode="replay",
         limits=REPLAY_LIMITS,
         observability_enabled=False,
+        # **变体挂着的系统**：**变体 B 的玩法差异就来自它**——不装它，
+        # 扩展槽是空的 → **第五项必然不等**（spec-M4 §7.9）。
+        systems=systems,
+        system_catalog=system_catalog() if systems else None,
+        variant_id=variant_name,
     )
-    driver = KernelReplayDriver(assembly.kernel, assembly.bus)
+    driver = KernelReplayDriver(assembly.kernel, assembly.bus, registry=assembly.registry)
     session = PlaybackSession(assembly.bus, driver, recording)
-    items = session.run()
+    session.run()
+    items = session.five_items()
 
-    baseline = recording.outcome
+    baseline = recorded_five_items(recording)
     equal = None if baseline is None else baseline.equals(items)
+    differences = () if baseline is None else baseline.differences(items)
     if bool(args.json):
         payload: dict[str, object] = {
             "seed": recording.seed,
             "rule": recording.rule,
+            "variant": recording.variant,
+            "version": recording.version,
             "commandCount": len(recording.commands),
             "recorded": None if baseline is None else baseline.as_dict(),
             "replayed": items.as_dict(),
             "equal": equal,
+            "differences": list(differences),
         }
         print(json.dumps(payload, ensure_ascii=False))
     else:
         print(f"种子：{recording.seed}")
         print(f"规则集：{recording.rule}")
+        print(f"变体：{recording.variant or '（无 · 标准玩法）'}")
         print(f"命令数：{len(recording.commands)}")
         print(f"重放棋盘指纹：{items.fingerprint}")
         print(f"重放分数：{items.score}")
         print(f"重放行数：{items.lines}")
         print(f"重放已放置方块数：{items.pieces_placed}")
+        print(f"重放扩展指纹：{items.extension_fingerprint}")
         if baseline is not None:
             print(f"录像棋盘指纹：{baseline.fingerprint}")
             print(f"录像分数：{baseline.score}")
             print(f"录像行数：{baseline.lines}")
             print(f"录像已放置方块数：{baseline.pieces_placed}")
-            print(f"四项比对：{'全等' if equal else '不等'}")
+            print(f"录像扩展指纹：{baseline.extension_fingerprint}")
+            if equal:
+                print("五项比对：全等")
+            else:
+                # **点名是哪几项不等**（M4-S10）：变体局最常见的分叉原因就是
+                # **扩展状态**——指认不到就等于让人猜谜。
+                print(f"五项比对：不等（{'、'.join(differences)}）")
+                if "扩展指纹" in differences:
+                    print("第五项（扩展指纹）不等——变体状态分叉了")
+        if recording.version == LEGACY_RECORDING_VERSION:
+            print("该录像是 v1：**无变体第五项**（按「无变体」处理）")
     if baseline is None:
         # **没有基准就没有比对**——"没比"不是"过了"（审查 H3）。
         #
-        # **退出码 2**：这次校验**没做成**（与"四项不等"的 1 区分开）——脚本
+        # **退出码 2**：这次校验**没做成**（与"五项不等"的 1 区分开）——脚本
         # 看到 0 就当"过了"，一条**没校验过**的录像就这么放过去了。
         print(
-            "录像里没有局末四项：无比对基准可比（这次校验没做成，不算通过）",
+            "录像里没有局末基准：无比对基准可比（这次校验没做成，不算通过）",
             file=sys.stderr,
         )
         return 2
@@ -797,6 +851,8 @@ def _cmd_play(args: argparse.Namespace) -> int:
         # **不是交互式终端就不画**（**ANSI 控制码不该进重定向的输出**）。
         render=not bool(args.no_render) and sys.stdout.isatty(),
         degradation_enabled=True,
+        # **录像头要记变体标识**（M4-S10）——**变体标识 ≠ 规则集标识**。
+        variant_id=getattr(args, "variant", None),
     )
     loop = HeadlessLoop(play.assembly)
     loop.start()

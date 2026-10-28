@@ -79,7 +79,7 @@ from ..systems.log.manifest import SYSTEM_MANIFEST as LOG_MANIFEST
 from ..systems.metrics import MetricsSystem
 from ..systems.metrics.manifest import SYSTEM_MANIFEST as METRICS_MANIFEST
 from ..systems.replay import OutcomeProvider, RecordingSystem
-from ..systems.replay.format import recording_filename
+from ..systems.replay.format import RecordingOutcome, recording_filename
 from ..systems.replay.manifest import SYSTEM_MANIFEST as REPLAY_MANIFEST
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 from .performance import DegradationController
@@ -240,6 +240,7 @@ def default_sinks(
     rule_id: str = "standard",
     project_root: Path | None = None,
     home: Path | None = None,
+    variant_id: str | None = None,
 ) -> tuple[ObservableSinks, DataDirectory]:
     """造**三个**落在默认数据目录里的落盘出口，并**回报最终落点**。
 
@@ -249,7 +250,7 @@ def default_sinks(
     | --- | --- | --- | --- |
     | 日志 | `log-<规则集>.jsonl` | **追加** | 一条一条往外冒 |
     | 指标 | `metrics-<规则集>.jsonl` | **追加** | 一帧一条 |
-    | 录像 | `recording-<规则集>.jsonl` | **覆盖** | 整份交出（原子替换） |
+    | 录像 | `recording-<规则集>[-<变体>].jsonl` | **覆盖** | 整份交出（原子替换） |
 
     **文件名不带墙钟**（ADR-064）：带时间戳会让"同一局录两次"产生两份
     不同的文件。
@@ -259,6 +260,9 @@ def default_sinks(
     算**）。
 
     **规则集标识进文件名**：不同规则集的两局**各写各的**，不互相覆盖。
+    **变体标识也进文件名**（M4-S10）：**变体标识 ≠ 规则集标识**——变体 B 的
+    规则集就是 `standard` → 不带变体它与标准局的录像同名，而录像是**覆盖
+    语义** → 后写的把先写的盖掉。
     **录像的文件名与录像格式模块给的 `recording_filename()` 逐字一致**——
     文件名是录像格式的一部分（spec §7.1），**不许这儿另起一个名字**。
     """
@@ -270,7 +274,7 @@ def default_sinks(
         ObservableSinks(
             log=AppendSink(directory.path / f"log-{safe_rule_id}.jsonl"),
             metrics=AppendSink(directory.path / f"metrics-{safe_rule_id}.jsonl"),
-            recording=FileSink(directory.path / recording_filename(safe_rule_id)),
+            recording=FileSink(directory.path / recording_filename(safe_rule_id, variant_id)),
         ),
         directory,
     )
@@ -325,17 +329,25 @@ def _safe_rule_id(rule_id: str) -> str:
     return rule_id
 
 
-def _outcome_provider_of(kernel: Kernel) -> OutcomeProvider:
-    """造一个"给我局末四项"的可调用对象（**宿主注入** · ADR-085）。
+def _outcome_provider_of(kernel: Kernel, variant_id: str | None = None) -> OutcomeProvider:
+    """造一个"给我局末基准"的可调用对象（**宿主注入** · ADR-085）。
 
     **为什么只能由宿主注入**：系统层**不碰内核状态**（M2-D1），而**棋盘指纹
     的算法只有内核那一份**（抄第二份就是第二个真相 · 架构 §7.1）。所以系统层
     只拿到一个**可调用对象**——**拿不到内核本身**（最窄能力原则）。
 
-    **算法只有这一处**：四项由 `four_items_of()` 算——**重放驱动器也用它**
-    （同一个 `host/replay.py`），两处必须算出同一个值。
+    **算法只有这一处**：五项由 `five_items_of()` / `four_items_of()` 算——
+    **重放驱动器也用它们**（同一个 `host/replay.py`），两处必须算出同一个值。
+
+    **基准里还带第五项与变体标识**（M4-S10）：第五项（扩展槽的摘要）**只有
+    内核那一份算法算得出**；变体标识**录像头要记它**——**变体标识 ≠ 规则集
+    标识**（变体 B 用的就是标准规则集）→ 光有规则集**装不回去那一局**。
     """
-    return lambda: four_items_of(kernel.snapshot())
+    return lambda: RecordingOutcome(
+        items=four_items_of(kernel.snapshot()),
+        extension_fingerprint=kernel.snapshot().extensionFingerprint,
+        variant=variant_id,
+    )
 
 
 #: 可观测系统的装配入口（**批次 C 往这张表里填满了**）。
@@ -584,6 +596,7 @@ def assemble(
     system_catalog: Mapping[str, SystemEntry] | None = None,
     rule_sets: Mapping[str, RuleSet] | None = None,
     system_sink: SystemSinkFactory | None = None,
+    variant_id: str | None = None,
 ) -> Assembly:
     """把内核、总线、规则集与时钟拼成一件成品。
 
@@ -620,6 +633,9 @@ def assemble(
       落盘）。**只对声明 `needsSink=True` 的系统生效**（注册表门控）——
       成就这类"产出是事件"的系统**不接出口**。**自动发现的系统也走这条路**
       （M3-D2：新系统不装进内核，只经宿主接线拿到出口）。
+    - `variant_id`：**变体标识**（`None` = 标准玩法 · M4-S10）——**录像头要记
+      它**：**变体标识 ≠ 规则集标识**（变体 B 用的就是标准规则集）→ 光有
+      规则集**装不回去那一局**（扩展槽会是空的 → 第五项必然不等）。
 
     > **内建可观测系统要走注册表路径（好让它能被运行时摘下）**，就把
     > `observability_enabled` 关掉——**否则同一个系统会被装两遍**（可观测装配
@@ -652,7 +668,7 @@ def assemble(
         # **局末四项的取法由宿主注入**：棋盘指纹只有内核那一份算法（抄第二份
         # 就是第二个真相），而系统层**不碰内核状态**（M2-D1）——它只拿到一个
         # 可调用对象，拿不到内核。
-        outcome_provider = _outcome_provider_of(kernel)
+        outcome_provider = _outcome_provider_of(kernel, variant_id)
         observable_systems = tuple(
             factory(bus, effective_sinks, outcome_provider)
             for factory in OBSERVABLE_SYSTEM_FACTORIES
@@ -675,7 +691,7 @@ def assemble(
         # **系统注册表**（M3）：**装哪些系统由宿主参数决定**（FR-9.1）。
         # 目录 = 内建系统 + 递进来的额外条目（**新系统走自动发现**）。
         catalog: dict[str, SystemEntry] = dict(
-            built_in_system_entries(effective_sinks, _outcome_provider_of(kernel))
+            built_in_system_entries(effective_sinks, _outcome_provider_of(kernel, variant_id))
         )
         if system_catalog is not None:
             catalog.update(system_catalog)
@@ -761,6 +777,7 @@ def assemble_play(
     degradation_enabled: bool = False,
     stream: TextIO | None = None,
     source: str = "human",
+    variant_id: str | None = None,
 ) -> PlayAssembly:
     """**实时装配**（**渲染器 + 输入适配器 + 变体 + 降级**）。
 
@@ -786,6 +803,7 @@ def assemble_play(
         hidden_rows=hidden_rows,
         step_ms=step_ms,
         degradation_enabled=degradation_enabled,
+        variant_id=variant_id,
     )
     counter = FrameCounter()
 

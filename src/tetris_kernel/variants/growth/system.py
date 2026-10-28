@@ -215,8 +215,6 @@ class GrowthSystem:
         self._active: frozenset[tuple[int, int]] = frozenset()
         #: 已锁定的方块数（**压力曲线**的进度）。
         self._locked_count = 0
-        #: 已写进棋盘的晶体格数。
-        self._crystal_count = 0
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -224,8 +222,16 @@ class GrowthSystem:
 
     @property
     def crystal_count(self) -> int:
-        """已写进棋盘的**晶体格数**。"""
-        return self._crystal_count
+        """已写进棋盘的**晶体格数**（**按盘面镜像现算** · M4-S10）。
+
+        **为什么现算而不是累加**：**累加计数在"同一格被写两次"时会多算**
+        ——而回放变体局时**恰恰会写两次**（录像里记着变体自己那条
+        `writeCells`，重放时变体系统**又**按事件重算一遍）→ **第五项必然不等**。
+
+        **现算的口径是"镜像里值为晶体的格数"**——**同一格写两次，镜像里还是
+        一格** → **两次都数一遍也对**。
+        """
+        return sum(1 for value in self._board.values() if value == CRYSTAL_VALUE)
 
     @property
     def locked_count(self) -> int:
@@ -252,7 +258,7 @@ class GrowthSystem:
         （`growth.crystalCount`）——命名空间是全局责任，**不该由变体自己拼**
         （两个变体都叫"crystalCount"时会互相顶掉）。
         """
-        return (("crystalCount", self._crystal_count),)
+        return (("crystalCount", self.crystal_count),)
 
     # ------------------------------------------------------------------
     # 订阅入口（**注册表按声明接上** —— 变体不碰总线）
@@ -287,12 +293,10 @@ class GrowthSystem:
             else:
                 self._board[(x, y)] = value
         if cause == WRITE_CELLS_COMMAND:
-            # **写成功了** → 确认这些格（**晶体的计数也在这里**）。
+            # **写成功了** → 确认这些格（**晶体的计数按镜像现算** · M4-S10）。
             for x, y, _value in changes:
                 self._pending = [cell for cell in self._pending if cell[:2] != (x, y)]
                 self._attempts.pop((x, y), None)
-                if _value == CRYSTAL_VALUE:
-                    self._crystal_count += 1
 
     def _on_piece_spawned(self, envelope: EventLike) -> None:
         """新方块出生 → **记住它占哪几格**（写的时候要避开）。"""
