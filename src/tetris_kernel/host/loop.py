@@ -42,7 +42,9 @@ from ..kernel.commands import Command
 from ..kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
 from ..kernel.lifecycle import PHASE_GAME_OVER
 from ..kernel.snapshot import Snapshot
+from ..variants.extensions import ExtensionProvider
 from .assembly import Assembly
+from .extensions import apply_extensions, providers_of
 
 #: 帧推进的步骤序列：一批草稿一步。
 StepBatches = Iterator[tuple[EventDraft, ...]]
@@ -204,9 +206,40 @@ class HeadlessLoop:
         # 第三段：帧推进五步（**必须耗尽**）。
         self._advance_frame()
 
+        # 帧末：把变体的跨帧状态合并进扩展槽（**内核既有入口** · 冻结区零改动）。
+        self._merge_extensions()
+
         # 帧末：拉一次快照 → 变了才产出一条 state:changed。
         self._emit_state_changed()
         self._frames += 1
+
+    def _merge_extensions(self) -> None:
+        """帧末合并扩展槽（**M4-S5 · 架构 §4.5 / §5.4**）。
+
+        **问已装上且实现了 `extension_entries()` 的系统实例**要条目 → 汇总 →
+        调内核既有的 `_set_extensions`（**M0 已定型 → 冻结区零改动**）。
+
+        **合并在帧末**（不在帧中）——**帧中合并 → 订阅者读到半帧状态**。
+
+        **没有提供者就不动扩展槽**：扩展条目是**可选能力**（变体 A 只换规则集，
+        **没有系统** → 扩展槽本来就是空的）。
+        """
+        providers = self._extension_providers()
+        if not providers:
+            return
+        apply_extensions(self._assembly.kernel, providers)
+
+    def _extension_providers(self) -> dict[str, ExtensionProvider]:
+        """**已装系统里谁提供扩展条目**（**鸭子类型** · 系统名作命名空间）。
+
+        **每帧现查**：系统支持**运行时热插拔**（FR-9.1）——**装上 / 卸下之后
+        下一帧就该生效**，所以**不能缓存**（缓存会让热插拔的扩展条目迟到一局）。
+        """
+        registry = self._assembly.registry
+        if registry is None:
+            return {}
+        instances = {name: registry.instance_of(name) for name in registry.installed()}
+        return providers_of(instances)
 
     def _advance_frame(self) -> None:
         """第三段：帧推进五步（**生成器必须被耗尽**，B-9 / 架构 §6.2）。

@@ -45,6 +45,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ...rules.tables import SHAPE_TABLE
+from ..extensions import ExtensionEntry
 
 # ---------------------------------------------------------------------------
 # 契约里的名字（**字面量只此一份** · 与 `systems/rotations` 同款做法）
@@ -235,6 +236,23 @@ class GrowthSystem:
     def pending_count(self) -> int:
         """**待写清单**的长度（还没写进去的）。"""
         return len(self._pending)
+
+    # ------------------------------------------------------------------
+    # 扩展槽自述（**变体状态压成标量** · M4-S5 · 架构 §5.4）
+    # ------------------------------------------------------------------
+
+    def extension_entries(self) -> tuple[ExtensionEntry, ...]:
+        """本变体要往扩展槽里放的条目（**只放标量**）。
+
+        **进槽的是"晶体数"，不是晶体位置**：扩展槽**放不下坐标清单**
+        （架构 §5.4：只放标量，禁止容器与嵌套）→ **晶体位置留在变体自己手里**
+        （`_board` 镜像），**进槽的只是摘要**。
+
+        **key 给的是裸名**（`crystalCount`）：命名空间由**宿主**加
+        （`growth.crystalCount`）——命名空间是全局责任，**不该由变体自己拼**
+        （两个变体都叫"crystalCount"时会互相顶掉）。
+        """
+        return (("crystalCount", self._crystal_count),)
 
     # ------------------------------------------------------------------
     # 订阅入口（**注册表按声明接上** —— 变体不碰总线）
