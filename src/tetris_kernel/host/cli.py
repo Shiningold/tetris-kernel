@@ -87,14 +87,16 @@ from pathlib import Path
 
 from ..adapters.storage import FileSink
 from ..bus.envelope import Envelope
+from ..rules.interface import RuleSet
 from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
 from .assembly import ObservableSinks, assemble, default_sinks, rule_set_of
+from .builtin_variants import register_builtin_variants
 from .discovery import declared_manifests, dependency_graph
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
-from .variants import variant_catalog
+from .variants import variant_catalog, variant_of
 
 #: `sim` 的默认帧数（**不带 `--until` 时**）。
 DEFAULT_FRAMES = 100
@@ -208,6 +210,15 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("game-over",),
         default=None,
         help="跑到顶出就停帧，并输出结算八项（M1 · spec §7.8）",
+    )
+    sim.add_argument(
+        "--variant",
+        default=None,
+        help=(
+            "用哪个变体开局（M4 · 变体 A：重力可旋转）。"
+            "**省略 = 标准玩法**；标识见 `tetris variants`。"
+            "**不在册就明确报错，不拿标准玩法顶替**"
+        ),
     )
     sim.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
     sim.add_argument(
@@ -324,6 +335,26 @@ def _sinks_for(args: argparse.Namespace) -> ObservableSinks:
     )
 
 
+def _variant_rule_set_of(args: argparse.Namespace) -> tuple[RuleSet, str] | None:
+    """`--variant` → （规则集 · 规则集标识）；**没给变体就是 `None`**。
+
+    **不在册就明确报错**（退出码 2 = 用法错）——**不拿标准玩法顶替**：
+    顶替会让"这局跑的是哪套玩法"变得不可知（spec-M4 §7.1 的口径）。
+    """
+    name = getattr(args, "variant", None)
+    if not name:
+        return None
+    register_builtin_variants()
+    manifest = variant_of(name)
+    if manifest is None:
+        print(
+            f"未登记的变体：{name}（用 `tetris variants` 看清单；不拿标准玩法顶替）",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return manifest.ruleSet, manifest.ruleId
+
+
 def _cmd_sim(args: argparse.Namespace) -> int:
     """`sim`：无头跑 n 帧，出统计。
 
@@ -346,7 +377,17 @@ def _cmd_sim(args: argparse.Namespace) -> int:
         print("帧数不能为负", file=sys.stderr)
         return 2
 
-    assembly = assemble(seed=seed, sinks=_sinks_for(args))
+    variant = _variant_rule_set_of(args)
+    if variant is None:
+        assembly = assemble(seed=seed, sinks=_sinks_for(args))
+    else:
+        rule_set, rule_id = variant
+        assembly = assemble(
+            seed=seed,
+            sinks=_sinks_for(args),
+            rule_set=rule_set,
+            rule_id=rule_id,
+        )
     loop = HeadlessLoop(assembly)
     loop.start()
     report = loop.run_frames(frames, until_game_over=until == "game-over")
@@ -614,6 +655,10 @@ def _cmd_variants(args: argparse.Namespace) -> int:
     不算**——清单要能被测试直接断言）。
     """
     catalog = variant_catalog()
+    if not catalog:
+        # **清单是"登记"出来的**——**内建变体登记一下就有内容**（幂等）。
+        register_builtin_variants()
+        catalog = variant_catalog()
     if bool(args.json):
         payload: dict[str, object] = {
             "variants": [
