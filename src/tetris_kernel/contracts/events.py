@@ -745,7 +745,22 @@ EVENT_TYPES: Mapping[str, EventSpec] = MappingProxyType(dict(_EVENT_SPECS))
 # 产出者
 # ---------------------------------------------------------------------------
 
-#: 产出者代号 → 需求 §8.1「产出者」列的中文名。两边必须逐条相等。
+#: 产出者代号 → 中文名。
+#:
+#: **两类代号**（M3 增补第二类）：
+#:
+#: - **事件产出者**（九个）：`kernel` / `bus` / `host` / `input-adapter` /
+#:   `renderer` / `log` / `metrics` / `achievements` / `systems/replay/`——
+#:   与需求 §8.1「产出者」列**逐条相等**（那一列的每一条都在这儿）；
+#: - **不发事件的系统**（M3 增补 · `rotations`）：**系统名**就是它的产出者
+#:   代号——需求 §8.2 的元数据 `producer` 本来就允许「系统名」，而
+#:   `systems/rotations/` 只计数落盘、**一条事件都不发**。**它占一个代号**，
+#:   是为了让**系统声明里的 `producer` 有处可填**（声明面要求该字段非空），
+#:   而不是为了给它开事件。
+#:
+#: **代号不许凭空多**：每一个代号要么是某个事件的产出者，要么是某个**已声明
+#: 系统**的产出者（守卫见 `tests/test_contracts_declarations.py`）——两类都
+#: 没人用就说明它是多余的，两类都被用就说明它有牙齿。
 #:
 #: **`systems/replay/` 带路径与尾斜杠**——它与其余八个代号（`kernel` / `bus` /
 #: `host` / `input-adapter` / `renderer` / `log` / `metrics` / `achievements`）
@@ -763,6 +778,7 @@ PRODUCER_LABELS: Mapping[str, str] = MappingProxyType(
         "metrics": "指标系统",
         "achievements": "成就系统",
         "systems/replay/": "回放系统",
+        "rotations": "旋转统计系统",
     }
 )
 

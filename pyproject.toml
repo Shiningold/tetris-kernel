@@ -121,5 +121,6 @@ modules = [
     "tetris_kernel.systems.metrics",
     "tetris_kernel.systems.replay",
     "tetris_kernel.systems.achievements",
+    "tetris_kernel.systems.rotations",
     "tetris_kernel.systems.ai",
 ]

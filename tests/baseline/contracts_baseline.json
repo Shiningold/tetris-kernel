@@ -403,13 +403,15 @@
     "struct/ScoreState/level": "ff67e782c8d5caca2e4137303bf54dbd",
     "struct/ScoreState/lines": "ff67e782c8d5caca2e4137303bf54dbd",
     "struct/ScoreState/score": "ff67e782c8d5caca2e4137303bf54dbd",
+    "system/achievements": "f4c8ea5df6db6e19349e6843b17af69d",
     "system/log": "af7c4181f9744b8ecfafd611100d250d",
     "system/metrics": "78ea11e569b964bac318f9fb9467c7b8",
-    "system/replay": "13bb19d6a429aeaca01547e94a336732"
+    "system/replay": "13bb19d6a429aeaca01547e94a336732",
+    "system/rotations": "fa32d44d2358aa04e1002df7e2956c64"
   },
   "meta": {
     "contractVersion": "v1",
-    "entryCount": 406,
+    "entryCount": 408,
     "generatedBy": "tools/contract_baseline.py",
     "hashAlgorithm": "blake2b-16"
   }
