@@ -47,7 +47,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..adapters.input import KeyboardInput
+from ..adapters.input import InputAdapter
 from ..adapters.render import TerminalRenderer
 from ..kernel.drafts import payload_get
 from ..kernel.snapshot import Snapshot
@@ -102,12 +102,13 @@ class PlaySession:
         assembly: Assembly,
         loop: HeadlessLoop,
         renderer: TerminalRenderer | None = None,
-        input_adapter: KeyboardInput | None = None,
+        input_adapter: InputAdapter | None = None,
         degradation: DegradationController[Snapshot] | None = None,
         clock: Clock | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         frame_counter: FrameCounter | None = None,
         source: str = "host",
+        on_frame: Callable[[Snapshot], None] | None = None,
     ) -> None:
         """构造实时对局。
 
@@ -120,7 +121,9 @@ class PlaySession:
         - `sleeper`：**等待函数**（默认 `time.sleep` · **测试注入空实现** →
           **不真的等**）；
         - `frame_counter`：**帧号载体**（**输入事件的帧号取它** · **装配层给的
-          那个**）。
+          那个**）；
+        - `on_frame`：**每帧末尾的回调**（**收到当帧快照**）——**图形版用它把
+          快照喂给图形渲染器并重画**（**终端版不需要它** · **没有就不调**）。
         """
         self._assembly = assembly
         self._loop = loop
@@ -130,6 +133,7 @@ class PlaySession:
         self._clock = RealClock() if clock is None else clock
         self._sleeper = sleeper
         self._source = source
+        self._on_frame = on_frame
         self._frames = 0
         self._stopped = False
         self._game_over = False
@@ -231,6 +235,9 @@ class PlaySession:
         if self._renderer is not None:
             self._sync_renderer()
             self._renderer.draw()
+        if self._on_frame is not None:
+            # **图形版的钩子**：**拿到这一帧的快照**（**画面的一切都从它来**）。
+            self._on_frame(self._loop.snapshot())
 
     def _sync_renderer(self) -> None:
         """**用帧末快照校正活动方块**（**内核的暂存换块路径不发 `piece:spawned`**
