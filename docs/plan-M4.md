@@ -88,7 +88,7 @@ S13 收尾与状态同步
 
 | 批次 | 分支 | 写手 | 阶段 | 独占文件 |
 | --- | --- | --- | --- | --- |
-| A 接线面与基线 | `feature/m4-batch-a` | A1 · 集成者 | S1 / S2 | `host/variants.py` · `host/assembly.py` · `host/cli.py` ‖ `contracts/systems.py` · `tests/baseline/**` · `tools/contract_baseline.py` |
+| A 接线面与基线 | `feature/m4-batch-a` | A1 · 集成者 | S1 / S2 | `host/variants.py` · `host/assembly.py` · `host/cli.py` · `host/__init__.py`（**导出面** · S1 落笔时补登记） ‖ `contracts/systems.py` · `tests/baseline/**` · `tools/contract_baseline.py` |
 | B 两个变体 | `feature/m4-batch-b` | B1 · B2 | S3 / S4 | `variants/gravity/**` ‖ `variants/growth/**` |
 | C 实时宿主与渲染输入 | `feature/m4-batch-c` | C1 · C2 · C3 · 集成者 | S6 / S7 / S5 / S8 | `adapters/render/**` ‖ `adapters/input/**` ‖ `host/extensions.py` ‖ `host/play.py` · `host/assembly.py` · `host/cli.py` · `adapters/__init__.py` · `host/performance.py` |
 | D AI 与录像升版 | `feature/m4-batch-d` | D1 · 集成者 | S9 / S10 | `systems/ai/**` ‖ `systems/replay/format.py` · `systems/replay/playback.py` · `host/cli.py` |
@@ -137,8 +137,8 @@ S13 收尾与状态同步
 | 阶段 | 主题 | 覆盖门判据 | 批次 | 状态 | 提交 |
 | --- | --- | --- | --- | --- | --- |
 | S0 | 规格与计划入档 + `G4-n` 登记 | — | — | **已完成** | `63a9a1d` |
-| S1 | 变体接线面（登记表 · `RULE_SETS` 扩表 · `tetris variants`） | — | A | 未开始 | — |
-| S2 | 变体附带系统的契约登记 + 契约基线显式刷新 | `G4-7` | A | 未开始 | — |
+| S1 | 变体接线面（登记表 · `RULE_SETS` 扩表 · `tetris variants`） | — | A | **已完成** | `626a8a0` |
+| S2 | 变体系统的声明面扩容（扫描根覆盖 `variants/` · 依赖图含变体系统） | `G4-7` | A | 未开始 | — |
 | S3 | 变体 A：重力可旋转（规则集替换） | `G4-1` · `G4-6` | B | 未开始 | — |
 | S4 | 变体 B：落地后生长（受控写入） | `G4-1` · `G4-6` · `G4-8` | B | 未开始 | — |
 | S5 | 扩展槽回写接线（宿主合并变体状态） | `G4-8` | C | 未开始 | — |
