@@ -160,6 +160,25 @@ class _RotationPlan:
         self.row_counts = tuple(sorted(by_row.items()))
 
 
+#: **按方块缓存的形状计划**（**只依赖形状表** —— 冻结区 · 与局面无关）。
+#:
+#: **为什么能缓存**：形状信息只由 `SHAPE_TABLE` 决定（**冻结区**），
+#: **与棋盘无关** → 同一块方块的四个朝向计划**算一次就够**。
+_PLAN_CACHE: dict[str, tuple[_RotationPlan, ...]] = {}
+
+
+def _plans_of(
+    piece_type: str,
+    shapes: tuple[tuple[tuple[int, int], ...], ...],
+) -> tuple[_RotationPlan, ...]:
+    """取这块方块四个朝向的形状计划（**缓存过就不重算**）。"""
+    cached = _PLAN_CACHE.get(piece_type)
+    if cached is None:
+        cached = tuple(_RotationPlan(cells) for cells in shapes)
+        _PLAN_CACHE[piece_type] = cached
+    return cached
+
+
 class _Profile:
     """一局的**剖面**：**只算一次**（**招 1**）。
 
@@ -197,6 +216,7 @@ class _Profile:
         board: Board,
         shapes: tuple[tuple[tuple[int, int], ...], ...],
         y: int,
+        piece_type: str,
     ) -> None:
         width = len(board[0])
         height = len(board)
@@ -238,7 +258,7 @@ class _Profile:
         # 复用的暂存（**每个候选用完就清**）。
         self.scratch_heights = [0] * width
         self.scratch_columns: list[int] = []
-        self.plans = tuple(_RotationPlan(cells) for cells in shapes)
+        self.plans = _plans_of(piece_type, shapes)
 
 
 def plan_placement(
@@ -273,7 +293,7 @@ def plan_placement(
     if width <= 0 or height <= 0:
         return None
 
-    profile = _Profile(board, shapes, y)
+    profile = _Profile(board, shapes, y, piece_type)
     best_score: int | None = None
     best_rotation = 0
     best_pre_x = 0
@@ -493,6 +513,8 @@ def _score(profile: _Profile, plan: _RotationPlan, post_x: int, landing_y: int) 
     width = profile.width
     height = profile.height
     row_fill = profile.row_fill
+    col_top = profile.col_top
+    col_holes = profile.col_holes
 
     # ① **消行数**：只看这块方块占到的行（每行占几格**按朝向预计算**）。
     lines = profile.base_full_rows
@@ -513,8 +535,8 @@ def _score(profile: _Profile, plan: _RotationPlan, post_x: int, landing_y: int) 
         if column < 0 or column >= width:
             # **越界的格子不进网格**（纪律 ①）。
             continue
-        top = profile.col_top[column]
-        old_holes = profile.col_holes[column]
+        top = col_top[column]
+        old_holes = col_holes[column]
         lowest = height
         below_count = 0
         for cell_y in ys:
@@ -564,12 +586,18 @@ def _score(profile: _Profile, plan: _RotationPlan, post_x: int, landing_y: int) 
             )
 
     # ④ **落点高度**（最高的一列）。
+    base_max_height = profile.base_max_height
     if not touched:
-        landing_height = profile.base_max_height
+        landing_height = base_max_height
     elif profile.base_argmax in touched:
-        landing_height = max(updated[column] or base_heights[column] for column in range(width))
+        # 原来的最高列**被这块方块改了** → 整盘重算一遍（**只在这一种时候**）。
+        landing_height = 0
+        for column in range(width):
+            value = updated[column] or base_heights[column]
+            if value > landing_height:
+                landing_height = value
     else:
-        landing_height = profile.base_max_height
+        landing_height = base_max_height
         for column in touched:
             if updated[column] > landing_height:
                 landing_height = updated[column]
