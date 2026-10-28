@@ -14,7 +14,7 @@
 
 | 预算项 | 取值 | 为什么固定 |
 | --- | --- | --- |
-| **候选数** | `MAX_CANDIDATES`（4 朝向 × 棋盘宽度） | 按耗时自适应 → 同一录像在不同机器上重放不同 |
+| **候选数** | `MAX_CANDIDATES`（**枚举数** = 64） | 按耗时自适应 → 同一录像在不同机器上重放不同 |
 | **搜索深度** | `SEARCH_DEPTH = 1`（只看当前这一块） | 前瞻越深越慢；**深度也是预算** |
 | **权重** | 五个**整数**常量 | 浮点在不同平台上的舍入可能不同 → **同一局面算出不同分** |
 
@@ -74,11 +74,23 @@ type Board = tuple[tuple[int, ...], ...]
 # 预算（**固定** · M4-D3）
 # ---------------------------------------------------------------------------
 
-#: 搜索的**候选数上限**（4 个朝向 × 棋盘宽度）。
+#: **枚举的候选数**（**上界** · **不是"最多搜到这么多"**）。
 #:
-#: **固定值，不是"最多搜到这么多"**——枚举本身就是这个规模（见 `plan_placement`），
-#: 所以这个常量是**预算的声明**，不是截断器。
-MAX_CANDIDATES = 40
+#: **口径**：`ROTATION_COUNT` 个朝向 × 每个朝向（**棋盘宽度 + 两侧各 `COLUMN_MARGIN` 列**）
+#: 个起手列 → **10 宽的标准棋盘上是 4 × 16 = 64**。
+#:
+#: **真正被打分的候选更少**：平移路径被挡住的候选**先被剔除**（`_path_is_clear`），
+#: **那取决于局面**——实测 **0–36 个**（中位 32 · 均值 27 · 300 个随机局面 × 七种方块）。
+#:
+#: **两个数不是一回事**（M5-S3 订正 · ADR-097）：这个常量是**枚举数**，
+#: **不是"会被评估的候选数"**——以前写 40，两边都不是（**它根本没参与剪枝**）。
+MAX_CANDIDATES = 64
+
+#: **枚举的朝向数**（**固定常量** · 不许按耗时自适应）。
+ROTATION_COUNT = 4
+
+#: **枚举时每侧多带的列数**（**固定常量**）：起手列可以落在棋盘之外一圈。
+COLUMN_MARGIN = 3
 
 #: 搜索的**深度**（只看当前这一块 · **不前瞻下一块**）。
 SEARCH_DEPTH = 1
@@ -267,7 +279,7 @@ def plan_placement(
     best_pre_x = 0
     best_post_x = 0
     best_landing_y = 0
-    for target_rotation in (0, 1, 2, 3):
+    for target_rotation in range(ROTATION_COUNT):
         plan = profile.plans[target_rotation]
         for pre_x in _candidate_columns(width):
             # ① **平移过去**：起手那一列放得下吗？**中间每一列也得放得下**
@@ -320,7 +332,7 @@ def _candidate_columns(width: int) -> range:
     （那样占位格子仍然全在棋盘里）——**内核的碰撞判定就是这么算的**
     （`kernel/core.py` 的 `_collides`：逐格判，不按盒子判）。
     """
-    return range(-3, width + 3)
+    return range(-COLUMN_MARGIN, width + COLUMN_MARGIN)
 
 
 def _build_ok_prefix(

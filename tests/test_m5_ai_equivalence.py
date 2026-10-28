@@ -35,7 +35,9 @@ import random
 from pathlib import Path
 
 from support.ai_reference import plan_placement as reference_plan
+from tetris_kernel.kernel.core import DEFAULT_BOARD_WIDTH
 from tetris_kernel.rules.tables import PIECE_TYPES
+from tetris_kernel.systems.ai import search as ai_search
 from tetris_kernel.systems.ai.search import plan_placement as product_plan
 
 #: 本文件自身的路径（**元守卫要读自己的源码**）。
@@ -547,6 +549,77 @@ def test_reference_source_is_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 预算声明（**G5-5** · 声明与实现一致）
+# ---------------------------------------------------------------------------
+
+
+def _count_candidates(
+    board: tuple[tuple[int, ...], ...],
+    piece_type: str,
+    spawn_x: int,
+    spawn_y: int,
+) -> tuple[int, int]:
+    """数一次决策里**枚举了几个候选**、**真正打分的几个**。
+
+    **怎么数**：把实现里的两个钩子包一层计数器——
+    **每个候选都会走一次路径判定**，**只有过了路径与旋转判定的才打分**。
+    """
+    enumerated = 0
+    scored = 0
+    original_path = ai_search._path_is_clear
+    original_score = ai_search._score
+
+    def counting_path(profile: object, x: int, pre_x: int) -> bool:
+        nonlocal enumerated
+        enumerated += 1
+        return original_path(profile, x, pre_x)  # type: ignore[arg-type]
+
+    def counting_score(*args: object, **kwargs: object) -> int:
+        nonlocal scored
+        scored += 1
+        return original_score(*args, **kwargs)  # type: ignore[arg-type]
+
+    ai_search._path_is_clear = counting_path  # type: ignore[assignment]
+    ai_search._score = counting_score  # type: ignore[assignment]
+    try:
+        product_plan(board, piece_type, spawn_x, spawn_y, 0)
+    finally:
+        ai_search._path_is_clear = original_path  # type: ignore[assignment]
+        ai_search._score = original_score  # type: ignore[assignment]
+    return enumerated, scored
+
+
+def test_budget_declaration_matches_implementation() -> None:
+    """**G5-5**：声明的候选数 = 实现实际枚举的候选数。
+
+    **订正前的病**：声明写 40，而实现枚举 64、真正被打分的又是另一个数
+    （随局面变化）——**三个数对不上**，且声明**根本没参与剪枝**。
+    """
+    empty = tuple(tuple(0 for _ in range(DEFAULT_BOARD_WIDTH)) for _ in range(22))
+    enumerated, scored = _count_candidates(empty, "T", 3, 0)
+    # ① **声明 = 实际枚举数**。
+    assert enumerated == ai_search.MAX_CANDIDATES, (
+        f"声明 {ai_search.MAX_CANDIDATES} 与实际枚举 {enumerated} 对不上"
+    )
+    # ② **声明 = 枚举规则算出来的数**（朝向数 × (宽度 + 两侧各 3 列)）。
+    assert ai_search.MAX_CANDIDATES == ai_search.ROTATION_COUNT * (
+        DEFAULT_BOARD_WIDTH + 2 * ai_search.COLUMN_MARGIN
+    )
+    # ③ **真正被打分的候选数 ≤ 声明数**（它是**上界**，且随局面变化）。
+    assert 0 < scored <= ai_search.MAX_CANDIDATES
+
+
+def test_budget_scored_candidates_never_exceed_declaration() -> None:
+    """**任何局面下被打分的候选数都不超过声明**（声明是上界）。"""
+    boards = _random_boards()
+    for board in boards:
+        for piece_type in PIECE_TYPES:
+            enumerated, scored = _count_candidates(board, piece_type, 3, 0)
+            assert enumerated == ai_search.MAX_CANDIDATES
+            assert scored <= ai_search.MAX_CANDIDATES
+
+
+# ---------------------------------------------------------------------------
 # 等价纪律专项（**spec-M5 §7.1 的四条**）
 # ---------------------------------------------------------------------------
 #
@@ -691,7 +764,7 @@ def test_determin_no_time_in_decision_path() -> None:
 
 def test_determin_budget_constants_are_fixed() -> None:
     """**候选数与深度是固定常量**（不按耗时自适应 · 不分摊到多帧）。"""
-    for name in ("MAX_CANDIDATES", "SEARCH_DEPTH"):
+    for name in ("MAX_CANDIDATES", "SEARCH_DEPTH", "ROTATION_COUNT", "COLUMN_MARGIN"):
         expression = _assignment_expression(SEARCH_SOURCE, name)
         assert isinstance(expression, ast.Constant), f"`{name}` 必须是字面量常量"
         assert isinstance(expression.value, int)
@@ -704,4 +777,4 @@ def test_determin_budget_constants_are_fixed() -> None:
     assert isinstance(call.func, ast.Name) and call.func.id == "range"
     for argument in call.args:
         names = {node.id for node in ast.walk(argument) if isinstance(node, ast.Name)}
-        assert names <= {"width"}, f"候选列范围不许依赖会变的量：{names}"
+        assert names <= {"width", "COLUMN_MARGIN"}, f"候选列范围不许依赖会变的量：{names}"
