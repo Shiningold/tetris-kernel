@@ -187,7 +187,7 @@ from tetris_kernel.contracts import (  # noqa: E402
     check_manifest_types,
     manifest_canonical_text,
 )
-from tetris_kernel.systems.manifests import discover_manifests  # noqa: E402
+from tetris_kernel.host.discovery import declared_manifests  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -339,10 +339,15 @@ def collect_entries() -> list[Entry]:
     # **声明的来源是各系统包里的 `SYSTEM_MANIFEST`**（静态扫描）——**不是运行时
     # 的已登记清单**：基线要的是**确定的**声明集，不能取决于谁装了什么系统。
     #
+    # **扫描根覆盖 `systems/` 与 `variants/`**（M4-S2）：变体带系统时，**它也是
+    # 系统**（FR-9.1）——**声明面与依赖图要能看见它**，基线自然也要看见它。
+    # 汇总落在宿主层（`host/discovery.py`）：**系统层与变体层同级，谁也不许
+    # import 对方**（架构 §2.3）。
+    #
     # **自证在这一层做**：声明里写的事件 / 命令类型必须已登记，**产出者必须在
     # 代号表里**（或就是系统自己的名字）——写错名字当场拒绝进基线（而不是挂
     # 一个永远收不到事件的订阅，或让消费方按 producer 过滤时静默漏事件）。
-    for system_name, manifest in discover_manifests().items():
+    for system_name, manifest in declared_manifests().items():
         problems = check_manifest_types(
             manifest,
             known_events=EVENT_TYPES.keys(),

@@ -6,6 +6,19 @@
 **`G3-1`（新增能力 = 新增文件）永久失去牙齿**。所以宿主**扫描**系统目录，
 让每个系统**自带声明与工厂**（约定见 `systems/manifests.py`）。
 
+## 扫描根覆盖 `systems/` 与 `variants/`（M4-S2）
+
+变体 B（落地后生长）**也是一个系统**——它订阅事件、派发命令——但它**住在
+`variants/`**（G4-6）。**声明面与依赖图要能看见它**（FR-9.2：声明的用处就是
+生成依赖图），所以本模块把两边的声明**汇总**成一张清单。
+
+**汇总放在宿主层的原因**：`systems/` 与 `variants/` **同级**（架构 §2.3）——
+**系统层 import 变体层是横向依赖**（`lint-imports` 当场红）。**变体层扫自己
+那一层**（`variants/manifests.py`），**宿主层做汇总**——**两边都不越界**。
+
+**重名即报错**：系统名与变体系统名撞了 → **当场炸**（后扫到的悄悄顶掉先扫到
+的，依赖图与基线都会指向错的那个）。
+
 ## 三样东西
 
 1. **系统目录**（`system_catalog`）：**能装的**系统（声明 + 工厂俱全）；
@@ -33,7 +46,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 from ..bus.bus import EventBus
 from ..bus.subscriber import Subscription
@@ -41,6 +54,7 @@ from ..contracts.systems import SystemManifest
 from ..kernel.snapshot import Snapshot
 from ..systems.context import SystemEntry
 from ..systems.manifests import SystemModule, discover_system_modules
+from ..variants.manifests import VariantModule, discover_variant_modules
 
 # ---------------------------------------------------------------------------
 # 目录与清单
@@ -52,23 +66,77 @@ def system_modules() -> tuple[SystemModule, ...]:
     return discover_system_modules()
 
 
-def declared_manifests() -> Mapping[str, SystemManifest]:
-    """**所有**已声明的系统（名字 → 声明）——**含工厂不在包里的**。"""
-    return MappingProxyType(
-        {item.manifest.name: item.manifest for item in discover_system_modules()}
-    )
+def variant_modules() -> tuple[VariantModule, ...]:
+    """**扫描**变体目录，返回所有变体包的自述记录（M4-S2）。
+
+    **规则集型变体的声明是 `None`**（它没有系统）——**那不是错误**。
+    """
+    return discover_variant_modules()
 
 
-def system_catalog() -> Mapping[str, SystemEntry]:
+def _merged_manifests(
+    systems_package: ModuleType | None = None,
+    variants_package: ModuleType | None = None,
+) -> Mapping[str, SystemManifest]:
+    """把两边的声明**汇总成一张清单**（**重名即报错**）。
+
+    **为什么在这里汇总**：宿主层两边都能 import（`systems/` 与 `variants/` 与
+    它同级）——**系统层 import 变体层是横向依赖**（架构 §2.3）。
+
+    **包参数可注入**：测试在临时目录里造变体包再验它出现在清单里——**不去
+    污染仓里的变体目录**。
+    """
+    merged: dict[str, SystemManifest] = {}
+    for manifest in discover_system_modules(systems_package):
+        merged[manifest.manifest.name] = manifest.manifest
+    for item in discover_variant_modules(variants_package):
+        if item.manifest is None:
+            continue
+        if item.manifest.name in merged:
+            raise ValueError(
+                f"系统名重复：{item.manifest.name}"
+                f"（系统目录与变体目录各有一个）——两个声明抢一个名字，依赖图会指向错的那个"
+            )
+        merged[item.manifest.name] = item.manifest
+    return MappingProxyType(merged)
+
+
+def declared_manifests(
+    *,
+    systems_package: ModuleType | None = None,
+    variants_package: ModuleType | None = None,
+) -> Mapping[str, SystemManifest]:
+    """**所有**已声明的系统（名字 → 声明）——**含工厂不在包里的**。
+
+    **扫描根覆盖 `systems/` 与 `variants/`**（M4-S2）——变体带系统时，
+    **它也是系统**（FR-9.1），**依赖图要能看见它**（FR-9.2）。
+    """
+    return _merged_manifests(systems_package, variants_package)
+
+
+def system_catalog(
+    *,
+    systems_package: ModuleType | None = None,
+    variants_package: ModuleType | None = None,
+) -> Mapping[str, SystemEntry]:
     """**能装的**系统的目录条目（名字 → 声明 + 工厂）。
 
     **没有工厂的系统不在这里**（M2 的三个内建可观测系统：工厂在宿主侧）——
     **清单与目录不是一回事**：清单回答「有哪些系统」，目录回答「哪些能装」。
     """
     entries: dict[str, SystemEntry] = {}
-    for item in discover_system_modules():
+    for item in discover_system_modules(systems_package):
         if item.factory is None:
             continue
+        entries[item.manifest.name] = SystemEntry(
+            manifest=item.manifest,
+            factory=item.factory,
+        )
+    for item in discover_variant_modules(variants_package):
+        if item.manifest is None or item.factory is None:
+            continue
+        if item.manifest.name in entries:
+            raise ValueError(f"系统名重复：{item.manifest.name}（系统目录与变体目录各有一个）")
         entries[item.manifest.name] = SystemEntry(
             manifest=item.manifest,
             factory=item.factory,
@@ -180,6 +248,7 @@ class ImportPurityGuard:
     _files_before: frozenset[str] = frozenset()
     _subscriptions_before: int = 0
     _modules: tuple[SystemModule, ...] = ()
+    _variant_modules: tuple[VariantModule, ...] = ()
 
     def snapshot(self) -> None:
         """**抓快照**（扫描之前调一次）。"""
@@ -206,12 +275,22 @@ class ImportPurityGuard:
             )
             if leaked:
                 problems.append(f"系统 {item.manifest.name} 的模块里有订阅句柄：{leaked}")
+        # **变体目录同样要查**（M4-S2）：变体包也是被扫描的包——**导入即订阅
+        # 一样会破掉「装上才生效」的语义**。
+        for item in self._variant_modules:
+            leaked = sorted(
+                key for key, value in vars(item.module).items() if isinstance(value, Subscription)
+            )
+            if leaked:
+                label = item.manifest.name if item.manifest is not None else item.package
+                problems.append(f"变体 {label} 的模块里有订阅句柄：{leaked}")
         return tuple(problems)
 
     def scan(self) -> tuple[str, ...]:
         """**扫描 + 比对**（一次做完），返回问题清单（空 = 干净）。"""
         self.snapshot()
         self._modules = discover_system_modules()
+        self._variant_modules = discover_variant_modules()
         return self.check()
 
 
@@ -222,4 +301,5 @@ __all__ = [
     "dependency_graph",
     "system_catalog",
     "system_modules",
+    "variant_modules",
 ]
