@@ -94,6 +94,7 @@ from .assembly import ObservableSinks, assemble, default_sinks, rule_set_of
 from .discovery import declared_manifests, dependency_graph
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
+from .variants import variant_catalog
 
 #: `sim` 的默认帧数（**不带 `--until` 时**）。
 DEFAULT_FRAMES = 100
@@ -172,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_inspect(args)
         case "systems":
             return _cmd_systems(args)
+        case "variants":
+            return _cmd_variants(args)
         case _:
             return _cmd_placeholder(args)
 
@@ -279,6 +282,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="系统清单与依赖图：谁订阅了什么、谁发出什么命令（M3 · FR-9.2）",
     )
     systems.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
+
+    variants = subparsers.add_parser(
+        "variants",
+        help="变体清单：有哪些玩法、各自用哪个规则集、挂了哪些系统（M4 · FR-9.2）",
+    )
+    variants.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
     subparsers.add_parser(
         "play",
@@ -591,6 +600,44 @@ def _cmd_systems(args: argparse.Namespace) -> int:
     for command_type in sorted({item for values in graph.commands.values() for item in values}):
         dispatchers = " · ".join(graph.dispatchers_of(command_type)) or "—"
         print(f"  {command_type} → {dispatchers}")
+    return 0
+
+
+def _cmd_variants(args: argparse.Namespace) -> int:
+    """`variants`：**变体清单**（M4 · FR-9.2 的延伸）。
+
+    **清单是「登记」出来的**（`host/variants.py`）——**变体是玩法不是插件**，
+    与 M3 的系统自动发现**不是同一套机制**（变体登记一次 = 一次接线，
+    "新增能力 = 新增文件"在变体这条路上不成立 · spec-M4 §7.1）。
+
+    **输出两种形态**：人读的清单 · `--json` 的机器可读结构（**"给人看的清单"
+    不算**——清单要能被测试直接断言）。
+    """
+    catalog = variant_catalog()
+    if bool(args.json):
+        payload: dict[str, object] = {
+            "variants": [
+                {
+                    "name": name,
+                    "version": manifest.version,
+                    "ruleId": manifest.ruleId,
+                    "systems": list(manifest.systems),
+                    "description": manifest.description,
+                }
+                for name, manifest in catalog.items()
+            ]
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    print(f"变体清单（{len(catalog)} 个）：")
+    if not catalog:
+        print("  （还没有登记变体）")
+        return 0
+    for name, manifest in catalog.items():
+        systems = " · ".join(manifest.systems) or "—"
+        print(f"  {name}（v{manifest.version}）  规则集：{manifest.ruleId}  附带系统：{systems}")
+        if manifest.description:
+            print(f"      {manifest.description}")
     return 0
 
 

@@ -65,7 +65,7 @@ from ..kernel.core import (
 )
 from ..kernel.quota import DEFAULT_LIMITS, QuotaLimits
 from ..kernel.snapshot import Snapshot
-from ..rules.interface import RuleSet
+from ..rules.interface import RuleSet, signature_mismatches
 from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
 from ..systems.context import InstallContext, Sink, SystemEntry, SystemFactory
@@ -470,16 +470,48 @@ OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = tuple(
 # 规则集接线：标识 → 规则集
 # ---------------------------------------------------------------------------
 
-#: 规则集标识 → 规则集（**宿主层的接线表** · 变体属 M4）。
+#: 规则集标识 → 规则集（**宿主层的接线表** · **变体规则集从 M4 起往这里登记**）。
 #:
 #: **为什么在宿主层**：`rules/` 是**冻结区**（M2-D5）——"哪个标识对应哪个
-#: 规则集"是**宿主的接线决定**，不是规则层自己的事。**变体规则集来了就往
-#: 这张表里加一行**（M4）。
+#: 规则集"是**宿主的接线决定**，不是规则层自己的事。
 #:
 #: **为什么不能拿标准规则集顶替**：标识写着"变体"、内核却跑标准规则——
 #: **重放出来的四项必然不等**，而报错只说"四项不等"，看不出"起错规则集了"。
 #: **表里没有就是没有**（`rule_set_of()` 返回 `None`）。
-RULE_SETS: Mapping[str, RuleSet] = MappingProxyType({"standard": STANDARD_RULESET})
+#:
+#: **内部存储是唯一的真相，对外只给只读视图**：登记走 `register_rule_set()`
+#: 这一个原语——**改动路径只有一处**，就不会有"谁直接改了字典"的第二个真相
+#: （与 `contracts/systems.py` 的已登记系统清单同款做法）。
+_RULE_SETS: dict[str, RuleSet] = {"standard": STANDARD_RULESET}
+
+#: 规则集接线表的**只读视图**（名字不变 · 类型不变 · 既有调用方不受影响）。
+RULE_SETS: Mapping[str, RuleSet] = MappingProxyType(_RULE_SETS)
+
+
+def register_rule_set(rule_id: str, rule_set: RuleSet) -> None:
+    """把一个规则集登记进接线表（**M4 的变体规则集从这条路进来**）。
+
+    **重名即报错**：标识是表的键——两个规则集抢一个标识时，后登记的会悄悄顶掉
+    先登记的，**重放出来的四项必然不等而报错看不出原因**。当场炸掉。
+
+    **登记进来的规则集必须满足冻结签名**（9 条 · 参数名与个数逐条相等）——
+    `signature_mismatches()` 说了算，**签名不符当场拒**（规则集接错了要当场知道，
+    不是玩到一半才炸）。
+    """
+    if rule_id in _RULE_SETS:
+        raise ValueError(f"规则集标识已登记：{rule_id}")
+    problems = signature_mismatches(rule_set)
+    if problems:
+        raise ValueError(f"规则集 {rule_id} 与冻结签名不符：{'；'.join(problems)}")
+    _RULE_SETS[rule_id] = rule_set
+
+
+def unregister_rule_set(rule_id: str) -> RuleSet | None:
+    """从接线表里注销一个规则集；**没登记过就是没有**（返回 `None`，不顶替）。
+
+    **给测试用**（装配前先登记再撤下，避免污染全局表）。
+    """
+    return _RULE_SETS.pop(rule_id, None)
 
 
 def rule_set_of(rule_id: str) -> RuleSet | None:

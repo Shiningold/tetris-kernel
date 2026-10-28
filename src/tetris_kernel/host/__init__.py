@@ -37,8 +37,10 @@ from .assembly import (
     assemble,
     default_sink,
     default_sinks,
+    register_rule_set,
     resolve_data_dir,
     rule_set_of,
+    unregister_rule_set,
 )
 from .clock import (
     DEFAULT_STEP_MS,
@@ -66,6 +68,16 @@ from .performance import (
     DegradationController,
     FrameCostWindow,
 )
+from .variants import (
+    VARIANTS,
+    VariantManifest,
+    register_variant,
+    unregister_variant,
+    variant_catalog,
+    variant_of,
+    variant_rule_set,
+    variant_systems,
+)
 
 __all__ = [
     "DATA_DIR_NAME",
@@ -85,6 +97,7 @@ __all__ = [
     "TIER_EVENT_HISTORY",
     "TIER_LOG_LEVEL",
     "TIER_NONE",
+    "VARIANTS",
     "Assembly",
     "Clock",
     "DataDirectory",
@@ -96,10 +109,19 @@ __all__ = [
     "RealClock",
     "RunReport",
     "Sink",
+    "VariantManifest",
     "VirtualClock",
     "assemble",
     "default_sink",
     "default_sinks",
+    "register_rule_set",
+    "register_variant",
     "resolve_data_dir",
     "rule_set_of",
+    "unregister_rule_set",
+    "unregister_variant",
+    "variant_catalog",
+    "variant_of",
+    "variant_rule_set",
+    "variant_systems",
 ]
