@@ -760,23 +760,25 @@ def test_cli_output_stream_is_switched_to_utf8(monkeypatch: pytest.MonkeyPatch) 
     assert "帧数" in buffer.getvalue().decode("utf-8")
 
 
-#: **仍是占位**的子命令。
+#: **仍是占位**的子命令（**M4-S8 之后一个都不剩**）。
 #:
-#: **`replay` 在 M2 变成真跑**（读录像 → 重放 → 输出四项比对）——它不再是占位
+#: **`replay` 在 M2 变成真跑**（读录像 → 回放 → 输出四项比对）——它不再是占位
 #: 命令，用例挪到了 `tests/test_replay_playback.py`。这是一次**破坏性改动**：
 #: 依赖"`replay` 是占位"这个行为的调用方会失效（plan-M2 S9 的提交标题带 `!`）。
 #:
 #: **`inspect` 在 M2 变成真跑**（只读事件流视图 · FR-7.3）——同样不再是占位
 #: 命令，用例挪到了 `tests/test_event_trace.py`。**又一次破坏性改动**（plan-M2
 #: S11 的提交标题带 `!`）。
-PLACEHOLDER_COMMANDS = ["play"]
-
-
-@pytest.mark.parametrize("command", PLACEHOLDER_COMMANDS)
-def test_placeholder_commands_run(command: str, capsys: pytest.CaptureFixture[str]) -> None:
-    """占位子命令**要能跑、不许报错**。"""
-    assert main([command]) == 0
-    assert command in capsys.readouterr().out
+#:
+#: **`play` 在 M4-S8 变成真跑**（实时宿主 · 终端画面 + 键盘输入 + 真实时钟）——
+#: **第三次破坏性改动**（plan-M4 S8 的提交标题带 `!`）。**用例挪到了
+#: `tests/test_m4_play_host.py`**（那里还多了"真跑"的判据：占位规矩到 M4 结束
+#: 为止 · spec-M4 §7.5）。
+#:
+#: **占位命令一个都不剩了** → **"占位命令要能跑、不许报错"那条用例一并撤掉**
+#: （**它没有参数可枚举了** —— **留一条永远跳过的用例只是噪音**）。**这条规矩
+#: 随最后一个占位命令一起退场**：**M4 之后新增的子命令一律是真跑**。
+PLACEHOLDER_COMMANDS: list[str] = []
 
 
 # ---------------------------------------------------------------------------

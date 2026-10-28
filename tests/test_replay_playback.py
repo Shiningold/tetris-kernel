@@ -34,6 +34,7 @@ from tetris_kernel.host.replay import REPLAY_LIMITS, KernelReplayDriver
 from tetris_kernel.kernel.commands import Command
 from tetris_kernel.rules.standard import STANDARD_RULESET
 from tetris_kernel.systems.replay import (
+    FiveItems,
     FourItems,
     PlaybackSession,
     RecordedCommand,
@@ -68,6 +69,15 @@ class FakeDriver:
     def four_items(self) -> FourItems:
         return self._items
 
+    def five_items(self) -> FiveItems:
+        return FiveItems(
+            fingerprint=self._items.fingerprint,
+            score=self._items.score,
+            lines=self._items.lines,
+            pieces_placed=self._items.pieces_placed,
+            extension_fingerprint="fp-ext",
+        )
+
 
 class CapturingDriver:
     """包一层真实驱动器，**记下到底派发了什么**。"""
@@ -85,6 +95,9 @@ class CapturingDriver:
 
     def four_items(self) -> FourItems:
         return self._inner.four_items()
+
+    def five_items(self) -> FiveItems:
+        return self._inner.five_items()
 
 
 def _bus() -> EventBus[object]:
@@ -422,7 +435,7 @@ def test_the_cli_replay_command_runs(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert code == 0
     output = capsys.readouterr().out
     assert "重放棋盘指纹：" in output
-    assert "四项比对：全等" in output
+    assert "五项比对：全等" in output
 
 
 def test_the_cli_replay_command_can_output_json(
@@ -473,7 +486,7 @@ def test_the_cli_replay_command_fails_when_the_recording_has_no_baseline(
 
     assert code != 0, "没有基准也退出 0——脚本会把「没比」当成「过了」"
     assert code == 2, "「没比」要与「四项不等」（1）区分开"
-    assert "没有局末四项" in capsys.readouterr().err
+    assert "没有局末基准" in capsys.readouterr().err
 
 
 def test_the_cli_replay_command_fails_when_the_recording_has_no_baseline_in_json_mode(
@@ -523,7 +536,7 @@ def test_the_cli_replay_command_exits_one_when_the_four_items_differ(
     code = main(["replay", str(path)])
 
     assert code == 1, "四项不等是 1，不是 2"
-    assert "四项比对：不等" in capsys.readouterr().out
+    assert "五项比对：不等" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +587,7 @@ def test_the_cli_replay_command_still_replays_the_standard_rule_set(
     code = main(["replay", str(path)])
 
     assert code == 0
-    assert "四项比对：全等" in capsys.readouterr().out
+    assert "五项比对：全等" in capsys.readouterr().out
 
 
 def test_the_recording_round_trip_keeps_the_outcome() -> None:

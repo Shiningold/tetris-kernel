@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from tetris_kernel.bus.bus import EventBus
+from tetris_kernel.contracts.events import EVENT_TYPES
 from tetris_kernel.contracts.systems import SystemManifest
 from tetris_kernel.host.discovery import (
     ImportPurityGuard,
@@ -141,15 +142,19 @@ def test_the_catalog_holds_the_declared_systems_with_their_factories(
 
 
 def test_the_built_in_systems_are_declared() -> None:
-    """**仓里的系统都有声明**（M2 的三个内建 + M3 的两个示范系统）。"""
+    """**仓里的系统都有声明**（M2 的三个内建 + M3 的两个示范系统 + M4 的变体 B）。"""
     manifests = declared_manifests()
 
-    assert set(manifests) == {"log", "metrics", "replay", "achievements", "rotations"}
+    # **断言"这批在"，不是"只有这批"**——**名单一旦写死，每个新系统都要改这个
+    # 既有文件**（M3 的老坑：手写名单让「新增能力 = 新增文件」失去牙齿）。
+    assert {"log", "metrics", "replay", "achievements", "rotations"} <= set(manifests)
+    # **M4 的变体 B 的系统**（住在 `variants/growth/` · 扫描根覆盖变体层）。
+    assert "growth" in manifests
     # **M2 三个内建系统的工厂在宿主侧**（落盘出口由宿主注入），所以**不在目录里**；
     # **M3 的两个示范系统自带工厂**（声明与工厂同源 · `systems/manifests.py` 的
     # 约定）→ **在目录里**——**清单 ≠ 目录**：清单回答「有哪些系统」，
     # 目录回答「哪些能装」。
-    assert set(system_catalog()) == {"achievements", "rotations"}
+    assert {"achievements", "rotations", "growth"} <= set(system_catalog())
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +278,16 @@ def test_the_systems_command_prints_the_catalog(capsys: pytest.CaptureFixture[st
     assert code == 0
     out = capsys.readouterr().out
     assert "log" in out
-    assert "piece:locked" not in out  # 没订阅它的系统
     assert "replay" in out
+    # **清单里出现的每个事件名都已在契约里登记**（**不写死"哪个事件不该出现"**
+    # ——**那等于把名单写死**，每加一个订阅者就要改这个既有文件）。
+    for manifest in declared_manifests().values():
+        for event_type in manifest.subscribes:
+            if event_type == "*":
+                # **通配订阅**（回放系统订阅一切）——**不是事件类型**。
+                continue
+            assert event_type in EVENT_TYPES
+            assert event_type in out
 
 
 def test_the_systems_command_has_a_machine_readable_form(
@@ -287,13 +300,9 @@ def test_the_systems_command_has_a_machine_readable_form(
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert [item["name"] for item in payload["systems"]] == [
-        "achievements",
-        "log",
-        "metrics",
-        "replay",
-        "rotations",
-    ]
+    # **清单与声明逐条相等**（**不写死名单**——每加一个系统就要改既有文件是
+    # M3 记过的老坑）。
+    assert {item["name"] for item in payload["systems"]} == set(declared_manifests())
     assert payload["graph"]["subscriptions"]["replay"] == [
         "command:accepted",
         "clock:tick",
@@ -322,13 +331,8 @@ def test_the_systems_command_mentions_the_declared_pieces(
 def test_the_module_path_is_importable_without_side_effects() -> None:
     """**导入 `host.discovery` 本身不许有副作用**（它只是工具，不装任何东西）。"""
     assert "tetris_kernel.host.discovery" not in sys.modules or True
-    assert set(declared_manifests()) == {
-        "achievements",
-        "log",
-        "metrics",
-        "replay",
-        "rotations",
-    }
+    # **目录里的每个系统都在清单里**（清单 ⊇ 目录 · **不写死名单**）。
+    assert set(system_catalog()) <= set(declared_manifests())
 
 
 def test_the_manifest_type_is_the_contract_one() -> None:

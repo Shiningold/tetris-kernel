@@ -59,7 +59,13 @@ from ...bus.envelope import Envelope, JSONValue, Payload, metadata_value
 from ...bus.subscriber import Subscription
 from ...kernel.commands import Args, ArgsValue
 from ...kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
-from .format import FourItems, RecordedCommand, Recording, recording_to_jsonl
+from .format import (
+    FourItems,
+    RecordedCommand,
+    Recording,
+    RecordingOutcome,
+    recording_to_jsonl,
+)
 
 #: 录制开始事件（契约已登记 · 产出者 `systems/replay/`）。
 RECORDING_STARTED_EVENT = "replay:recording-started"
@@ -90,12 +96,16 @@ CHECKPOINT_INTERVAL_FRAMES = 600
 #: 契约，不进基线**。
 type Sink = Callable[[bytes], None]
 
-#: 局末四项的**取法**（**宿主注入**）。
+#: 局末基准的**取法**（**宿主注入**）。
 #:
 #: **为什么由宿主取**：四项里的**棋盘指纹**只能从内核快照拿——系统层**不碰
 #: 内核状态**（M2-D1），指纹的算法也只有内核那一份（抄第二份就是第二个
-#: 真相）。所以宿主注入一个"给我四项"的可调用对象，系统层在局末问它一声。
-type OutcomeProvider = Callable[[], FourItems | None]
+#: 真相）。所以宿主注入一个"给我基准"的可调用对象，系统层在局末问它一声。
+#:
+#: **基准里还带第五项与变体标识**（M4-S10）：第五项（扩展槽的摘要）**同样
+#: 只有内核那一份算法算得出**；变体标识**录像头要带**——**变体标识 ≠ 规则集
+#: 标识**（变体 B 用的就是标准规则集）→ 光有规则集**装不回去那一局**。
+type OutcomeProvider = Callable[[], RecordingOutcome | None]
 
 
 class RecordingSystem[V]:
@@ -128,6 +138,10 @@ class RecordingSystem[V]:
         self._checkpoint_interval = checkpoint_interval
         self._outcome_provider = outcome_provider
         self._outcome: FourItems | None = None
+        #: **第五项**（扩展槽的摘要 · M4-S10）——`None` = 没有第五项。
+        self._extension_fingerprint: str | None = None
+        #: **变体标识**（`None` = 标准玩法 · M4-S10）——**录像头要带它**。
+        self._variant: str | None = None
         self._commands: list[RecordedCommand] = []
         self._frame_count = 0
         self._stopped = False
@@ -173,21 +187,34 @@ class RecordingSystem[V]:
         return self._stopped
 
     def recording(self) -> Recording:
-        """当前这份录像（**头三件套 + 命令序列 + 局末四项**）。"""
+        """当前这份录像（**头 + 命令序列 + 局末结算**）。"""
         return Recording(
             seed=self._seed,
             rule=self._rule,
             commands=tuple(self._commands),
             outcome=self._outcome,
+            extension_fingerprint=self._extension_fingerprint,
+            variant=self._variant,
         )
 
     def set_outcome(self, outcome: FourItems | None) -> None:
         """**主动**写入局末四项（**比对基准**）。
 
         **局末自动写入**：构造时给了 `outcome_provider` 的，局末会自动取一次
-        ——**先取四项再落盘**，否则录像头里就没有基准。
+        ——**先取基准再落盘**，否则录像头里就没有基准。
         """
         self._outcome = outcome
+
+    def set_extension_fingerprint(self, extension_fingerprint: str | None) -> None:
+        """**主动**写入第五项（**扩展槽的摘要** · M4-S10）。
+
+        **`None` = 该录像没有第五项**（v1 录像必然如此）。
+        """
+        self._extension_fingerprint = extension_fingerprint
+
+    def set_variant(self, variant: str | None) -> None:
+        """**主动**写入变体标识（**录像头要带它** · M4-S10）。"""
+        self._variant = variant
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -236,15 +263,19 @@ class RecordingSystem[V]:
             self.flush()
 
     def _on_game_over(self, envelope: Envelope) -> None:
-        """**局末**：取局末四项 → 落盘 → 发 `replay:recording-stopped`，然后停录。
+        """**局末**：取局末基准 → 落盘 → 发 `replay:recording-stopped`，然后停录。
 
-        **先取四项再落盘**——录像头里的局末四项是**四项比对的基准**，落盘时
+        **先取基准再落盘**——录像头里的局末五项是**五项比对的基准**，落盘时
         还没取到就白录了。
         """
         if self._stopped:
             return
         if self._outcome_provider is not None:
-            self.set_outcome(self._outcome_provider())
+            baseline = self._outcome_provider()
+            if baseline is not None:
+                self.set_outcome(baseline.items)
+                self.set_extension_fingerprint(baseline.extension_fingerprint)
+                self.set_variant(baseline.variant)
         self.flush()
         self._stopped = True
         self._bus.publish(_recording_stopped_draft(len(self._commands), self._frame_count))

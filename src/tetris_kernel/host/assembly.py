@@ -52,10 +52,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import TextIO
 
+from ..adapters.input import DEFAULT_ARR_MS, DEFAULT_DAS_MS, KeyboardInput
+from ..adapters.render import TerminalRenderer
 from ..adapters.storage import AppendSink, FileSink
 from ..bus.bus import DEFAULT_HISTORY_LIMIT, EventBus
 from ..contracts.systems import SystemManifest
+from ..kernel.commands import Command
 from ..kernel.core import (
     DEFAULT_BOARD_HEIGHT,
     DEFAULT_BOARD_WIDTH,
@@ -63,9 +67,10 @@ from ..kernel.core import (
     Kernel,
     RuleSetResolver,
 )
+from ..kernel.drafts import make_draft
 from ..kernel.quota import DEFAULT_LIMITS, QuotaLimits
 from ..kernel.snapshot import Snapshot
-from ..rules.interface import RuleSet
+from ..rules.interface import RuleSet, signature_mismatches
 from ..rules.standard import STANDARD_RULESET
 from ..rules.tables import PIECE_TYPES
 from ..systems.context import InstallContext, Sink, SystemEntry, SystemFactory
@@ -74,7 +79,7 @@ from ..systems.log.manifest import SYSTEM_MANIFEST as LOG_MANIFEST
 from ..systems.metrics import MetricsSystem
 from ..systems.metrics.manifest import SYSTEM_MANIFEST as METRICS_MANIFEST
 from ..systems.replay import OutcomeProvider, RecordingSystem
-from ..systems.replay.format import recording_filename
+from ..systems.replay.format import RecordingOutcome, recording_filename
 from ..systems.replay.manifest import SYSTEM_MANIFEST as REPLAY_MANIFEST
 from .clock import DEFAULT_STEP_MS, Clock, VirtualClock
 from .performance import DegradationController
@@ -235,6 +240,7 @@ def default_sinks(
     rule_id: str = "standard",
     project_root: Path | None = None,
     home: Path | None = None,
+    variant_id: str | None = None,
 ) -> tuple[ObservableSinks, DataDirectory]:
     """造**三个**落在默认数据目录里的落盘出口，并**回报最终落点**。
 
@@ -244,7 +250,7 @@ def default_sinks(
     | --- | --- | --- | --- |
     | 日志 | `log-<规则集>.jsonl` | **追加** | 一条一条往外冒 |
     | 指标 | `metrics-<规则集>.jsonl` | **追加** | 一帧一条 |
-    | 录像 | `recording-<规则集>.jsonl` | **覆盖** | 整份交出（原子替换） |
+    | 录像 | `recording-<规则集>[-<变体>].jsonl` | **覆盖** | 整份交出（原子替换） |
 
     **文件名不带墙钟**（ADR-064）：带时间戳会让"同一局录两次"产生两份
     不同的文件。
@@ -254,6 +260,9 @@ def default_sinks(
     算**）。
 
     **规则集标识进文件名**：不同规则集的两局**各写各的**，不互相覆盖。
+    **变体标识也进文件名**（M4-S10）：**变体标识 ≠ 规则集标识**——变体 B 的
+    规则集就是 `standard` → 不带变体它与标准局的录像同名，而录像是**覆盖
+    语义** → 后写的把先写的盖掉。
     **录像的文件名与录像格式模块给的 `recording_filename()` 逐字一致**——
     文件名是录像格式的一部分（spec §7.1），**不许这儿另起一个名字**。
     """
@@ -265,7 +274,7 @@ def default_sinks(
         ObservableSinks(
             log=AppendSink(directory.path / f"log-{safe_rule_id}.jsonl"),
             metrics=AppendSink(directory.path / f"metrics-{safe_rule_id}.jsonl"),
-            recording=FileSink(directory.path / recording_filename(safe_rule_id)),
+            recording=FileSink(directory.path / recording_filename(safe_rule_id, variant_id)),
         ),
         directory,
     )
@@ -320,17 +329,25 @@ def _safe_rule_id(rule_id: str) -> str:
     return rule_id
 
 
-def _outcome_provider_of(kernel: Kernel) -> OutcomeProvider:
-    """造一个"给我局末四项"的可调用对象（**宿主注入** · ADR-085）。
+def _outcome_provider_of(kernel: Kernel, variant_id: str | None = None) -> OutcomeProvider:
+    """造一个"给我局末基准"的可调用对象（**宿主注入** · ADR-085）。
 
     **为什么只能由宿主注入**：系统层**不碰内核状态**（M2-D1），而**棋盘指纹
     的算法只有内核那一份**（抄第二份就是第二个真相 · 架构 §7.1）。所以系统层
     只拿到一个**可调用对象**——**拿不到内核本身**（最窄能力原则）。
 
-    **算法只有这一处**：四项由 `four_items_of()` 算——**重放驱动器也用它**
-    （同一个 `host/replay.py`），两处必须算出同一个值。
+    **算法只有这一处**：五项由 `five_items_of()` / `four_items_of()` 算——
+    **重放驱动器也用它们**（同一个 `host/replay.py`），两处必须算出同一个值。
+
+    **基准里还带第五项与变体标识**（M4-S10）：第五项（扩展槽的摘要）**只有
+    内核那一份算法算得出**；变体标识**录像头要记它**——**变体标识 ≠ 规则集
+    标识**（变体 B 用的就是标准规则集）→ 光有规则集**装不回去那一局**。
     """
-    return lambda: four_items_of(kernel.snapshot())
+    return lambda: RecordingOutcome(
+        items=four_items_of(kernel.snapshot()),
+        extension_fingerprint=kernel.snapshot().extensionFingerprint,
+        variant=variant_id,
+    )
 
 
 #: 可观测系统的装配入口（**批次 C 往这张表里填满了**）。
@@ -470,16 +487,48 @@ OBSERVABLE_SYSTEM_FACTORIES: tuple[ObservableFactory, ...] = tuple(
 # 规则集接线：标识 → 规则集
 # ---------------------------------------------------------------------------
 
-#: 规则集标识 → 规则集（**宿主层的接线表** · 变体属 M4）。
+#: 规则集标识 → 规则集（**宿主层的接线表** · **变体规则集从 M4 起往这里登记**）。
 #:
 #: **为什么在宿主层**：`rules/` 是**冻结区**（M2-D5）——"哪个标识对应哪个
-#: 规则集"是**宿主的接线决定**，不是规则层自己的事。**变体规则集来了就往
-#: 这张表里加一行**（M4）。
+#: 规则集"是**宿主的接线决定**，不是规则层自己的事。
 #:
 #: **为什么不能拿标准规则集顶替**：标识写着"变体"、内核却跑标准规则——
 #: **重放出来的四项必然不等**，而报错只说"四项不等"，看不出"起错规则集了"。
 #: **表里没有就是没有**（`rule_set_of()` 返回 `None`）。
-RULE_SETS: Mapping[str, RuleSet] = MappingProxyType({"standard": STANDARD_RULESET})
+#:
+#: **内部存储是唯一的真相，对外只给只读视图**：登记走 `register_rule_set()`
+#: 这一个原语——**改动路径只有一处**，就不会有"谁直接改了字典"的第二个真相
+#: （与 `contracts/systems.py` 的已登记系统清单同款做法）。
+_RULE_SETS: dict[str, RuleSet] = {"standard": STANDARD_RULESET}
+
+#: 规则集接线表的**只读视图**（名字不变 · 类型不变 · 既有调用方不受影响）。
+RULE_SETS: Mapping[str, RuleSet] = MappingProxyType(_RULE_SETS)
+
+
+def register_rule_set(rule_id: str, rule_set: RuleSet) -> None:
+    """把一个规则集登记进接线表（**M4 的变体规则集从这条路进来**）。
+
+    **重名即报错**：标识是表的键——两个规则集抢一个标识时，后登记的会悄悄顶掉
+    先登记的，**重放出来的四项必然不等而报错看不出原因**。当场炸掉。
+
+    **登记进来的规则集必须满足冻结签名**（9 条 · 参数名与个数逐条相等）——
+    `signature_mismatches()` 说了算，**签名不符当场拒**（规则集接错了要当场知道，
+    不是玩到一半才炸）。
+    """
+    if rule_id in _RULE_SETS:
+        raise ValueError(f"规则集标识已登记：{rule_id}")
+    problems = signature_mismatches(rule_set)
+    if problems:
+        raise ValueError(f"规则集 {rule_id} 与冻结签名不符：{'；'.join(problems)}")
+    _RULE_SETS[rule_id] = rule_set
+
+
+def unregister_rule_set(rule_id: str) -> RuleSet | None:
+    """从接线表里注销一个规则集；**没登记过就是没有**（返回 `None`，不顶替）。
+
+    **给测试用**（装配前先登记再撤下，避免污染全局表）。
+    """
+    return _RULE_SETS.pop(rule_id, None)
 
 
 def rule_set_of(rule_id: str) -> RuleSet | None:
@@ -547,6 +596,7 @@ def assemble(
     system_catalog: Mapping[str, SystemEntry] | None = None,
     rule_sets: Mapping[str, RuleSet] | None = None,
     system_sink: SystemSinkFactory | None = None,
+    variant_id: str | None = None,
 ) -> Assembly:
     """把内核、总线、规则集与时钟拼成一件成品。
 
@@ -583,6 +633,9 @@ def assemble(
       落盘）。**只对声明 `needsSink=True` 的系统生效**（注册表门控）——
       成就这类"产出是事件"的系统**不接出口**。**自动发现的系统也走这条路**
       （M3-D2：新系统不装进内核，只经宿主接线拿到出口）。
+    - `variant_id`：**变体标识**（`None` = 标准玩法 · M4-S10）——**录像头要记
+      它**：**变体标识 ≠ 规则集标识**（变体 B 用的就是标准规则集）→ 光有
+      规则集**装不回去那一局**（扩展槽会是空的 → 第五项必然不等）。
 
     > **内建可观测系统要走注册表路径（好让它能被运行时摘下）**，就把
     > `observability_enabled` 关掉——**否则同一个系统会被装两遍**（可观测装配
@@ -615,7 +668,7 @@ def assemble(
         # **局末四项的取法由宿主注入**：棋盘指纹只有内核那一份算法（抄第二份
         # 就是第二个真相），而系统层**不碰内核状态**（M2-D1）——它只拿到一个
         # 可调用对象，拿不到内核。
-        outcome_provider = _outcome_provider_of(kernel)
+        outcome_provider = _outcome_provider_of(kernel, variant_id)
         observable_systems = tuple(
             factory(bus, effective_sinks, outcome_provider)
             for factory in OBSERVABLE_SYSTEM_FACTORIES
@@ -638,7 +691,7 @@ def assemble(
         # **系统注册表**（M3）：**装哪些系统由宿主参数决定**（FR-9.1）。
         # 目录 = 内建系统 + 递进来的额外条目（**新系统走自动发现**）。
         catalog: dict[str, SystemEntry] = dict(
-            built_in_system_entries(effective_sinks, _outcome_provider_of(kernel))
+            built_in_system_entries(effective_sinks, _outcome_provider_of(kernel, variant_id))
         )
         if system_catalog is not None:
             catalog.update(system_catalog)
@@ -662,20 +715,152 @@ def assemble(
     )
 
 
+# ---------------------------------------------------------------------------
+# 实时装配（M4-S8 · spec-M4 §7.5）
+# ---------------------------------------------------------------------------
+
+
+class FrameCounter:
+    """**当前帧号**的载体（**事件负载的 `frame` 字段取它**）。
+
+    **为什么要有它**：输入适配器发的两条事件（`input:raw` / `input:intent`）
+    **带帧号**——**但适配器自己不数帧**（**它不碰内核**）→ **宿主数**。
+
+    **共享同一个对象** → **装配层把它造好，实时会话每帧推进它**。
+    """
+
+    def __init__(self) -> None:
+        self._frame = 0
+
+    @property
+    def frame(self) -> int:
+        """**当前帧号**。"""
+        return self._frame
+
+    def advance(self) -> None:
+        """**推进一帧**（**实时会话每帧调一次**）。"""
+        self._frame += 1
+
+
+@dataclass(frozen=True)
+class PlayAssembly:
+    """**实时装配的产物**（**内核那一套 + 渲染器 + 输入适配器**）。
+
+    - `assembly`：**装配好的三件套**（内核 · 总线 · 时钟）；
+    - `renderer`：**终端渲染器**（**没有就不画**）；
+    - `input_adapter`：**键盘适配器**（**没有绑读键器就没有输入**）；
+    - `frame_counter`：**帧号载体**（**输入事件的帧号取它**）；
+    - `degradation`：**降级控制器**（**没有就不喂帧开销**）。
+    """
+
+    assembly: Assembly
+    renderer: TerminalRenderer | None
+    input_adapter: KeyboardInput | None
+    frame_counter: FrameCounter
+    degradation: DegradationController[Snapshot] | None
+
+
+def assemble_play(
+    *,
+    seed: int = 0,
+    rule_set: RuleSet = STANDARD_RULESET,
+    rule_id: str = "standard",
+    systems: Sequence[str] = (),
+    system_catalog: Mapping[str, SystemEntry] | None = None,
+    board_width: int = DEFAULT_BOARD_WIDTH,
+    board_height: int = DEFAULT_BOARD_HEIGHT,
+    hidden_rows: int = DEFAULT_HIDDEN_ROWS,
+    step_ms: int = DEFAULT_STEP_MS,
+    das_ms: int = DEFAULT_DAS_MS,
+    arr_ms: int = DEFAULT_ARR_MS,
+    render: bool = True,
+    degradation_enabled: bool = False,
+    stream: TextIO | None = None,
+    source: str = "human",
+    variant_id: str | None = None,
+) -> PlayAssembly:
+    """**实时装配**（**渲染器 + 输入适配器 + 变体 + 降级**）。
+
+    **与 `assemble()` 的差别**：**多装两样适配器**（渲染器 · 输入适配器），
+    **并把两样接上**（渲染器订阅总线 · 输入适配器的命令与事件回调递给宿主）。
+
+    **回调是宿主的事**（架构 §4.1：**宿主层是唯一知道怎么拼起来的地方**）：
+
+    - **命令**：`submit` → **造 `Command` 并交给内核**（**命令的组装归宿主**）；
+    - **事件**：`publish` → **造草稿并交给总线**（**契约校验在宿主那一侧** →
+      **适配器写错字段名当场报错**，**发不出去**）。
+
+    **渲染器带一份规则集**（FR-8.2）——**变体 A 的规则集接进去照样画对**。
+    """
+    assembly = assemble(
+        seed=seed,
+        rule_set=rule_set,
+        rule_id=rule_id,
+        systems=systems,
+        system_catalog=system_catalog,
+        board_width=board_width,
+        board_height=board_height,
+        hidden_rows=hidden_rows,
+        step_ms=step_ms,
+        degradation_enabled=degradation_enabled,
+        variant_id=variant_id,
+    )
+    counter = FrameCounter()
+
+    renderer: TerminalRenderer | None = None
+    if render:
+        renderer = TerminalRenderer(
+            rule_set=rule_set,
+            width=board_width,
+            height=board_height,
+            hidden_rows=hidden_rows,
+            stream=stream,
+        )
+        # **渲染器是纯订阅者**（M4-D2）——**订阅总线**（**它自己不发事件**）。
+        # **多渲染器同挂**（FR-9.4）→ **互不影响**。
+        assembly.bus.subscribe("*", renderer.on_event)
+
+    def publish(event_type: str, payload: tuple[tuple[str, str], ...]) -> None:
+        """**发一条事件**（**草稿由宿主造** —— 契约校验在这一侧）。"""
+        assembly.bus.publish(make_draft(event_type, payload, counter.frame))
+
+    def submit(command_type: str) -> None:
+        """**派一条命令**（**命令由宿主造** —— 内核只认命令类型与参数）。"""
+        assembly.kernel.submit(Command(type=command_type, args=(), source=source))
+
+    input_adapter = KeyboardInput(
+        submit=submit,
+        publish=publish,
+        das_ms=das_ms,
+        arr_ms=arr_ms,
+        source=source,
+    )
+    return PlayAssembly(
+        assembly=assembly,
+        renderer=renderer,
+        input_adapter=input_adapter,
+        frame_counter=counter,
+        degradation=assembly.degradation_controller,
+    )
+
+
 __all__ = [
     "DATA_DIR_NAME",
     "HOME_DIR_NAME",
     "RULE_SETS",
     "Assembly",
     "DataDirectory",
+    "FrameCounter",
     "ObservableFactory",
     "ObservableSinks",
     "OBSERVABLE_SYSTEM_FACTORIES",
+    "PlayAssembly",
     "SYSTEM_SINK_PREFIX",
     "SYSTEM_SINK_SUFFIX",
     "Sink",
     "SystemSinkFactory",
     "assemble",
+    "assemble_play",
     "default_sink",
     "default_sinks",
     "resolve_data_dir",

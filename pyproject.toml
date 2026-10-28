@@ -113,6 +113,12 @@ forbidden_modules = [
     "tetris_kernel.host",
 ]
 
+# **这条契约是架构 §2.3 / §4.1 / §7.7 三处的明文**：变体层与 `systems/` 同级，
+# **可以 import `systems` / `rules` / `contracts`，但禁止 import `kernel` / `bus`**。
+# **注意它是传递性的**——所以变体**连 `systems.context` 都不能 import**
+# （那条链通向总线与内核）→ **变体要派命令，就得让系统层代劳**
+# （`CommandChannel.submit_cells`）· **要订阅，就靠注册表按声明接上**（不用碰总线）。
+
 [[tool.importlinter.contracts]]
 name = "系统之间互不直调，只经事件与命令协作"
 type = "independence"

@@ -28,12 +28,16 @@ FR-10.2 的存档一致性本来就是 M2 要验的东西——**不要在同一
 **所以"不为步进新增命令"的落点是**：步进与暂停**一个命令都不新增**，也
 **一个命令都不多派**。
 
-## 四项比对（AC-1 · spec §7.3）
+## 四项比对（AC-1 · spec §7.3）与**第五项**（M4-S10 · `G4-2`）
 
 **四项**：棋盘指纹 · 分数 · 行数 · 方块数。**逐条相等**才算过——不是"最终态
 差不多"。
 
-**四项由宿主注入的驱动器取**——棋盘指纹只能从内核快照拿，系统层**不碰内核
+**第五项 = 扩展指纹**：**结构指纹不含扩展字段**（架构 §5.4）→ 变体局的扩展
+状态分叉时，**只比四项会全绿而结果不同**。**标准局的第五项恒等**（空槽的
+摘要）→ **既有的四项比对语义不变**（AC-1 不受影响）。
+
+**五项由宿主注入的驱动器取**——棋盘指纹只能从内核快照拿，系统层**不碰内核
 状态**（M2-D1），指纹的算法也只有内核那一份（抄第二份就是第二个真相）。
 """
 
@@ -43,7 +47,7 @@ from typing import Protocol
 
 from ...bus.bus import EventBus
 from ...kernel.drafts import METADATA_CAUSE, EventDraft, make_draft
-from .format import FourItems, RecordedCommand, Recording
+from .format import FiveItems, FourItems, RecordedCommand, Recording
 
 #: 回放开始事件（契约已登记 · 产出者 `systems/replay/`）。
 PLAYBACK_STARTED_EVENT = "replay:playback-started"
@@ -61,13 +65,14 @@ TICK_COMMAND = "tick"
 class PlaybackDriver(Protocol):
     """回放驱动器（**宿主注入**）。
 
-    **为什么是注入的**：起内核 · 派发命令 · 推进帧 · 取四项——都是**宿主**的
+    **为什么是注入的**：起内核 · 派发命令 · 推进帧 · 取五项——都是**宿主**的
     事（架构 §4.1：唯一知道"怎么把部件拼起来"的地方是装配层）。系统层**不造
     内核**，也**不 import `kernel.core`**。
 
     - `dispatch`：派发一批命令（**原样**——类型 / 参数 / 来源都不改）；
     - `advance_frame`：推进一帧（**帧推进五步**）；
-    - `four_items`：取当前局面的四项。
+    - `four_items`：取当前局面的**四项**（契约面那条四字段事件用）；
+    - `five_items`：取当前局面的**五项**（**四项 + 扩展指纹** · M4-S10）。
     """
 
     def dispatch(self, commands: tuple[RecordedCommand, ...]) -> None:
@@ -80,6 +85,10 @@ class PlaybackDriver(Protocol):
 
     def four_items(self) -> FourItems:
         """当前局面的四项（**棋盘指纹 · 分数 · 行数 · 方块数**）。"""
+        ...
+
+    def five_items(self) -> FiveItems:
+        """当前局面的**五项**（四项 **+ 扩展指纹** · M4-S10）。"""
         ...
 
 
@@ -138,6 +147,14 @@ class PlaybackSession[V]:
     def four_items(self) -> FourItems:
         """当前局面的四项。"""
         return self._driver.four_items()
+
+    def five_items(self) -> FiveItems:
+        """当前局面的**五项**（四项 **+ 扩展指纹** · M4-S10 · `G4-2`）。
+
+        **第五项是"扩展指纹"**：**结构指纹不含扩展字段**（架构 §5.4）——
+        变体局的扩展状态分叉时，**只比四项会全绿而结果不同**。
+        """
+        return self._driver.five_items()
 
     # ------------------------------------------------------------------
     # 走

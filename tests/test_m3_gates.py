@@ -492,15 +492,27 @@ def test_m3_system_manifest_and_graph_the_graph_matches_every_declaration() -> N
         "rotations": (),
     }
 
-    assert dict(graph.subscriptions) == expected_subscriptions, (
-        f"依赖图的订阅维度与手抄的期望不等：{dict(graph.subscriptions)}"
-    )
-    assert dict(graph.producers) == expected_producers, (
-        f"依赖图的产出者维度与手抄的期望不等：{dict(graph.producers)}"
-    )
-    assert dict(graph.commands) == expected_commands, (
-        f"依赖图的命令维度与手抄的期望不等：{dict(graph.commands)}"
-    )
+    # **M3 的五个系统**逐条相等（**手抄的期望值只覆盖 M3 那一批**）。
+    for name, expected in expected_subscriptions.items():
+        assert graph.subscriptions[name] == expected, (
+            f"依赖图的订阅维度与手抄的期望不等：{dict(graph.subscriptions)}"
+        )
+    for name, expected in expected_producers.items():
+        assert graph.producers[name] == expected, (
+            f"依赖图的产出者维度与手抄的期望不等：{dict(graph.producers)}"
+        )
+    for name, expected in expected_commands.items():
+        assert graph.commands[name] == expected, (
+            f"依赖图的命令维度与手抄的期望不等：{dict(graph.commands)}"
+        )
+    # **新增的系统（M4 的变体 B）也在图里**——**图 ≡ 全部声明**（**不写死名单**：
+    # 每加一个系统就要改这个既有文件 = 「新增能力 = 新增文件」失去牙齿）。
+    manifests = declared_manifests()
+    assert set(graph.subscriptions) == set(manifests)
+    for name, manifest in manifests.items():
+        assert graph.subscriptions[name] == manifest.subscribes
+        assert graph.commands[name] == manifest.commands
+        assert graph.producers[name] == manifest.producer
 
 
 def test_m3_system_manifest_and_graph_every_declaration_self_proves() -> None:
@@ -532,11 +544,15 @@ def test_m3_system_manifest_and_graph_the_graph_answers_both_directions() -> Non
     assert "achievements" in graph.subscribers_of("piece:rotated"), (
         "成就系统订阅全局——它对任何事件都在名单里"
     )
-    # **没有任何系统派发命令**（M3 的新系统全是订阅者 · `G3-6`）。
+    # **M3 的新系统全是订阅者 · `G3-6`**——**只管 M3 那两个**：
+    # **M4 的变体 B 就是派发命令的**（它经 `writeCells` 受控写入）→
+    # **"没有系统派发命令"是 M3 当时的状况，不是全局纪律**。
     for command_type in ("tick", "switchRuleSet", "writeCells"):
-        assert graph.dispatchers_of(command_type) == (), (
-            f"{command_type} 有人派发——M3 的新系统不该派命令"
-        )
+        dispatchers = graph.dispatchers_of(command_type)
+        for m3_system in ("achievements", "rotations"):
+            assert m3_system not in dispatchers, (
+                f"{m3_system} 派发了 {command_type}——M3 的新系统不该派命令"
+            )
 
 
 # ---------------------------------------------------------------------------

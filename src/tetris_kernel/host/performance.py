@@ -42,12 +42,23 @@
 
 `observe_frame(cost_ms)` —— **由调用方喂**。M2 是**无头批次**，没有实时宿主
 去测每帧耗时；**接线留给 M3 的实时宿主**（那才是真正"用户手关"的地方）。
+
+## M4-S8：喂帧开销的那条线接上了
+
+**实时宿主每推进一帧就喂一次**（`measure_frame`）——**测的只是"推进"这一段的
+耗时**：**渲染不计入逻辑帧预算**（NFR-2 明写：渲染 · 日志落盘 · 指标导出 · 网络
+IO 一律不计入）。
+
+**两个口径混了就是错账**：把渲染算进去，**画面慢就会误判成"内核慢"** → **降级
+降错了地方**。
 """
 
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
+from collections.abc import Callable
 
 from ..bus.bus import EventBus
 from ..systems.log import LogSystem
@@ -317,6 +328,20 @@ class DegradationController[V]:
         self._bus.set_history_enabled(tier < TIER_EVENT_HISTORY)
 
 
+def measure_frame[T](action: Callable[[], T]) -> tuple[T, float]:
+    """**测一帧的动作耗时**（**毫秒**）→ 返回 `(动作的返回值 · 耗时)`。
+
+    **测的只是动作本身**：**渲染在动作之外** → **渲染不计入逻辑帧预算**
+    （NFR-2）——**两个口径混了就是错账**（画面慢会被误判成"内核慢"）。
+
+    **为什么在这里**：**喂帧开销的那条线归降级这一档管**（ADR-031 · M4-S8
+    的遗留接线）——**测量与判档在同一个地方**，**别让两处各测各的**。
+    """
+    started = time.monotonic()
+    result = action()
+    return result, (time.monotonic() - started) * 1000
+
+
 __all__ = [
     "DEGRADE_P99_MS",
     "DEGRADE_WINDOW_FRAMES",
@@ -332,4 +357,5 @@ __all__ = [
     "TIER_NONE",
     "DegradationController",
     "FrameCostWindow",
+    "measure_frame",
 ]
