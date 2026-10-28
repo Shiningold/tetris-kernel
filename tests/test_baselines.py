@@ -852,11 +852,15 @@ def test_the_baseline_covers_every_reject_reason() -> None:
 
 
 def test_the_baseline_covers_every_declared_system() -> None:
-    """每个**已声明**的系统在基线里各有一条键（FR-9.2 的承诺要进基线）。"""
-    from tetris_kernel.systems.manifests import discover_manifests
+    """每个**已声明**的系统在基线里各有一条键（FR-9.2 的承诺要进基线）。
+
+    **口径与工具一致**（M4-S2）：基线的系统声明键类取的是**宿主层的汇总**
+    （`systems/` + `variants/`）——**用另一处口径来核对，等于拿尺子量自己**。
+    """
+    from tetris_kernel.host.discovery import declared_manifests
 
     entries = _read_json(CONTRACT_BASELINE)["entries"]
-    missing = [name for name in discover_manifests() if f"system/{name}" not in entries]
+    missing = [name for name in declared_manifests() if f"system/{name}" not in entries]
     assert not missing, f"系统声明没有进基线：{missing}"
 
 
@@ -876,7 +880,7 @@ def test_a_system_declaration_that_does_not_self_prove_is_refused(monkeypatch) -
         producer="log",
         needsSink=False,
     )
-    monkeypatch.setattr(_contract_baseline, "discover_manifests", lambda: {"probe": bad})
+    monkeypatch.setattr(_contract_baseline, "declared_manifests", lambda: {"probe": bad})
 
     with pytest.raises(ValueError):
         _contract_baseline.collect_entries()
