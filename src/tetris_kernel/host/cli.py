@@ -85,16 +85,20 @@ import json
 import sys
 from pathlib import Path
 
+from ..adapters.input import DEFAULT_ARR_MS, DEFAULT_DAS_MS, create_key_reader
 from ..adapters.storage import FileSink
 from ..bus.envelope import Envelope
 from ..rules.interface import RuleSet
+from ..rules.standard import STANDARD_RULESET
 from ..systems.metrics.trace import DEFAULT_PANEL_LIMIT, EventPanel
 from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
-from .assembly import ObservableSinks, assemble, default_sinks, rule_set_of
+from .assembly import ObservableSinks, assemble, assemble_play, default_sinks, rule_set_of
 from .builtin_variants import register_builtin_variants
+from .clock import DEFAULT_STEP_MS, RealClock
 from .discovery import declared_manifests, dependency_graph, system_catalog
 from .loop import HeadlessLoop, RunReport
+from .play import PlayReport, PlaySession
 from .replay import REPLAY_LIMITS, KernelReplayDriver
 from .variants import variant_catalog, variant_of
 
@@ -180,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_systems(args)
         case "variants":
             return _cmd_variants(args)
+        case "play":
+            return _cmd_play(args)
         case _:
             return _cmd_placeholder(args)
 
@@ -303,10 +309,49 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     variants.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
 
-    subparsers.add_parser(
+    play = subparsers.add_parser(
         "play",
-        help="交互式游玩（占位；输入适配器与渲染器属 M4）",
+        help="交互式游玩（M4 · 真实时钟 + 终端画面 + 键盘输入）",
     )
+    play.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help=f"内核随机源种子（默认 {DEFAULT_SEED}）",
+    )
+    play.add_argument(
+        "--variant",
+        default=None,
+        help=(
+            "用哪个变体开局（M4 · 变体 A / 变体 B）。"
+            "**省略 = 标准玩法**；标识见 `tetris variants`。"
+            "**不在册就明确报错，不拿标准玩法顶替**"
+        ),
+    )
+    play.add_argument(
+        "--das",
+        type=int,
+        default=DEFAULT_DAS_MS,
+        help=f"延迟自动移位（毫秒 · 默认 {DEFAULT_DAS_MS}）",
+    )
+    play.add_argument(
+        "--arr",
+        type=int,
+        default=DEFAULT_ARR_MS,
+        help=f"自动重复速率（毫秒 · 默认 {DEFAULT_ARR_MS}）",
+    )
+    play.add_argument(
+        "--frames",
+        type=int,
+        default=None,
+        help="最多跑多少帧（**省略 = 跑到局结束或玩家退出**）",
+    )
+    play.add_argument(
+        "--no-render",
+        action="store_true",
+        help="不画终端画面（**无头跑** · 输出仍然给统计）",
+    )
+    play.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
     return parser
 
 
@@ -707,10 +752,103 @@ def _cmd_variants(args: argparse.Namespace) -> int:
 def _cmd_placeholder(args: argparse.Namespace) -> int:
     """占位子命令：**要能跑、不许报错**（M0 的门是「无头闭环」）。
 
-    **M2 之后只剩 `play` 一个占位**（交互式游玩要渲染器与输入适配器，属 **M4**）。
+    **M2 之后只剩 `play` 一个占位**（交互式游玩要渲染器与输入适配器，属 **M4**）
+    ——**M4 之后连它也不是占位了**（`play` 从 M4-S8 起真跑）。
     """
-    print(f"「{args.command}」尚未实现（占位命令；M2 之后只剩 `play` 一个占位）。")
+    print(f"「{args.command}」尚未实现（占位命令）。")
     return 0
+
+
+def _cmd_play(args: argparse.Namespace) -> int:
+    """`play`：**真跑**（M4-S8 · **不再是占位**）。
+
+    **终端画面 + 键盘输入 + 真实时钟**的帧循环（`host/play.py`）。
+
+    **三条现实约束**（都写在代码里，不藏着）：
+
+    - **不是交互式终端就不画画面、不读键**（`isatty()`）——**重定向到文件的
+      输出里不该有 ANSI 控制码**；
+    - **渲染不画到 stdout 之外的任何地方**——**统计照常打印**；
+    - **`--frames` 不给就跑到局结束或玩家退出**（**按 `q` 退出**）。
+
+    **变体口径与 `sim` 一致**：**不在册就明确报错**（退出码 2），**不拿标准玩法
+    顶替**。
+    """
+    frames = args.frames
+    if frames is not None and frames < 0:
+        print("帧数不能为负", file=sys.stderr)
+        return 2
+    variant = _variant_rule_set_of(args)
+    variant_systems = _variant_systems_of(args)
+    if variant is None:
+        rule_set, rule_id = STANDARD_RULESET, "standard"
+    else:
+        rule_set, rule_id = variant
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    play = assemble_play(
+        seed=int(args.seed),
+        rule_set=rule_set,
+        rule_id=rule_id,
+        systems=variant_systems,
+        # **变体 B 的系统住在 `variants/growth/`** → **自动发现扫得到**。
+        system_catalog=system_catalog() if variant_systems else None,
+        das_ms=int(args.das),
+        arr_ms=int(args.arr),
+        # **不是交互式终端就不画**（**ANSI 控制码不该进重定向的输出**）。
+        render=not bool(args.no_render) and sys.stdout.isatty(),
+        degradation_enabled=True,
+    )
+    loop = HeadlessLoop(play.assembly)
+    loop.start()
+    session = PlaySession(
+        assembly=play.assembly,
+        loop=loop,
+        renderer=play.renderer,
+        input_adapter=play.input_adapter,
+        degradation=play.degradation,
+        frame_counter=play.frame_counter,
+        clock=RealClock(step_ms=DEFAULT_STEP_MS),
+    )
+    if interactive and play.input_adapter is not None:
+        play.input_adapter.bind_reader(create_key_reader())
+    try:
+        report = session.run(frames=frames)
+    finally:
+        session.close()
+    if bool(args.json):
+        print(json.dumps(_play_dict(report), ensure_ascii=False))
+    else:
+        for line in _play_lines(report):
+            print(line)
+    return 0
+
+
+def _play_dict(report: PlayReport) -> dict[str, object]:
+    """`play` 的机器可读输出（**字段名与 `PlayReport` 一致**）。"""
+    return {
+        "frames": report.frames,
+        "events": report.events,
+        "fingerprint": report.fingerprint,
+        "score": report.score,
+        "lines": report.lines,
+        "piecesPlaced": report.piecesPlaced,
+        "phase": report.phase,
+        "combo": report.combo,
+        "b2b": report.b2b,
+        "level": report.level,
+    }
+
+
+def _play_lines(report: PlayReport) -> list[str]:
+    """`play` 的人类可读输出（**结算那几项**）。"""
+    return [
+        f"帧数 {report.frames}",
+        f"分数 {report.score}",
+        f"行数 {report.lines}",
+        f"方块数 {report.piecesPlaced}",
+        f"相位 {report.phase}",
+        f"棋盘指纹 {report.fingerprint}",
+    ]
 
 
 def _report_dict(report: RunReport) -> dict[str, object]:

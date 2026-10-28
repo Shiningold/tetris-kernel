@@ -39,19 +39,19 @@ class _Recorder:
     """**记下命令与事件**（**替身**：不碰内核、不碰总线）。"""
 
     def __init__(self) -> None:
-        self.commands: list[tuple[str, tuple[tuple[str, object], ...]]] = []
-        self.events: list[tuple[str, tuple[tuple[str, object], ...]]] = []
+        self.commands: list[str] = []
+        self.events: list[tuple[str, tuple[tuple[str, str], ...]]] = []
 
-    def submit(self, command_type: str, args: tuple[tuple[str, object], ...]) -> None:
-        self.commands.append((command_type, args))
+    def submit(self, command_type: str) -> None:
+        self.commands.append(command_type)
 
-    def publish(self, event_type: str, payload: tuple[tuple[str, object], ...]) -> None:
+    def publish(self, event_type: str, payload: tuple[tuple[str, str], ...]) -> None:
         self.events.append((event_type, payload))
 
     @property
     def command_types(self) -> list[str]:
         """**派出去的命令类型序列**（**逐条比对的抓手**）。"""
-        return [command_type for command_type, _ in self.commands]
+        return list(self.commands)
 
     @property
     def intents(self) -> list[tuple[str, str]]:

@@ -47,17 +47,25 @@ from types import MappingProxyType
 from ...contracts.commands import COMMANDS
 from .reader import KIND_DOWN, KIND_UP, KeyEvent, KeyReader
 
-#: **命令提交**的形状（**宿主递给适配器的回调**）：命令类型 + 参数。
+#: **命令提交**的形状（**宿主递给适配器的回调**）：命令类型。
+#:
+#: **为什么只有命令类型、没有参数**：**适配器映射的那七条命令全都无参**
+#: （`moveLeft` / `moveRight` / `rotateCW` / `rotateCCW` / `rotate180` /
+#: `softDrop` / `hardDrop` / `hold` / `pause`）——**最窄能力原则**：**不给它
+#: 用不上的口子**。**要发带参命令时再改这个类型**（别提前泛化）。
 #:
 #: **为什么是回调而不是通道**：**这样适配器连内核都不用 import**（M4-D2 的
 #: 最强形态）——**命令的组装与提交归宿主**（宿主本来就有内核）。
-type CommandSubmitter = Callable[[str, tuple[tuple[str, object], ...]], None]
+type CommandSubmitter = Callable[[str], None]
 
 #: **事件发布**的形状（**宿主递给适配器的回调**）：事件类型 + 负载。
 #:
+#: **负载的值全是字符串**（动作名 · 按下 / 抬起 · 命令类型）→ **类型就写
+#: 字符串**，**不给它用不上的口子**。
+#:
 #: **为什么由宿主发**：**事件的契约校验（字段名与顺序）由宿主那一侧做**
 #: （`make_draft`）→ **适配器写错字段名，当场报错**，**发不出去**。
-type EventPublisher = Callable[[str, tuple[tuple[str, object], ...]], None]
+type EventPublisher = Callable[[str, tuple[tuple[str, str], ...]], None]
 
 #: 按键事件（**读键那一层的归一化输出**）。
 type KeyHandler = Callable[[str, str], None]
@@ -288,7 +296,7 @@ class KeyboardInput:
             INPUT_INTENT_EVENT,
             (("action", binding.action), ("commandType", binding.commandType)),
         )
-        self._submit(binding.commandType, ())
+        self._submit(binding.commandType)
 
     # ------------------------------------------------------------------
     # 接线（**宿主用**）

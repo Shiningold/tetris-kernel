@@ -52,10 +52,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import TextIO
 
+from ..adapters.input import DEFAULT_ARR_MS, DEFAULT_DAS_MS, KeyboardInput
+from ..adapters.render import TerminalRenderer
 from ..adapters.storage import AppendSink, FileSink
 from ..bus.bus import DEFAULT_HISTORY_LIMIT, EventBus
 from ..contracts.systems import SystemManifest
+from ..kernel.commands import Command
 from ..kernel.core import (
     DEFAULT_BOARD_HEIGHT,
     DEFAULT_BOARD_WIDTH,
@@ -63,6 +67,7 @@ from ..kernel.core import (
     Kernel,
     RuleSetResolver,
 )
+from ..kernel.drafts import make_draft
 from ..kernel.quota import DEFAULT_LIMITS, QuotaLimits
 from ..kernel.snapshot import Snapshot
 from ..rules.interface import RuleSet, signature_mismatches
@@ -694,20 +699,150 @@ def assemble(
     )
 
 
+# ---------------------------------------------------------------------------
+# 实时装配（M4-S8 · spec-M4 §7.5）
+# ---------------------------------------------------------------------------
+
+
+class FrameCounter:
+    """**当前帧号**的载体（**事件负载的 `frame` 字段取它**）。
+
+    **为什么要有它**：输入适配器发的两条事件（`input:raw` / `input:intent`）
+    **带帧号**——**但适配器自己不数帧**（**它不碰内核**）→ **宿主数**。
+
+    **共享同一个对象** → **装配层把它造好，实时会话每帧推进它**。
+    """
+
+    def __init__(self) -> None:
+        self._frame = 0
+
+    @property
+    def frame(self) -> int:
+        """**当前帧号**。"""
+        return self._frame
+
+    def advance(self) -> None:
+        """**推进一帧**（**实时会话每帧调一次**）。"""
+        self._frame += 1
+
+
+@dataclass(frozen=True)
+class PlayAssembly:
+    """**实时装配的产物**（**内核那一套 + 渲染器 + 输入适配器**）。
+
+    - `assembly`：**装配好的三件套**（内核 · 总线 · 时钟）；
+    - `renderer`：**终端渲染器**（**没有就不画**）；
+    - `input_adapter`：**键盘适配器**（**没有绑读键器就没有输入**）；
+    - `frame_counter`：**帧号载体**（**输入事件的帧号取它**）；
+    - `degradation`：**降级控制器**（**没有就不喂帧开销**）。
+    """
+
+    assembly: Assembly
+    renderer: TerminalRenderer | None
+    input_adapter: KeyboardInput | None
+    frame_counter: FrameCounter
+    degradation: DegradationController[Snapshot] | None
+
+
+def assemble_play(
+    *,
+    seed: int = 0,
+    rule_set: RuleSet = STANDARD_RULESET,
+    rule_id: str = "standard",
+    systems: Sequence[str] = (),
+    system_catalog: Mapping[str, SystemEntry] | None = None,
+    board_width: int = DEFAULT_BOARD_WIDTH,
+    board_height: int = DEFAULT_BOARD_HEIGHT,
+    hidden_rows: int = DEFAULT_HIDDEN_ROWS,
+    step_ms: int = DEFAULT_STEP_MS,
+    das_ms: int = DEFAULT_DAS_MS,
+    arr_ms: int = DEFAULT_ARR_MS,
+    render: bool = True,
+    degradation_enabled: bool = False,
+    stream: TextIO | None = None,
+    source: str = "human",
+) -> PlayAssembly:
+    """**实时装配**（**渲染器 + 输入适配器 + 变体 + 降级**）。
+
+    **与 `assemble()` 的差别**：**多装两样适配器**（渲染器 · 输入适配器），
+    **并把两样接上**（渲染器订阅总线 · 输入适配器的命令与事件回调递给宿主）。
+
+    **回调是宿主的事**（架构 §4.1：**宿主层是唯一知道怎么拼起来的地方**）：
+
+    - **命令**：`submit` → **造 `Command` 并交给内核**（**命令的组装归宿主**）；
+    - **事件**：`publish` → **造草稿并交给总线**（**契约校验在宿主那一侧** →
+      **适配器写错字段名当场报错**，**发不出去**）。
+
+    **渲染器带一份规则集**（FR-8.2）——**变体 A 的规则集接进去照样画对**。
+    """
+    assembly = assemble(
+        seed=seed,
+        rule_set=rule_set,
+        rule_id=rule_id,
+        systems=systems,
+        system_catalog=system_catalog,
+        board_width=board_width,
+        board_height=board_height,
+        hidden_rows=hidden_rows,
+        step_ms=step_ms,
+        degradation_enabled=degradation_enabled,
+    )
+    counter = FrameCounter()
+
+    renderer: TerminalRenderer | None = None
+    if render:
+        renderer = TerminalRenderer(
+            rule_set=rule_set,
+            width=board_width,
+            height=board_height,
+            hidden_rows=hidden_rows,
+            stream=stream,
+        )
+        # **渲染器是纯订阅者**（M4-D2）——**订阅总线**（**它自己不发事件**）。
+        # **多渲染器同挂**（FR-9.4）→ **互不影响**。
+        assembly.bus.subscribe("*", renderer.on_event)
+
+    def publish(event_type: str, payload: tuple[tuple[str, str], ...]) -> None:
+        """**发一条事件**（**草稿由宿主造** —— 契约校验在这一侧）。"""
+        assembly.bus.publish(make_draft(event_type, payload, counter.frame))
+
+    def submit(command_type: str) -> None:
+        """**派一条命令**（**命令由宿主造** —— 内核只认命令类型与参数）。"""
+        assembly.kernel.submit(Command(type=command_type, args=(), source=source))
+
+    input_adapter = KeyboardInput(
+        submit=submit,
+        publish=publish,
+        das_ms=das_ms,
+        arr_ms=arr_ms,
+        source=source,
+    )
+    return PlayAssembly(
+        assembly=assembly,
+        renderer=renderer,
+        input_adapter=input_adapter,
+        frame_counter=counter,
+        degradation=assembly.degradation_controller,
+    )
+
+
 __all__ = [
     "DATA_DIR_NAME",
     "HOME_DIR_NAME",
     "RULE_SETS",
     "Assembly",
     "DataDirectory",
+    "FrameCounter",
     "ObservableFactory",
     "ObservableSinks",
     "OBSERVABLE_SYSTEM_FACTORIES",
+    "PlayAssembly",
     "SYSTEM_SINK_PREFIX",
     "SYSTEM_SINK_SUFFIX",
     "Sink",
     "SystemSinkFactory",
     "assemble",
+    "assemble_play",
     "default_sink",
     "default_sinks",
     "resolve_data_dir",

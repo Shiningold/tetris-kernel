@@ -343,10 +343,18 @@ def test_the_inspect_command_rejects_a_negative_frame_count(capsys) -> None:
     assert "帧数不能为负" in capsys.readouterr().err
 
 
-def test_the_play_command_is_still_a_placeholder(capsys) -> None:
-    """**`play` 仍是占位**（交互式游玩属 M3–M4）。"""
-    assert main(["play"]) == 0
-    assert "占位" in capsys.readouterr().out
+def test_the_play_command_is_a_real_run(capsys) -> None:
+    """**`play` 不再是占位**（M4-S8 起真跑）。
+
+    **M0 立的占位规矩到 M4 结束为止**（spec-M4 §7.5：「**M4 之后 `play` 不再是
+    占位**」）——**这条用例跟着口径改**：**它现在断言"真跑"**，不是断言"占位"。
+
+    **`--frames` 限定帧数**（**不让它跑到局结束** —— **那条路要二十多秒**）。
+    """
+    assert main(["play", "--frames", "5", "--no-render"]) == 0
+    out = capsys.readouterr().out
+    assert "尚未实现" not in out
+    assert "帧数" in out
 
 
 # ---------------------------------------------------------------------------
