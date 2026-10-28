@@ -13,7 +13,7 @@ build-backend = "uv_build"
 
 [project]
 name = "tetris-kernel"
-version = "0.1.0"
+version = "0.2.0"
 description = "以事件流为唯一信息载体的俄罗斯方块内核——底座而非游戏"
 readme = "README.md"
 requires-python = ">=3.12"

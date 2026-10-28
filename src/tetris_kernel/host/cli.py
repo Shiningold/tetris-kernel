@@ -85,7 +85,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..adapters.input import DEFAULT_ARR_MS, DEFAULT_DAS_MS, create_key_reader
+from ..adapters.input import DEFAULT_ARR_MS, DEFAULT_DAS_MS, KeyboardInput, create_key_reader
 from ..adapters.storage import FileSink
 from ..bus.envelope import Envelope
 from ..rules.interface import RuleSet
@@ -186,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_variants(args)
         case "play":
             return _cmd_play(args)
+        case "graphics":
+            return _cmd_graphics(args)
         case _:
             return _cmd_placeholder(args)
 
@@ -352,6 +354,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="不画终端画面（**无头跑** · 输出仍然给统计）",
     )
     play.add_argument("--json", action="store_true", help="机器可读输出（JSON）")
+
+    graphics = subparsers.add_parser(
+        "graphics",
+        help="图形版：主菜单选玩法与难度，然后开打（M6 · tkinter 窗口）",
+    )
+    graphics.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help=f"内核随机源种子（默认 {DEFAULT_SEED}）",
+    )
     return parser
 
 
@@ -803,6 +816,24 @@ def _cmd_variants(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_graphics(args: argparse.Namespace) -> int:
+    """`graphics`：**图形版**（M6 · 主菜单 → 选玩法与难度 → 开打）。
+
+    **tkinter 是延迟 import 的**（**放在函数里**）——**无头机器上 `tetris
+    --help` 与其它子命令照常能用**（**只有真的要开图形窗口时才需要显示器**）。
+    """
+    from .graphics import GraphicsSession
+    from .menu import MenuSession
+
+    choice = MenuSession().choose()
+    session = GraphicsSession(choice=choice, seed=int(args.seed))
+    try:
+        session.run()
+    finally:
+        session.close()
+    return 0
+
+
 def _cmd_placeholder(args: argparse.Namespace) -> int:
     """占位子命令：**要能跑、不许报错**（M0 的门是「无头闭环」）。
 
@@ -865,7 +896,9 @@ def _cmd_play(args: argparse.Namespace) -> int:
         frame_counter=play.frame_counter,
         clock=RealClock(step_ms=DEFAULT_STEP_MS),
     )
-    if interactive and play.input_adapter is not None:
+    if interactive and isinstance(play.input_adapter, KeyboardInput):
+        # **只有终端适配器才绑读键器**（图形版自己绑 tkinter 事件 ·
+        # **输入桥后面仍是这个适配器** · 手感参数在那边）。
         play.input_adapter.bind_reader(create_key_reader())
     try:
         report = session.run(frames=frames)

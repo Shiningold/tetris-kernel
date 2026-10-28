@@ -10,6 +10,12 @@
 - **不引第三方依赖**（spec §7.7）——**标准库 + 平台分支**。
 """
 
+from .graphics_input import (
+    TK_KEYSYMS,
+    GraphicsInput,
+    InputAdapter,
+    normalize_keysym,
+)
 from .keyboard import (
     DAS_ACTIONS,
     DEFAULT_ARR_MS,
@@ -47,13 +53,17 @@ __all__ = [
     "KIND_PRESSED",
     "KIND_RELEASED",
     "KIND_UP",
+    "TK_KEYSYMS",
     "Binding",
     "CommandSubmitter",
     "EventPublisher",
+    "GraphicsInput",
+    "InputAdapter",
     "KeyEvent",
     "KeyReader",
     "KeyboardInput",
     "PosixKeyReader",
     "WindowsKeyReader",
     "create_key_reader",
+    "normalize_keysym",
 ]

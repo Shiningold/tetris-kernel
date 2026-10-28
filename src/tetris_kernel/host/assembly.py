@@ -54,7 +54,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TextIO
 
-from ..adapters.input import DEFAULT_ARR_MS, DEFAULT_DAS_MS, KeyboardInput
+from ..adapters.input import (
+    DEFAULT_ARR_MS,
+    DEFAULT_DAS_MS,
+    InputAdapter,
+    KeyboardInput,
+)
 from ..adapters.render import TerminalRenderer
 from ..adapters.storage import AppendSink, FileSink
 from ..bus.bus import DEFAULT_HISTORY_LIMIT, EventBus
@@ -755,7 +760,7 @@ class PlayAssembly:
 
     assembly: Assembly
     renderer: TerminalRenderer | None
-    input_adapter: KeyboardInput | None
+    input_adapter: InputAdapter | None
     frame_counter: FrameCounter
     degradation: DegradationController[Snapshot] | None
 
@@ -778,6 +783,7 @@ def assemble_play(
     stream: TextIO | None = None,
     source: str = "human",
     variant_id: str | None = None,
+    input_wrapper: Callable[[KeyboardInput], InputAdapter] | None = None,
 ) -> PlayAssembly:
     """**实时装配**（**渲染器 + 输入适配器 + 变体 + 降级**）。
 
@@ -828,13 +834,14 @@ def assemble_play(
         """**派一条命令**（**命令由宿主造** —— 内核只认命令类型与参数）。"""
         assembly.kernel.submit(Command(type=command_type, args=(), source=source))
 
-    input_adapter = KeyboardInput(
+    keyboard = KeyboardInput(
         submit=submit,
         publish=publish,
         das_ms=das_ms,
         arr_ms=arr_ms,
         source=source,
     )
+    input_adapter: InputAdapter = keyboard if input_wrapper is None else input_wrapper(keyboard)
     return PlayAssembly(
         assembly=assembly,
         renderer=renderer,
