@@ -31,7 +31,12 @@ cd tetris-kernel
 pip install .
 ```
 
-不想装、只想玩的，等 GitHub Release：分窗口版（双击即玩）与控制台版（跑 `sim` / `replay` / `inspect`）两个免安装 exe——**打包与发布落点还没定**（见 [`PROGRESS.md`](PROGRESS.md) 的「待办」段）。
+不想装、只想玩的，去 [**Releases · v0.1.0**](https://github.com/Shiningold/tetris-kernel/releases/tag/v0.1.0) 下载（Windows x64 · 免安装）：
+
+- **`tetris-play.exe`** —— **双击即玩**：开一个控制台窗口直接进游戏（`q` 退出）；
+- **`tetris-cli.exe`** —— **控制台版**：跑 `sim` / `replay` / `inspect` / `systems` / `variants` / `play`。
+
+同一次发布还提供 sdist 与 wheel。**注意：这不是图形版**——渲染层目前只有终端渲染器（仓库里没有 tkinter 代码），"双击即玩"是**控制台窗口里的终端版**（见 [ADR-099](docs/决策记录.md)）。发布说明与已知边界见 [`release/RELEASE_NOTES-v0.1.0.md`](release/RELEASE_NOTES-v0.1.0.md)。
 
 ## 使用
 
