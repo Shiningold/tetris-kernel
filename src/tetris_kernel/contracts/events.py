@@ -752,11 +752,11 @@ EVENT_TYPES: Mapping[str, EventSpec] = MappingProxyType(dict(_EVENT_SPECS))
 #: - **事件产出者**（九个）：`kernel` / `bus` / `host` / `input-adapter` /
 #:   `renderer` / `log` / `metrics` / `achievements` / `systems/replay/`——
 #:   与需求 §8.1「产出者」列**逐条相等**（那一列的每一条都在这儿）；
-#: - **不发事件的系统**（M3 增补 · `rotations`）：**系统名**就是它的产出者
-#:   代号——需求 §8.2 的元数据 `producer` 本来就允许「系统名」，而
-#:   `systems/rotations/` 只计数落盘、**一条事件都不发**。**它占一个代号**，
-#:   是为了让**系统声明里的 `producer` 有处可填**（声明面要求该字段非空），
-#:   而不是为了给它开事件。
+#: - **不发事件的系统**（M3 增补 · `rotations`；M4 增补 · `ai`）：**系统名**
+#:   就是它的产出者代号——需求 §8.2 的元数据 `producer` 本来就允许「系统名」，
+#:   而 `systems/rotations/` 只计数落盘、`systems/ai/` 只派命令，**两者一条
+#:   事件都不发**。**它占一个代号**，是为了让**系统声明里的 `producer` 有处
+#:   可填**（声明面要求该字段非空），而不是为了给它开事件。
 #:
 #: **代号不许凭空多**：每一个代号要么是某个事件的产出者，要么是某个**已声明
 #: 系统**的产出者（守卫见 `tests/test_contracts_declarations.py`）——两类都
@@ -779,6 +779,7 @@ PRODUCER_LABELS: Mapping[str, str] = MappingProxyType(
         "achievements": "成就系统",
         "systems/replay/": "回放系统",
         "rotations": "旋转统计系统",
+        "ai": "AI 系统",
     }
 )
 

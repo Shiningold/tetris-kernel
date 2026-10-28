@@ -404,6 +404,7 @@
     "struct/ScoreState/lines": "ff67e782c8d5caca2e4137303bf54dbd",
     "struct/ScoreState/score": "ff67e782c8d5caca2e4137303bf54dbd",
     "system/achievements": "f4c8ea5df6db6e19349e6843b17af69d",
+    "system/ai": "a3d691d6fc650b93d0e404ca76b681b8",
     "system/growth": "239cbddf5a8b4478875d9c03bc5e4065",
     "system/log": "af7c4181f9744b8ecfafd611100d250d",
     "system/metrics": "78ea11e569b964bac318f9fb9467c7b8",
@@ -412,7 +413,7 @@
   },
   "meta": {
     "contractVersion": "v1",
-    "entryCount": 409,
+    "entryCount": 410,
     "generatedBy": "tools/contract_baseline.py",
     "hashAlgorithm": "blake2b-16"
   }
