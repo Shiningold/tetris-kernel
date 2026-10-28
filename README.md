@@ -26,7 +26,7 @@
 需要 Python 3.12 或更高版本。**本项目只发布在 GitHub，不上 PyPI**——克隆源码后本地安装：
 
 ```bash
-git clone <仓库地址>
+git clone https://github.com/Shiningold/tetris-kernel.git
 cd tetris-kernel
 pip install .
 ```
