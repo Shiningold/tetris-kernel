@@ -25,9 +25,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..bus.bus import EventBus
+from ..contracts.commands import COMMANDS
 from ..contracts.systems import SystemManifest
 from ..kernel.commands import Command
 from ..kernel.snapshot import Snapshot
+
+#: 受控写入的命令名（**从契约取**，不复制字面量 —— 架构 §4.4 末条）。
+WRITE_CELLS_COMMAND: str = "writeCells"
+
+#: `writeCells` 的参数名（**同样从契约取**）。
+WRITE_CELLS_ARG: str = COMMANDS[WRITE_CELLS_COMMAND].args[0].name
 
 #: 配置值（**扁平标量** · 契约的 `SCALAR_MAP` 口径：不可序列化对象一律不进事件）。
 type ConfigValue = int | float | str | bool | None
@@ -64,6 +71,31 @@ class CommandChannel:
             self._revoked_count += 1
             return
         self._submit(command)
+
+    def submit_cells(
+        self,
+        cells: tuple[tuple[int, int, int], ...],
+        source: str = "system",
+    ) -> None:
+        """派一条 **`writeCells`** 命令（**受控写入** · FR-11.1）。
+
+        **为什么命令的组装在这里做**：**变体层不能 import 内核**（架构 §2.3 /
+        §4.1 / §7.7：`variants` 禁 import `kernel` / `bus`）——而 `Command` 是内核的
+        类型。**变体只说"写这些格子"，命令的形状由系统层拼**。
+
+        **参数名从契约取**（`contracts.commands.COMMANDS`）——**不复制字面量**
+        （架构 §4.4 末条）：参数名写错，内核会**当场拒**（`invalid_argument`），
+        而错误信息只会说"参数不合法"，不说是哪个名字错了。
+        """
+        if not cells:
+            return
+        self.submit(
+            Command(
+                type=WRITE_CELLS_COMMAND,
+                args=((WRITE_CELLS_ARG, cells),),
+                source=source,
+            )
+        )
 
     @property
     def active(self) -> bool:
