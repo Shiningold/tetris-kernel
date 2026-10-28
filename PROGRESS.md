@@ -88,9 +88,11 @@
   → **新增编号前先查那张表**（同一个编号只允许一个含义）。
 - **发布已落地，但国内可达性未验证**：**v0.1.0 只走 GitHub Release 直链**，**没做镜像**——
   **下载点够不够快这件事目前没有数据**（ADR-008 留的原问题）；**要数据就别急着加镜像**。
-- **工具环境的一处坑**：本机 **GitHub CLI 的 MSI 已注册、但 `C:\Program Files\GitHub CLI` 下的文件不在**
-  → `gh` 命令调不通。**绕过办法**：`msiexec /a <缓存的 .msi> /qn TARGETDIR=<临时目录>` 解出 `gh.exe`
-  单独用（**token 登录状态在 `%APPDATA%\GitHub CLI` 里，不受影响**）。**根治**：重装 GitHub CLI。
+- **工具环境**：`gh` CLI 装在 **`D:\Environment\GitHub CLI`**（**已加进用户 PATH** · 新 shell 直接敲 `gh` 即可）——
+  **2026-10-28 修正**：此前误判它「没装」（MSI 登记在、但 `C:\Program Files` 下无文件），**卸载那份登记时连带把 D 盘的真身也删了**，
+  **已用 winget 装回原位**（`winget install --id GitHub.cli --location "D:\Environment\GitHub CLI"`）· 版本 2.103.3。
+  **token 存在用户环境变量 `GITHUB_TOKEN` 里**（不是 `hosts.yml`）→ **装卸 gh 不影响登录状态**。
+  **教训**：**找不到工具时先问用户装在哪**，别靠注册表和目录去猜——猜错就要赔上误删。
 - **历史明细在 git**：M0–M4 的卡点与教训（**六条经得起重用的教训** · 批次 B / D 又添的各三条 ·
   并行批次纪律 · 契约与基线的细则）**都在历史里**——需要时用 `git log -p PROGRESS.md` 翻。
 
