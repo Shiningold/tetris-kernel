@@ -93,7 +93,7 @@ from ..systems.replay.format import recording_from_jsonl
 from ..systems.replay.playback import PlaybackSession
 from .assembly import ObservableSinks, assemble, default_sinks, rule_set_of
 from .builtin_variants import register_builtin_variants
-from .discovery import declared_manifests, dependency_graph
+from .discovery import declared_manifests, dependency_graph, system_catalog
 from .loop import HeadlessLoop, RunReport
 from .replay import REPLAY_LIMITS, KernelReplayDriver
 from .variants import variant_catalog, variant_of
@@ -358,6 +358,19 @@ def _variant_rule_set_of(args: argparse.Namespace) -> tuple[RuleSet, str] | None
     return manifest.ruleSet, manifest.ruleId
 
 
+def _variant_systems_of(args: argparse.Namespace) -> tuple[str, ...]:
+    """`--variant` → **变体挂着的系统**（**没有就一个都不装**）。
+
+    **变体 B 就是这么来的**：它的规则集是标准的，**玩法差异来自它挂的那个
+    系统**（`growth`）——**变体 = 规则集 + 附带系统**（spec-M4 §7.1）。
+    """
+    name = getattr(args, "variant", None)
+    if not name:
+        return ()
+    manifest = variant_of(name)
+    return () if manifest is None else manifest.systems
+
+
 def _cmd_sim(args: argparse.Namespace) -> int:
     """`sim`：无头跑 n 帧，出统计。
 
@@ -381,6 +394,7 @@ def _cmd_sim(args: argparse.Namespace) -> int:
         return 2
 
     variant = _variant_rule_set_of(args)
+    variant_systems = _variant_systems_of(args)
     if variant is None:
         assembly = assemble(seed=seed, sinks=_sinks_for(args))
     else:
@@ -390,6 +404,11 @@ def _cmd_sim(args: argparse.Namespace) -> int:
             sinks=_sinks_for(args),
             rule_set=rule_set,
             rule_id=rule_id,
+            # **变体挂着的系统**：**变体 B 的玩法差异就来自它**（`growth`）。
+            systems=variant_systems,
+            # **系统目录**：自动发现的汇总（`systems/` + `variants/`）——
+            # **变体 B 的系统住在 `variants/growth/`** → **自动发现扫得到**。
+            system_catalog=system_catalog() if variant_systems else None,
         )
     loop = HeadlessLoop(assembly)
     loop.start()
